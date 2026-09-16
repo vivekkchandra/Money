@@ -24,3 +24,6 @@ graphify-out/cost.json
 htmlcov/
 dist/
 build/
+
+optional_reference/
+graphify-out/

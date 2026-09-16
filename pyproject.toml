@@ -17,18 +17,22 @@ dependencies = [
     "numpy>=2.5.3",
     "orjson>=3.12.0",
     "pandas>=3.0.5",
+    "polars>=1.44.2",
     "psycopg[binary]>=3.3.5",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.2.3",
     "python-telegram-bot>=22.8",
+    "quantstats>=0.0.81",
     "redis>=8.1.0",
     "rich>=14.3.4",
     "sqlalchemy>=2.0.54",
     "structlog>=26.1.0",
+    "ta-lib>=0.7.1",
     "tenacity>=9.1.4",
     "typer>=0.27.2",
     "uvicorn>=0.53.0",
+    "yfinance>=1.7.0",
 ]
 
 [project.scripts]
