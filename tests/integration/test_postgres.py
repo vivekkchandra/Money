@@ -118,6 +118,9 @@ def test_postgres_migration_worker_claims_and_immutability(monkeypatch: pytest.M
         measured = store.operational_metrics(include_details=True)
         assert measured["tokens"]["known_tokens"] == 50
         assert Decimal(measured["costs"]["known_total"]) == Decimal("0.25")
+        assert measured["costs"]["basis"] == "ESTIMATED_OR_UNVERIFIED_REPORT"
+        assert measured["costs"]["actual_total"] is None
+        assert measured["costs"]["actual_count"] == 0
         assert measured["jobs"]["duration"]["samples"] == 1
     finally:
         store.engine.dispose()

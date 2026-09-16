@@ -1,4 +1,110 @@
-# Production verification — 2026-09-16
+# Final commercial release verification — 2026-09-16
+
+**PRODUCTION BLOCKED.** Preserved `main` at local `be30431`; GitHub's read API
+still reports `fc5ddeb`. Commercial changes remain modified/untracked because
+`.git/index.lock` creation is denied. No lock exists, nothing was removed, and no
+new commit, push, deployment or production migration was performed.
+
+Statuses apply only to the stated environment. Synthetic/TestClient/SQLite success
+is not a production customer journey. Earlier records below are historical.
+
+| Requirement | Status | Actual command/test and evidence | Environment | Blocker |
+| --- | --- | --- | --- | --- |
+| Preserve/publish commercial work | BLOCKED_EXTERNAL_INFRA | Branch/status/log/diff inspected; `git add .` denied creating index.lock; no active lock file; process listing also denied. 78 modified/untracked status entries preserved, index empty | Restricted shell | Git metadata write access; no stale lock repair is applicable |
+| Remote branch/CI | FAILED | GitHub API: main fc5ddeb; [CI 35115874795](https://github.com/vivekkchandra/Money/actions/runs/35115874795) fails one PG test, HTTP smoke, backend drill and Chroma audit; previous Docker and Node audit pass | Earlier published commit only | Full logs unavailable through connector; current commercial changes not pushed or CI-qualified |
+| Earlier hosted web check | VERIFIED | [Live-web 35115874716](https://github.com/vivekkchandra/Money/actions/runs/35115874716) reports initial HTTP404, followed by successful route/asset/header verification step | Earlier fc5ddeb workflow, not current release | Does not establish current commercial deployment or deployed Netlify SHA |
+| Current Netlify build/logs/public HTTP | BLOCKED_EXTERNAL_INFRA | Required `npx --yes netlify-cli@latest status`, `build`, `logs --source deploy --since 24h` fail npm DNS; curl cannot resolve public host, no HTTP status obtained. Connector discovery reports Netlify disabled by administrator | Restricted shell/connectors | Enabled approved Netlify/network access; current public URL acceptance and deploy logs/SHA |
+| Netlify configuration | VERIFIED | Local site ID c66f8305-899f-4deb-92c8-b2ee55f5acab; apps/web, npm run build, .next, explicit Next adapter and SSR guard; expanded account/plans/history/login/signup acceptance | Local configuration/tests | No remote configuration mutation claimed |
+| Locked dependencies/lint/types | VERIFIED | `uv sync --locked`: 191 resolved/188 checked; `uv run ruff check .`; `uv run mypy src/money`: 100 source files | Local Python3.12 | None for these checks |
+| Final Python suite | VERIFIED | `uv run pytest -q --junitxml=/private/tmp/money-release-final.xml`: **752 passed, 0 failed, 108 skipped**, 28 warnings | Local | 95 missing-PG variants, 2 PG-only local variants, 11 live opt-in skips |
+| Python suite breakdown | VERIFIED | Unit **567/0/0**; integration **185/0/97**; production **0/0/11** (passed/failed/skipped) | Local JUnit | Skips are not passes |
+| Explicit live integration opt-in | BLOCKED_CREDENTIAL | `MONEY_RUN_PRODUCTION_INTEGRATION=1 .venv/bin/python -m pytest tests/production -q`: **0 passed, 0 failed, 11 skipped** with explicit missing manifest/hash or native snapshot reasons | Opted-in live suite | Genuine qualification manifest/hash, snapshot, provider credentials, rights, approved model/runtime |
+| Production synthetic prohibition | VERIFIED | Settings reject both demo switches; real enqueue/worker/stored-result boundary tests deny synthetic production research, even mutated settings | Local settings/API/process tests | No live signal claimed |
+| Offboarding and authority | VERIFIED | Last-owner succession, fresh password, stale-role billing/research rejection, revocation, durable closure, retry/recovery, approved-policy retention, erased-recipient notification/invitation regression, immutable preservation | SQLite + scripted Stripe; PG variants defined | Real PG concurrency, Stripe lifecycle, approved legal retention and scheduled fulfilment |
+| Call/provider accounting | VERIFIED | Migration0007 immutable fenced receipts; per-inference attempts, tokens, estimated vs actual cost; native/provider-operation duration; safe parent transport and bounded admin aggregation | SQLite/native subprocess tests | Killed child may leave unresolved call; dataset operation HTTP subcall counts and provider invoices explicitly unknown |
+| Migrations/schema drift | VERIFIED | Frozen0006/0007 schema/type/default/index/constraint/trigger tests for both dialects; actual SQLite upgrade/head/drift checks | SQLite execution + PG compilation | Not real PostgreSQL execution |
+| Web clean install/lint/types/tests/build | VERIFIED | `npm ci --prefix apps/web`:385 packages; final lint/typecheck, **184 passed, 0 failed, 0 skipped** in11 files; Next16.3.5 production build with dynamic root/account/product/research routes | Local | Not hosted SSR/browser acceptance |
+| Commercial HTTP/browser E2E | BLOCKED_EXTERNAL_INFRA | Both required npm scripts abort at local listener allocation: EPERM127.0.0.1; zero journeys executed | Restricted shell | Listener/browser-capable environment |
+| Legacy HTTP/browser smoke | BLOCKED_EXTERNAL_INFRA | Both npm smoke scripts abort at listener allocation; no passing browser claim | Restricted shell | Same environment restriction |
+| Git data/reference boundaries | VERIFIED | All4 assets remain tracked, unchanged, schema1/data1.0.0/checksums valid; `scripts/validate_data_tables.py` and `scripts/check_deployment.py` pass | Local files/build | Commercial provider rights remain unapproved, never inferred |
+| Default control-plane dependency audit | VERIFIED | Locked no-dev export excludes CrewAI/Chroma; pip-audit2.10.1 reports0 known vulnerabilities; import/export regression tests | Actual advisory scan + dependency graph | Container execution still unverified |
+| Research dependency audit | FAILED | Locked research-extra audit:5 entries / **4 distinct ChromaDB1.1.1 advisories**, no fixed version established. Native client/backend/embedding/listener restrictions tested; actual CrewAI Flow still runs with scripted inference | Actual scan + native tests | Containment is not a patch/security qualification; unsuppressed research CI remains failing |
+| Node advisory scan | BLOCKED_EXTERNAL_INFRA | `npm audit --omit=dev --prefix apps/web` ENOTFOUND | Restricted shell | Current advisory retrieval; earlier fc5ddeb CI scan is historical only |
+| PostgreSQL configuration/probe | BLOCKED_EXTERNAL_INFRA | Existing ignored .env contains loopback PG URL without required TLS, not managed production config. Bounded read-only probe raises OperationalError; no secret printed | Existing local configuration | Reachable isolated/staging and managed production PostgreSQL |
+| Backup/restore/restart drill | BLOCKED_EXTERNAL_INFRA | `scripts/backend_acceptance.py`: ENVIRONMENT_PERMISSION_DENIED at postgres_init, zero completed steps, temporary data removed | Isolated local attempt | Shared-memory/listener permissions and actual restore evidence |
+| Compose / container images | BLOCKED_EXTERNAL_INFRA | Commercial Compose config validates; default and --target research Docker builds both fail socket permission. Separate API/email/billing default image and explicit research image configured | CLI only | Accessible Docker/OCI runtime; no container readiness claimed |
+| SMTP/Stripe/host/monitoring | BLOCKED_CREDENTIAL | Presence-only environment/.env inspection finds no real service URL, SMTP/Stripe/provider/live-manifest credentials. Outbox, closure/reconciliation and safe metrics interfaces tested locally | No production credentials/destination | Verified sender, test billing lifecycle, approved host/database, monitoring and backup scheduling |
+| Legal/privacy/provider rights | BLOCKED_CREDENTIAL | Draft pages and Git licence inventory remain unapproved. Policy review and commercial rights are fail-closed | Product assets/configuration | Owner/legal/licensor approval; no invented jurisdictional retention period |
+| Money Graphify refresh | VERIFIED | `graphify update .`:2609 nodes,7909 edges,152 communities; AST-only, no semantic API call | Money graph only | Upstream graphs unchanged |
+
+New engineering in this follow-up: reviewed offboarding with automated billing
+closure, durable safe per-call accounting, control-plane/research dependency
+separation, Chroma capability containment, current-role rechecks, email/erasure
+race protection, stricter demo boundaries and expanded deployment checks.
+No upstream or Git-managed reference table was modified. Required external
+configuration and operator workflow are in COMMERCIAL_DEPLOYMENT.md and ENVIRONMENT.md.
+
+## Previous commercial verification (historical)
+
+**PRODUCTION BLOCKED.** This commercial conversion starts from `main` / `fc5ddeb`.
+The initial tree was clean. Versioned product tables were committed as `be30431`;
+the commercial code is a separate local change set. No live commercial release,
+customer signup, SMTP delivery, payment or research result is claimed. The older
+production-only record below is retained as historical evidence, not current status.
+
+## Current commercial acceptance
+
+Allowed statuses: VERIFIED, FAILED, BLOCKED_CREDENTIAL, BLOCKED_EXTERNAL_INFRA,
+NOT_IMPLEMENTED. VERIFIED is limited to the explicitly stated environment. A mock
+provider transport, synthetic research or SQLite test is not live qualification.
+
+| Requirement | Status | Actual command/test and evidence | Environment | Blocker |
+| --- | --- | --- | --- | --- |
+| Locked Python installation | VERIFIED | `uv sync --locked`: 191 resolved / 188 checked; direct cryptography dependency uses already locked 50.0.1 | Local Python 3.12 | None for this check |
+| Python lint and types | VERIFIED | `uv run ruff check .`; `uv run mypy src/money`: 96 source files | Local | None for this check |
+| Python regression suite | VERIFIED | `uv run pytest -q --junitxml=/private/tmp/money-commercial-final-tests.xml`: **684 passed, 0 failed, 75 skipped**, 28 deprecation warnings | Local | 63 missing-PG skips, one PG-only row-lock skip, 11 live opt-in skips |
+| Python unit suite | VERIFIED | JUnit breakdown: **536 passed, 0 failed, 0 skipped** | Local | No live claim |
+| Python integration suite | VERIFIED | JUnit breakdown: **148 passed, 0 failed, 64 skipped** | SQLite, in-process HTTP and separate processes | Real PostgreSQL variants unexecuted |
+| Live production integration suite | BLOCKED_CREDENTIAL | Explicit `MONEY_RUN_PRODUCTION_INTEGRATION=1 .venv/bin/python -m pytest tests/production -q`: **0 passed, 0 failed, 11 skipped** | Live checks opted in | Qualification manifest/hash and genuine native qualification snapshot missing |
+| Git-managed reference data | VERIFIED | `uv run python scripts/validate_data_tables.py`: four schema1/data1.0.0 tables VERIFIED; 78 table-specific tests | Local versioned files | External provider commercial rights remain unknown, not approved |
+| Installed-wheel deterministic data loading | VERIFIED | Offline wheel build/install into isolated target; unrelated working directory plus explicit `MONEY_REFERENCE_DATA_DIR` validates all four assets | Local installed wheel | Host must mount exact read-only release assets |
+| Research-only / client-secret / Netlify boundaries | VERIFIED | `uv run python scripts/check_deployment.py`; adversarial tests retained | Local code/build | Not a hosted penetration test |
+| Signup, verification, login, reset, sessions | VERIFIED | Account suite: 27 passed / 0 failed / 1 PG skip; scrypt, one-use expiry, revoke, encrypted outbox and request-size/correlation tests | TestClient + SQLite | Real delivered emails, hosted cookies and PG reset/rotation race execution |
+| Tenant and role isolation | VERIFIED | Forged workspace headers and guessed peer research UUID denied; invitation email/seat/owner and peer-session boundaries tested | Local API/transactions | Production PG/runtime test still required |
+| Research customer journey | VERIFIED | Signup → test outbox verification → login → workspace → DEMO.L HTTP202 → durable job → separate worker → immutable result → fresh API/store retrieval → logout/login | Local TestClient, SQLite, synthetic evidence | Not a browser/live/provider acceptance; no SMTP delivery claimed |
+| Subscription and usage enforcement | VERIFIED | Workspace and account-wide ceilings, concurrent multi-workspace admission, token/worker-time budget, atomic rollback and duplicate suppression | SQLite; PG variants configured | Paid Stripe lifecycle and PG concurrency required |
+| Billing safety | VERIFIED | HMAC/time/mode/replay checks; durable events; lost-response retry uses persisted exact parameters; signed customer/workspace/subscription checks; unresolved billing denies only affected customer | Mock Stripe transport + real local transactions | Live keys/products/prices/portal/webhook and real lifecycle acceptance |
+| Email and notifications | VERIFIED | TLS-only SMTP adapter, encrypted leased/fenced outbox; test transport delivery; opt-in verified workspace-owner subscription recipients, rollback and dedup; in-app notification ownership | Local fixtures/transactions | Verified sender/SMTP credentials and actual delivery |
+| Customer website/application | VERIFIED | Marketing, onboarding, account, plans, billing, history date/sort/page, watchlist, settings and notification rendering tests | Server render/component tests | Public/browser accessibility and runtime acceptance |
+| Web clean installation | VERIFIED | `npm ci --prefix apps/web`: 385 packages installed with lifecycle scripts enabled; bounded registry fetch retries/timeouts; audit attempted separately | Local cached dependencies | Current Node advisory retrieval unavailable |
+| Web lint/types/unit/build | VERIFIED | lint and typecheck pass; **178 passed, 0 failed, 0 skipped** across 11 Vitest files; `npm run build --prefix apps/web` emits dynamic root/account/product/research routes | Local Node/Next16.3.5 | Not a Netlify-hosted build |
+| Genuine commercial HTTP/browser E2E | BLOCKED_EXTERNAL_INFRA | `npm run test:commercial` and `npm run test:commercial:browser`: both exit before tests at listener allocation `listen EPERM 127.0.0.1` | Restricted shell | Allowed localhost listeners/Chromium environment; zero browser passes |
+| Legacy HTTP/browser smoke | BLOCKED_EXTERNAL_INFRA | `test:smoke` and `test:browser` attempted; localhost listener permission denied | Restricted shell | Cannot infer passing from unit tests |
+| Migration contracts | VERIFIED | Frozen 0004/0005 additive migrations, immutable audit/usage triggers and exact index/type/column tests; Alembic drift check reports no operations | SQLite execution + PostgreSQL DDL compilation | Actual PostgreSQL migration execution |
+| PostgreSQL/restart/backup/restore | BLOCKED_EXTERNAL_INFRA | `.venv/bin/python scripts/backend_acceptance.py`: ENVIRONMENT_PERMISSION_DENIED at postgres_init, zero steps; isolated temporary data removed | Attempted isolated PG drill | Permitted shared memory/listeners and real host database |
+| Compose topology | VERIFIED | `docker compose config --quiet` with disposable inputs succeeds; separate API/research/email/commercial processes | CLI configuration only | No running containers implied |
+| Docker image | BLOCKED_EXTERNAL_INFRA | `docker build -t money-production-check .`: Docker API socket permission denied | Restricted shell | Accessible Docker daemon |
+| Existing Netlify project | VERIFIED | Local state ID `c66f8305-899f-4deb-92c8-b2ee55f5acab`; root config retains apps/web/.next, explicit adapter and SSR output guard | Local only | No remote identity/deploy-status confirmation |
+| Commit/publish commercial change set | BLOCKED_EXTERNAL_INFRA | Final `git add` fails creating `.git/index.lock` with Operation not permitted; current branch main, HEAD be30431; commercial changes remain modified/untracked, staging empty | Restricted Git metadata | Git-write-capable environment required; no SaaS commit, push or deploy completed; reference-only commit deliberately not pushed alone |
+| Netlify build/status/live HTTP | BLOCKED_EXTERNAL_INFRA | `npx --yes netlify-cli@latest status` and `build`: registry ENOTFOUND; public curl cannot resolve host | Restricted shell | No actual HTTP status or deployed commit observed; reported 404 remains unverified/unrepaired live |
+| Python advisory scan | FAILED | Locked `pip-audit==2.10.1`: five entries / **four distinct ChromaDB1.1.1 advisories**, no fixed versions listed | Actual advisory retrieval | Critical/high transitive CrewAI dependency remediation and native qualification; see SECURITY.md |
+| Node production advisory scan | BLOCKED_EXTERNAL_INFRA | `npm audit --omit=dev` cannot retrieve registry advisories (ENOTFOUND) | Restricted shell | Current scan and any necessary safe patches |
+| Admin/audit/analytics | VERIFIED | Internal UUID allowlist, bounded IDs/error codes/counts, immutable sensitive audit, authorised result-opened/frontend-error hooks; no research text in analytics | Local tests | Hosted support/error tracking/monitoring configured and exercised |
+| Production monitoring and backups | BLOCKED_EXTERNAL_INFRA | Process health/log/metric interfaces and restore automation exist; no production destination/schedule configured | Code/runbook only | Real host/monitoring account, backup schedule and successful restore |
+| Legal/commercial data approval | BLOCKED_CREDENTIAL | Editable legal drafts and provider licence inventory explicitly unapproved; unknown redistribution rights fail closed | Git assets/UI | Operator/legal review and commercial licences |
+| Automated erasure/retention fulfilment | NOT_IMPLEMENTED | Deletion request disables access and revokes sessions; audit/research retained intentionally | Local implemented request workflow | Approved retention policy, billing closure/ownership succession and fulfilment implementation/drill |
+| Rich provider-call/actual-cost analytics | NOT_IMPLEMENTED | Job/user/workspace/token-budget/worker-time admission exists; unknown cost remains unknown | Partial implementation | Complete granular provider-call/cost attribution and validated reporting |
+| Commercial worker health and compute supervision | VERIFIED | Email CLI health 3 tests; billing service-mode/no-processing test; database failure cannot spawn an unbudgeted research child | Local processes/SQLite | Actual container/host health remains unverified |
+| Money graph refresh | VERIFIED | `graphify update .`: 2425 nodes / 7230 edges / 146 communities; AST-only | Money graph only | Semantic relabel not run; upstream graphs untouched |
+
+The passing local test count is not commercial launch acceptance.
+The new-customer **public browser → delivered email → payment → PostgreSQL → worker
+→ durable research → return later** journey has not passed. Required external
+configuration is in ENVIRONMENT.md; safe release ordering is in
+COMMERCIAL_DEPLOYMENT.md. No customer state or credentials were committed as
+reference assets. Existing versioned data was preserved; upstreams were untouched.
+
+## Historical production-only verification (before commercial conversion)
 
 **PRODUCTION BLOCKED.** The reported live Netlify 404 has not been repaired or
 independently reproduced from this restricted session. Local builds are not live

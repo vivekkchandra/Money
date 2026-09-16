@@ -4,6 +4,7 @@ export function canonicalView(view: readonly string[]): string[] {
     if (view[0] === "dashboard") return [];
     if (view[0] === "research") return ["jobs"];
     if (view[0] === "system") return ["health"];
+    if (view[0] === "plans") return ["billing"];
   }
   return [...view];
 }

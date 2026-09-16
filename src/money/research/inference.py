@@ -17,6 +17,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from money.data.security import ProviderFailure, _PinnedHTTPS, public_addresses, validate_url
+from money.research.call_telemetry import InferenceReceipt, emit_calls
 from money.schemas.contracts import Usage
 
 
@@ -92,6 +93,37 @@ class HTTPInference:
         return (urlsplit(self.configuration.endpoint).hostname or "",)
 
     def complete(self, system: str, user: str) -> str:
+        started = time.monotonic()
+        before = len(self._usages)
+        sent = False
+        status = "FAILED"
+        error_code: str | None = "INFERENCE_FAILED"
+        try:
+            # Reject oversized inputs before counting a provider operation.
+            if len((system + user).encode()) > self.configuration.maximum_prompt_bytes:
+                raise ValueError("TOKEN_INPUT_LIMIT")
+            sent = True
+            result = self._complete(system, user)
+            status, error_code = "SUCCEEDED", None
+            return result
+        except ProviderFailure as error:
+            if error.code in {"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"}:
+                error_code = error.code
+            raise
+        finally:
+            usage = self._usages[-1] if len(self._usages) > before else Usage()
+            emit_calls((InferenceReceipt.model_validate({
+                "provider": self.provider, "model": self.model,
+                "duration_seconds": time.monotonic() - started,
+                "status": status, "error_code": error_code,
+                "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                # Configured rate calculations are estimates, never invoice charges.
+                "estimated_cost": usage.cost_gbp, "actual_cost": None,
+                "currency": "GBP" if usage.cost_gbp is not None else None,
+                "provider_calls": int(sent), "cache_hit": False, "retry": False,
+            }),))
+
+    def _complete(self, system: str, user: str) -> str:
         config = self.configuration
         if len((system + user).encode()) > config.maximum_prompt_bytes:
             raise ValueError("TOKEN_INPUT_LIMIT")

@@ -42,7 +42,17 @@ services:
       RESEARCH_API_TOKEN: ${RESEARCH_API_TOKEN:?Set RESEARCH_API_TOKEN in .env}
       MONEY_ENV: ${MONEY_ENV:-development}
       MONEY_RESEARCH_MODE: ${MONEY_RESEARCH_MODE:-unconfigured}
-      MONEY_AUTH_MODE: private
+      MONEY_AUTH_MODE: ${MONEY_AUTH_MODE:-private}
+      MONEY_ENABLE_SYNTHETIC_DEMO: ${MONEY_ENABLE_SYNTHETIC_DEMO:-false}
+      MONEY_EMAIL_ENCRYPTION_KEY: ${MONEY_EMAIL_ENCRYPTION_KEY:-}
+      MONEY_PUBLIC_WEB_URL: ${MONEY_PUBLIC_WEB_URL:-http://localhost:3000}
+      MONEY_BILLING_ENABLED: ${MONEY_BILLING_ENABLED:-false}
+      MONEY_STRIPE_SECRET_KEY: ${MONEY_STRIPE_SECRET_KEY:-}
+      MONEY_STRIPE_WEBHOOK_SECRET: ${MONEY_STRIPE_WEBHOOK_SECRET:-}
+      MONEY_STRIPE_PRICES: ${MONEY_STRIPE_PRICES:-{}}
+      MONEY_STRIPE_LIVE: ${MONEY_STRIPE_LIVE:-false}
+      MONEY_USER_JOBS_PER_MONTH: ${MONEY_USER_JOBS_PER_MONTH:-300}
+      MONEY_INTERNAL_ADMIN_USER_IDS: ${MONEY_INTERNAL_ADMIN_USER_IDS:-[]}
       MONEY_WORKSPACE_ID: ${MONEY_WORKSPACE_ID:-private}
       MONEY_DB_POOL_SIZE: ${MONEY_DB_POOL_SIZE:-5}
       MONEY_DB_POOL_TIMEOUT_SECONDS: ${MONEY_DB_POOL_TIMEOUT_SECONDS:-10}
@@ -64,7 +74,9 @@ services:
     restart: unless-stopped
 
   research-worker:
-    build: .
+    build:
+      context: .
+      target: research
     init: true
     read_only: true
     tmpfs: ["/tmp:size=512m,mode=1777"]
@@ -75,6 +87,57 @@ services:
     command: ["python", "-m", "money.worker"]
     healthcheck:
       test: ["CMD", "python", "-m", "money.worker", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  email-worker:
+    build: .
+    profiles: [commercial]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    stop_grace_period: 30s
+    environment:
+      <<: *research-environment
+      MONEY_SMTP_HOST: ${MONEY_SMTP_HOST:-}
+      MONEY_SMTP_PORT: ${MONEY_SMTP_PORT:-465}
+      MONEY_SMTP_TLS: ${MONEY_SMTP_TLS:-implicit}
+      MONEY_SMTP_USERNAME: ${MONEY_SMTP_USERNAME:-}
+      MONEY_SMTP_PASSWORD: ${MONEY_SMTP_PASSWORD:-}
+      MONEY_EMAIL_FROM: ${MONEY_EMAIL_FROM:-}
+    command: ["python", "-m", "money.accounts.email_worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "money.accounts.email_worker", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  billing-worker:
+    build: .
+    profiles: [commercial]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    stop_grace_period: 30s
+    environment: *research-environment
+    command: ["python", "-m", "money.product.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "money.product.worker", "--healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3

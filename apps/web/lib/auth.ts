@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { authService, productionEnvironment } from "@/lib/service";
+import { authService, productionEnvironment, serviceEndpoint } from "@/lib/service";
 
 export const SESSION_COOKIE = "money_session";
 export const SESSION_SECONDS = 60 * 60 * 8;
@@ -9,6 +9,7 @@ export function authConfigured(): boolean {
   const environment = process.env.MONEY_ENV;
   if (environment && !["development", "test", "preview", "production"].includes(environment)) return false;
   if (process.env.NODE_ENV === "production" && !environment) return false;
+  if (process.env.MONEY_AUTH_MODE === "saas") { try { serviceEndpoint("/v1/account/me"); return true; } catch { return false; } }
   if (process.env.MONEY_AUTH_MODE && process.env.MONEY_AUTH_MODE !== "private") return false;
   const password = process.env.MONEY_WEB_PASSWORD ?? "";
   const secret = process.env.SESSION_SECRET ?? "";
@@ -17,6 +18,7 @@ export function authConfigured(): boolean {
 }
 
 export function passwordMatches(password: string): boolean {
+  if (process.env.MONEY_AUTH_MODE === "saas") return false;
   if (!authConfigured() || password.length > 512) return false;
   const digest = (text: string) => createHash("sha256").update(text).digest();
   return timingSafeEqual(digest(password), digest(process.env.MONEY_WEB_PASSWORD!));
@@ -34,6 +36,7 @@ export function createSession(now = Date.now()): string {
 }
 
 export function validSession(cookie: string | undefined, now = Date.now()): boolean {
+  if (process.env.MONEY_AUTH_MODE === "saas") return false;
   if (!authConfigured() || !cookie || !/^\d{10}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/.test(cookie)) return false;
   const [timestamp, nonce, signature] = cookie.split(".");
   const payload = `${timestamp}.${nonce}`;
@@ -51,6 +54,13 @@ export const digest = (value: string) => createHash("sha256").update(value).dige
 export const credentialVersion = () => digest(`${process.env.SESSION_SECRET}:${process.env.MONEY_WEB_PASSWORD}`);
 
 export async function requestAuthenticated(request: Request): Promise<boolean> {
+  if (process.env.MONEY_AUTH_MODE === "saas") {
+    const { accountFetch, accountHeaders } = await import("@/lib/commercial");
+    if (!accountHeaders(request)["X-Money-Session"]) return false;
+    const response = await accountFetch(new Request(request.url, { headers: request.headers }), "/v1/account/me");
+    if (response.status >= 500) throw new Error("Account service unavailable");
+    return response.ok;
+  }
   const cookie = requestSession(request);
   if (!validSession(cookie)) return false;
   const result = await authService<{ valid: boolean }>("sessions/validate", { token_hash: digest(cookie!), credential_version: credentialVersion() });

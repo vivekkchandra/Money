@@ -1,5 +1,26 @@
 # Production gap matrix
 
+## Final commercial release follow-up — 2026-09-16
+
+These supersede the historical starting gaps below. **PRODUCTION BLOCKED.**
+
+| Requirement | Status | Actual state / remaining gate |
+| --- | --- | --- |
+| Publish preserved commercial work | BLOCKED_EXTERNAL_INFRA | `.git/index.lock` creation denied; no lock exists to remove. Local main is be30431; GitHub main still fc5ddeb. No destructive cleanup or partial release push |
+| Existing Netlify production | BLOCKED_EXTERNAL_INFRA | Correct local project ID/runtime/SSR guard. Earlier fc5ddeb live-web job succeeded after initial 404; current commercial build is unpublished and direct HTTP/DNS unavailable |
+| Production demo prohibition | VERIFIED | Startup rejects both switches; enqueue, worker and read-time tests deny synthetic production research |
+| Offboarding/retention | VERIFIED | Durable closure, fresh-password ownership transfer, reviewed billing/retention workflow and local erasure drill; immutable evidence retained. Real Stripe closure, approved legal retention and PostgreSQL races remain launch gates |
+| Per-call accounting | VERIFIED | Fenced immutable receipts, individual inference attempts and native/provider-operation timing; actual and estimated costs separated. Unobserved provider subcalls/vendor invoices remain unknown |
+| ChromaDB dependency | FAILED | API/email/billing dependency set now excludes it and audits clean; research set retains four distinct unresolved advisories. Native capability containment is not a package patch; research CI still fails |
+| Node advisory retrieval | BLOCKED_EXTERNAL_INFRA | Local npm audit ENOTFOUND. Earlier fc5ddeb CI Node audit passed; no inference of current hosted release acceptance |
+| PostgreSQL / backup / recovery | BLOCKED_EXTERNAL_INFRA | Isolated local drill cannot initialize shared memory; real-PG tests skipped without URL. No production restore proof |
+| Container / browser acceptance | BLOCKED_EXTERNAL_INFRA | Docker socket and localhost listener denied; Compose parses, but containers and browser journey are not verified |
+| SMTP / Stripe / monitoring | BLOCKED_CREDENTIAL | No available credentials/destination; real delivery, payment lifecycle and production alerts unqualified |
+| Live research / commercial data rights | BLOCKED_CREDENTIAL | Eleven explicit live checks skip without manifest/hash and genuine native qualification snapshot; rights, ISA evidence, model promotion and runtime qualification remain mandatory |
+
+Exact final commands/counts are recorded in VERIFICATION.md. The locally verified
+rows are not production acceptance or legal approval.
+
 Audit started 2026-09-16 from `6607d76`. Baseline: 94 Python tests passed,
 one PostgreSQL test skipped without `TEST_DATABASE_URL`. This matrix describes
 the starting gaps; completion evidence belongs in VERIFICATION.md.

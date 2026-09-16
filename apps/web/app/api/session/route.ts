@@ -1,4 +1,5 @@
 import { authConfigured, createSession, json, loginAllowed, passwordMatches, readLimitedJson, registerSession, requestAuthenticated, revokeSession, sameOrigin, sessionCookie } from "@/lib/auth";
+import { commercialProxy, saasMode } from "@/lib/commercial";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,6 +10,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (saasMode()) return json({ error: "Use your email and password to sign in." }, 405);
   if (!sameOrigin(request)) return json({ error: "Invalid request origin" }, 403);
   if (!authConfigured()) return json({ error: "Workspace authentication is not configured" }, 503);
   try {
@@ -38,6 +40,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  if (saasMode()) return commercialProxy(new Request(request.url, { method: "POST", headers: request.headers, body: "{}" }), "account", "logout");
   if (!sameOrigin(request)) return json({ error: "Invalid request origin" }, 403);
   try {
     await revokeSession(request);

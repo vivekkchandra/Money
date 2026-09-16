@@ -2,10 +2,15 @@
 import { pathToFileURL } from "node:url";
 
 export const ROUTES = [
-  ["/", "dashboard", "Your research workspace"],
+  ["/", "marketing", "See the evidence."],
   ["/dashboard", "dashboard", "Your research workspace"],
   ["/research", "jobs", "Research jobs"],
   ["/system", "health", "System health"],
+  ["/account", "account", "YOUR ACCOUNT"],
+  ["/plans", "billing", "A plan for your research."],
+  ["/history", "history", "Research history"],
+  ["/login", "login", "Sign in"],
+  ["/signup", "signup", "Create your account"],
 ];
 
 function requireCheck(condition, code) {

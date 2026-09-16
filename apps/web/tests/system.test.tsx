@@ -25,6 +25,14 @@ describe("measured system operations", () => {
     expect(loading).toContain('role="status"');
     expect(loading).toContain("Loading durable operational measurements");
   });
+  it("does not show an all-unknown invoice or estimate as zero cost", () => {
+    const metrics = systemFixture();
+    metrics.costs = { ...metrics.costs, known_total: "0", known_count: 0, unknown_count: 3 };
+    const html = renderToStaticMarkup(<OperationalMetrics metrics={metrics} error={null} loading={false} onRefresh={() => {}} />);
+    expect(html).toContain("Cost estimates");
+    expect(html).toContain("Actual invoiced costs remain unknown");
+    expect(html).not.toContain("£0");
+  });
   it("labels a failed refresh as stale, not current healthy state", () => {
     const html = renderToStaticMarkup(<OperationalMetrics metrics={systemFixture()} error="Refresh failed" loading={false} onRefresh={() => {}} />);
     expect(html).toContain("last successful observation, not current state");

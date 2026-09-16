@@ -20,12 +20,12 @@
 [context.production.environment]
   MONEY_DEPLOYMENT_CONTEXT = "production"
   MONEY_ENV = "production"
-  MONEY_AUTH_MODE = "private"
+  MONEY_AUTH_MODE = "saas"
 
 [context.deploy-preview.environment]
   MONEY_DEPLOYMENT_CONTEXT = "preview"
   MONEY_ENV = "preview"
-  MONEY_AUTH_MODE = "private"
+  MONEY_AUTH_MODE = "saas"
 
 [dev]
   command = "npm run dev"

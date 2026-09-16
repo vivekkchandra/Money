@@ -1,5 +1,36 @@
 # Operating Money on an OCI container host
 
+## Commercial operations addition
+
+See COMMERCIAL_DEPLOYMENT.md and ENVIRONMENT.md for the customer-mode processes.
+The email and commercial workers are separate from research, expose durable
+heartbeat modes, and have bounded retry/dead-letter states. `/v1/product/admin`
+requires an authenticated user UUID in `MONEY_INTERNAL_ADMIN_USER_IDS`, not merely
+workspace OWNER. It exposes aggregate counts, failed job correlation identifiers,
+email/billing backlog and reference versions, never provider keys or report text.
+Do not put customer IDs into public metric labels or send full research to an
+analytics service. Existing JSON logs are suitable for a host log collector;
+external monitoring, alert delivery and incident ownership are not configured by
+the repository and remain release gates.
+
+Usage admission and job insertion share a transaction. Idempotent enqueue returns
+the original job without another allowance debit. Expensive inference has both
+research-policy limits and subscription-period/per-job limits; unknown usage
+retains pessimistic reservation and unknown cost stays unknown. Billing
+reconciliation uses per-customer locking and fixed timeouts, not a queue-wide lock
+while calling Stripe. Pending/failed reconciliation prevents new paid admission.
+
+Before a release, run the isolated `scripts/backend_acceptance.py` backup/restore
+drill in an environment that permits PostgreSQL/listeners. Production managed
+backups, retention, encryption, PITR and a tested restore target must then be
+configured on the actual database host. A passing isolated drill alone would not
+prove production backups. Preserve the email encryption key separately from data.
+
+Deletion currently disables access and queues retention review; no automatic
+destruction of immutable research/audit/billing evidence occurs. Automated erasure,
+approved retention enforcement and richer provider-call
+cost attribution remain engineering follow-ups after policy/host configuration.
+
 Money remains **PRODUCTION BLOCKED** until the live qualification and deployment
 acceptance gates in VERIFICATION.md pass. This runbook does not provision a host
 or deploy any changes.

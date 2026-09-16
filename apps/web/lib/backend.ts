@@ -3,6 +3,7 @@ import { authConfigured, json, readLimitedJson, requestAuthenticated, requestSes
 import { validateJobInput } from "@/lib/contracts";
 import { serviceEndpoint } from "@/lib/service";
 import { parseSystemMetrics } from "@/lib/system";
+import { accountHeaders, saasMode } from "@/lib/commercial";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const allowed = new RegExp(`^(?:/health(?:/ready)?|/research/(?:signals|outcomes|discovery|universe|alerts|system)|/research/jobs(?:/${UUID}(?:/(?:reports|evidence))?)?)$`);
@@ -10,7 +11,7 @@ const allowed = new RegExp(`^(?:/health(?:/ready)?|/research/(?:signals|outcomes
 export async function proxyBackend(request: Request, path: string): Promise<Response> {
   if (!allowed.test(path)) return json({ error: "Unknown endpoint" }, 404);
   if (!authConfigured()) return json({ error: "Workspace authentication is not configured" }, 503);
-  if (!validSession(requestSession(request))) return json({ error: "Please sign in to your workspace", code: "SESSION_EXPIRED" }, 401);
+  if (saasMode() ? !accountHeaders(request)["X-Money-Session"] : !validSession(requestSession(request))) return json({ error: "Please sign in to your workspace", code: "SESSION_EXPIRED" }, 401);
   if (!["GET", "POST"].includes(request.method) || (request.method === "POST" && path !== "/research/jobs")) return json({ error: "Method not allowed" }, 405);
   if (request.method === "POST" && !sameOrigin(request)) return json({ error: "Invalid request origin" }, 403);
   const token = process.env.RESEARCH_API_TOKEN;
@@ -36,7 +37,7 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
     if (!await requestAuthenticated(request)) return json({ error: "Your session has expired. Please sign in again.", code: "SESSION_EXPIRED" }, 401);
     const response = await fetch(endpoint, {
       method: request.method, body, cache: "no-store", redirect: "error",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(saasMode() ? accountHeaders(request) : {}), ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
       signal: AbortSignal.timeout(10_000),
     });
     if (path === "/health" || path === "/health/ready") {
@@ -58,8 +59,10 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
       });
     }
     if (!response.ok) {
-      const status = [400, 404, 409, 422, 429].includes(response.status) ? response.status : 502;
-      return json({ error: status === 404 ? "Research record was not found" : status === 429 ? "Too many requests. Try again shortly." : "The research service could not fulfil this request" }, status);
+      const status = [400, 401, 402, 403, 404, 409, 422, 429].includes(response.status) ? response.status : 502;
+      const messages: Record<number, string> = { 401: "Your session has expired. Please sign in again.", 402: "Your workspace research allowance is exhausted. Review your plan and usage.", 403: "You do not have access to this research action.", 404: "Research record was not found", 429: "Too many requests. Try again shortly." };
+      const requestId = response.headers.get("x-request-id");
+      return json({ error: messages[status] ?? "The research service could not fulfil this request", ...(status === 401 ? { code: "SESSION_EXPIRED" } : {}), ...(requestId && /^[a-zA-Z0-9_-]{1,80}$/.test(requestId) ? { request_id: requestId } : {}) }, status);
     }
     const result = await response.json();
     return json(path === "/research/system" ? parseSystemMetrics(result) : result, response.status);

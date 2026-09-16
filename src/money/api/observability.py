@@ -6,6 +6,11 @@ from datetime import UTC, datetime
 
 FIELDS = (
     "request_id",
+    "workspace_id",
+    "environment",
+    "service",
+    "version",
+    "git_sha",
     "research_id",
     "job_id",
     "worker_id",

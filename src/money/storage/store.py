@@ -7,7 +7,7 @@ import json
 import math
 import re
 import secrets
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -242,6 +242,7 @@ class ResearchStore:
         rate_per_minute: int = 20,
         idempotency_key: str | None = None,
         max_attempts: int = 3,
+        admission: Callable[[Connection, str], None] | None = None,
     ) -> dict[str, Any]:
         mandate_data = ResearchMandate.model_validate(payload(mandate)).model_dump(mode="json")
         stamp = now_utc()
@@ -312,6 +313,8 @@ class ResearchStore:
                     updated_at=stamp,
                 )
             )
+            if admission is not None:
+                admission(connection, job_id)
             self._audit(connection, job_id, "JOB_ENQUEUED")
         result = self.get_job(job_id)
         assert result is not None
@@ -428,6 +431,13 @@ class ResearchStore:
             if row is None:
                 return None
             job_id = row["id"]
+            from money.product.models import usage_records
+
+            admitted_seconds = connection.scalar(
+                select(usage_records.c.max_seconds).where(usage_records.c.job_id == job_id)
+            )
+            if admitted_seconds is not None:
+                job_timeout_seconds = min(job_timeout_seconds, admitted_seconds)
             token = str(uuid4())
             stage = row["resume_stage"] or "ELIGIBILITY_CHECK"
             connection.execute(
@@ -796,8 +806,7 @@ class ResearchStore:
                 from money.crews.cross_examination import CrossExaminationPacket
 
                 checked_cross = (
-                    CrossExaminationPacket.model_validate(data)
-                    if not correspondence_call else None
+                    CrossExaminationPacket.model_validate(data) if not correspondence_call else None
                 )
                 prior = {
                     item.kind: item.payload
@@ -815,8 +824,10 @@ class ResearchStore:
                     row["status"] != "CROSS_EXAMINATION"
                     or "lean" not in prior
                     or not prior.get("audit", {}).get("completed")
-                    or (checked_cross is not None
-                        and checked_cross.snapshot_id != row["snapshot_id"])
+                    or (
+                        checked_cross is not None
+                        and checked_cross.snapshot_id != row["snapshot_id"]
+                    )
                 ):
                     raise StoreError(
                         "Cross-examination requires completed validation and initial CIO audit"
@@ -1625,9 +1636,15 @@ class ResearchStore:
                     },
                     "costs": {
                         "currency": "GBP",
+                        # Legacy keys remain for compatible clients. Usage.cost_gbp
+                        # has no invoice provenance and may be calculated from rates.
+                        "basis": "ESTIMATED_OR_UNVERIFIED_REPORT",
                         "known_total": str(Decimal(totals["cost_known_total"])),
                         "known_count": totals["cost_known_count"],
                         "unknown_count": totals["reservations"] - totals["cost_known_count"],
+                        "actual_total": None,
+                        "actual_count": 0,
+                        "actual_unknown_count": totals["reservations"],
                     },
                     "signals": {
                         "produced": int(produced or 0),

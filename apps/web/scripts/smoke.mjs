@@ -122,7 +122,7 @@ try {
       const errors = [];
       browserPage.on("pageerror", (error) => errors.push(error.message));
       browserPage.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
-      await browserPage.goto(origin);
+      await browserPage.goto(`${origin}/dashboard`);
       await browserPage.getByLabel("Workspace password").fill(password);
       await browserPage.getByRole("button", { name: "Open workspace" }).click();
       await browserPage.getByRole("link", { name: "Research jobs", exact: true }).click();

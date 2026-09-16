@@ -40,6 +40,7 @@ jobs:
       - run: uv sync --locked --python 3.12
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync mypy src/money
+      - run: uv run --no-sync python scripts/validate_data_tables.py
       - run: uv run --no-sync pytest --junitxml=/tmp/money-pytest.xml
       - name: Collect bounded Python test diagnostics
         id: python-results
@@ -79,22 +80,38 @@ jobs:
       - run: npm run test:smoke
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+      - run: npm run test:commercial
+      - run: npm run test:commercial:browser
       - run: uv run --no-sync python scripts/check_deployment.py
         working-directory: .
 
-  dependencies:
+  node-dependencies:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - run: npm audit --prefix apps/web --omit=dev --audit-level=high
+
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: control-plane
+            extra: ""
+          - runtime: research
+            extra: "--extra research"
+    steps:
+      - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.12.5"
-      - run: uv export --locked --no-dev --no-emit-project --no-hashes --format requirements-txt --output-file /tmp/money-locked-requirements.txt
+      - run: uv export --locked --no-dev ${{ matrix.extra }} --no-emit-project --no-hashes --format requirements-txt --output-file /tmp/money-locked-requirements.txt
       - run: uv tool run --from pip-audit==2.10.1 pip-audit --strict --no-deps --disable-pip --timeout 15 --requirement /tmp/money-locked-requirements.txt --format json --output /tmp/money-audit.json
       - name: Collect bounded dependency diagnostics
         id: audit-results
@@ -110,6 +127,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --build-arg MONEY_GIT_SHA=${{ github.sha }} --tag money-ci .
+      - run: docker build --target research --build-arg MONEY_GIT_SHA=${{ github.sha }} --tag money-research-ci .
+      - name: Verify default image excludes research-only dependencies
+        run: docker run --rm money-ci python -c "from importlib.util import find_spec; assert find_spec('chromadb') is None; assert find_spec('crewai') is None"
       - name: Validate Compose configuration
         env:
           POSTGRES_PASSWORD: disposable-ci-password

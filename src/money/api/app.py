@@ -14,12 +14,28 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from money.accounts.api import current_principal
+from money.accounts.api import router as account_router
+from money.accounts.security import PasswordCapacityExceeded
+from money.accounts.service import AccountError, AccountService
 from money.api.observability import configure_logging
 from money.api.settings import Settings
-from money.schemas.contracts import ResearchMandate, Ticker
+from money.product.api import router as product_router
+from money.product.api import safe_product_error
+from money.product.billing import BillingUnavailable
+from money.product.service import EntitlementDenied, ProductService
+from money.product.settings import ProductSettings
+from money.reference import (
+    CommercialLicenceError,
+    require_manifest_commercial_rights,
+    require_snapshot_commercial_rights,
+)
+from money.schemas.contracts import ResearchMandate, ResearchSnapshot, Ticker
+from money.storage import models as stored
 from money.storage.store import (
     EnqueueRateExceeded,
     IdempotencyConflict,
@@ -72,7 +88,37 @@ class RequestBoundary:
         headers = dict(scope.get("headers", []))
         started = time.monotonic()
         request_id = uuid4().hex
-        public = scope.get("path") in {"/health", "/health/live", "/health/ready"}
+        maximum_bytes = (
+            262144
+            if scope.get("path") == "/v1/product/billing/webhook"
+            else settings.money_request_max_bytes
+        )
+
+        async def reject(payload: dict[str, Any], status: int) -> None:
+            logger.info(
+                "api_request",
+                extra={
+                    "request_id": request_id,
+                    "status": status,
+                    "duration_seconds": time.monotonic() - started,
+                },
+            )
+            await JSONResponse(
+                payload,
+                status_code=status,
+                headers={
+                    "X-Request-ID": request_id,
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )(scope, receive, send)
+
+        public = scope.get("path") in {
+            "/health",
+            "/health/live",
+            "/health/ready",
+            "/v1/product/billing/webhook",
+        }
         # Internal auth services always require the web service token, including dev.
         if not public and (
             not settings.money_allow_unauthenticated_dev
@@ -84,9 +130,7 @@ class RequestBoundary:
             if not expected or not secrets.compare_digest(
                 headers.get(b"authorization", b""), expected
             ):
-                await JSONResponse(
-                    {"detail": "Authentication required", "code": "AUTH_REQUIRED"}, status_code=401
-                )(scope, receive, send)
+                await reject({"detail": "Authentication required", "code": "AUTH_REQUIRED"}, 401)
                 return
         body = bytearray()
         deadline = time.monotonic() + settings.money_request_timeout_seconds
@@ -97,18 +141,15 @@ class RequestBoundary:
                     raise TimeoutError
                 message = await asyncio.wait_for(receive(), timeout=remaining)
             except TimeoutError:
-                await JSONResponse(
-                    {"detail": "Request body deadline exceeded", "code": "REQUEST_TIMEOUT"},
-                    status_code=408,
-                )(scope, receive, send)
+                await reject(
+                    {"detail": "Request body deadline exceeded", "code": "REQUEST_TIMEOUT"}, 408
+                )
                 return
             if message["type"] == "http.disconnect":
                 return
             chunk = message.get("body", b"")
-            if len(body) + len(chunk) > settings.money_request_max_bytes:
-                await JSONResponse(
-                    {"detail": "Request too large", "code": "REQUEST_TOO_LARGE"}, status_code=413
-                )(scope, receive, send)
+            if len(body) + len(chunk) > maximum_bytes:
+                await reject({"detail": "Request too large", "code": "REQUEST_TOO_LARGE"}, 413)
                 return
             body.extend(chunk)
             if not message.get("more_body", False):
@@ -164,6 +205,28 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         configure_logging()
         configured = settings or Settings()  # type: ignore[call-arg]
+        from money.reference import load_reference_catalog
+
+        application.state.reference_catalog = load_reference_catalog()
+        application.state.product_settings = ProductSettings()
+        if (
+            configured.money_env == "production"
+            and configured.money_auth_mode == "saas"
+            and application.state.product_settings.money_billing_enabled
+            and not application.state.product_settings.money_stripe_live
+        ):
+            raise ValueError("Production billing requires explicitly configured Stripe live mode")
+        if configured.money_auth_mode == "saas" and configured.money_research_mode == "live":
+            from money.research.live import load_manifest
+
+            assert configured.money_live_manifest is not None
+            assert configured.money_live_manifest_sha256 is not None
+            require_manifest_commercial_rights(
+                application.state.reference_catalog,
+                load_manifest(
+                    configured.money_live_manifest, configured.money_live_manifest_sha256
+                ),
+            )
         application.state.settings = configured
         application.state.store = store or ResearchStore(
             configured.database_url.get_secret_value(),
@@ -172,6 +235,8 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
             pool_timeout=configured.money_db_pool_timeout_seconds,
             statement_timeout_ms=configured.money_db_statement_timeout_ms,
         )
+        if configured.money_auth_mode == "saas":
+            application.state.accounts = AccountService(application.state.store, configured)
         yield
         if store is None:
             application.state.store.engine.dispose()
@@ -185,9 +250,86 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
         openapi_url=None,
     )
     application.add_middleware(RequestBoundary, application=application)
+    application.include_router(account_router)
+    application.include_router(product_router)
 
     def repository(request: Request) -> ResearchStore:
+        config = request.app.state.settings
+        if config.money_auth_mode == "saas" and not request.url.path.startswith("/health"):
+            if request.url.path.startswith("/internal/"):
+                raise AccountError(
+                    "PRIVATE_AUTH_DISABLED", "Private authentication is disabled", 403
+                )
+            principal = current_principal(request)
+            if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                principal.require_write()
+            request.state.principal = principal
+            return request.app.state.store.for_workspace(principal.workspace_id)
         return request.app.state.store.for_workspace(request.app.state.settings.money_workspace_id)
+
+    @application.exception_handler(AccountError)
+    async def account_error(_: Request, error: AccountError) -> JSONResponse:
+        return JSONResponse({"detail": error.detail, "code": error.code}, status_code=error.status)
+
+    @application.exception_handler(PasswordCapacityExceeded)
+    async def password_capacity(_: Request, error: PasswordCapacityExceeded) -> JSONResponse:
+        return JSONResponse(
+            {"detail": "Sign-in is busy. Please try again shortly", "code": "AUTH_CAPACITY"},
+            status_code=429,
+            headers={"Retry-After": "5"},
+        )
+
+    @application.exception_handler(CommercialLicenceError)
+    async def licence_error(_: Request, error: CommercialLicenceError) -> JSONResponse:
+        return JSONResponse(
+            {
+                "code": "MISSING_LICENCE",
+                "detail": "This research is temporarily unavailable while data access rights are reviewed.",
+            },
+            status_code=503,
+        )
+
+    def require_result_rights(
+        request: Request, db: ResearchStore, job_ids: list[str], *, require_snapshot: bool = True
+    ) -> None:
+        if request.app.state.settings.money_auth_mode != "saas" or not job_ids:
+            return
+        # One bounded batch query, scoped by BOTH membership workspace and returned job IDs.
+        if len(job_ids) > 100:
+            raise AccountError("PAGE_REQUIRED", "Please use paginated research history", 400)
+        with db.engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(
+                        stored.snapshots.c.job_id, stored.snapshots.c.payload, stored.jobs.c.ticker
+                    )
+                    .join(stored.jobs, stored.jobs.c.id == stored.snapshots.c.job_id)
+                    .where(
+                        stored.jobs.c.workspace_id == db.workspace_id, stored.jobs.c.id.in_(job_ids)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        if require_snapshot and {row["job_id"] for row in rows} != set(job_ids):
+            raise CommercialLicenceError("MISSING_LICENCE")
+        config = request.app.state.settings
+        for row in rows:
+            require_snapshot_commercial_rights(
+                request.app.state.reference_catalog,
+                ResearchSnapshot.model_validate(row["payload"]),
+                allow_synthetic=(
+                    config.money_env in {"development", "test"}
+                    and config.money_enable_synthetic_demo
+                    and row["ticker"] == "DEMO.L"
+                ),
+            )
+
+    @application.exception_handler(EntitlementDenied)
+    @application.exception_handler(BillingUnavailable)
+    async def product_error(_: Request, error: Exception) -> JSONResponse:
+        status, payload = safe_product_error(error)
+        return JSONResponse(payload, status_code=status)
 
     @application.exception_handler(RequestValidationError)
     async def invalid_input(_: Request, error: RequestValidationError) -> JSONResponse:
@@ -268,6 +410,18 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
         body: CreateResearchJob, request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
         config: Settings = request.app.state.settings
+        if config.money_auth_mode == "saas":
+            if body.ticker == "DEMO.L" and (
+                config.money_env not in {"development", "test"}
+                or not config.money_enable_synthetic_demo
+            ):
+                raise AccountError(
+                    "DEMO_UNAVAILABLE", "The synthetic demonstration is unavailable", 503
+                )
+            if body.ticker != "DEMO.L" and config.money_research_mode != "live":
+                raise AccountError(
+                    "RESEARCH_UNAVAILABLE", "Live research qualification is unavailable", 503
+                )
         if (
             config.money_env == "production"
             and db.health(config.money_research_mode)["worker"] != "ready"
@@ -290,6 +444,13 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
                 rate_per_minute=config.money_enqueue_per_minute,
                 idempotency_key=key,
                 max_attempts=config.money_job_max_attempts,
+                admission=(
+                    lambda connection, job_id: ProductService(
+                        db, request.app.state.product_settings
+                    ).reserve_research(connection, job_id, current_principal(request), body.ticker)
+                )
+                if config.money_auth_mode == "saas"
+                else None,
             )
         except IdempotencyConflict as error:
             raise HTTPException(409, "Idempotency key conflicts with an earlier request") from error
@@ -309,39 +470,50 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
     ) -> dict[str, Any]:
         return {"jobs": db.list_jobs(limit)}
 
-    def require_job(db: ResearchStore, job_id: UUID) -> dict[str, Any]:
+    def require_job(request: Request, db: ResearchStore, job_id: UUID) -> dict[str, Any]:
         job = db.get_job(str(job_id))
         if job is None:
             raise HTTPException(404, "Research job not found")
+        require_result_rights(request, db, [str(job_id)], require_snapshot=bool(job.get("packet")))
         return job
 
     @application.get("/research/jobs/{job_id}")
-    def get_job(job_id: UUID, db: Annotated[ResearchStore, Depends(repository)]) -> dict[str, Any]:
-        return require_job(db, job_id)
+    def get_job(
+        job_id: UUID, request: Request, db: Annotated[ResearchStore, Depends(repository)]
+    ) -> dict[str, Any]:
+        return require_job(request, db, job_id)
 
     @application.get("/research/jobs/{job_id}/reports")
     def get_reports(
-        job_id: UUID, db: Annotated[ResearchStore, Depends(repository)]
+        job_id: UUID, request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
-        require_job(db, job_id)
+        require_job(request, db, job_id)
+        require_result_rights(request, db, [str(job_id)])
         return db.public_reports(str(job_id))
 
     @application.get("/research/jobs/{job_id}/evidence")
     def get_evidence(
-        job_id: UUID, db: Annotated[ResearchStore, Depends(repository)]
+        job_id: UUID, request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
-        require_job(db, job_id)
+        require_job(request, db, job_id)
+        require_result_rights(request, db, [str(job_id)])
         return db.get_evidence(str(job_id))
 
     @application.get("/research/signals")
     def signals(
-        db: Annotated[ResearchStore, Depends(repository)], expired: bool = False
+        request: Request, db: Annotated[ResearchStore, Depends(repository)], expired: bool = False
     ) -> dict[str, Any]:
-        return {"signals": db.list_signals(expired=expired)}
+        result = db.list_signals(expired=expired)
+        require_result_rights(request, db, [item["job_id"] for item in result])
+        return {"signals": result}
 
     @application.get("/research/outcomes")
-    def outcomes(db: Annotated[ResearchStore, Depends(repository)]) -> dict[str, Any]:
-        return {"outcomes": db.list_outcomes()}
+    def outcomes(
+        request: Request, db: Annotated[ResearchStore, Depends(repository)]
+    ) -> dict[str, Any]:
+        result = db.list_outcomes()
+        require_result_rights(request, db, [item["job_id"] for item in result])
+        return {"outcomes": result}
 
     @application.get("/research/alerts")
     def alerts(db: Annotated[ResearchStore, Depends(repository)]) -> dict[str, Any]:
@@ -350,18 +522,35 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
         return {"alerts": AlertOutbox(db).list_web()}
 
     @application.get("/research/discovery")
-    def discovery(db: Annotated[ResearchStore, Depends(repository)]) -> dict[str, Any]:
-        return {"candidates": db.list_discovery()}
+    def discovery(
+        request: Request, db: Annotated[ResearchStore, Depends(repository)]
+    ) -> dict[str, Any]:
+        result = db.list_discovery()
+        require_result_rights(request, db, [item["job_id"] for item in result])
+        return {"candidates": result}
 
     @application.get("/research/universe")
-    def universe(db: Annotated[ResearchStore, Depends(repository)]) -> dict[str, Any]:
-        return {"instruments": db.list_universe(), "coverage": "previously_researched_only"}
+    def universe(
+        request: Request, db: Annotated[ResearchStore, Depends(repository)]
+    ) -> dict[str, Any]:
+        result = db.list_universe()
+        require_result_rights(request, db, [item["job_id"] for item in result])
+        return {"instruments": result, "coverage": "previously_researched_only"}
 
     @application.get("/research/system")
     def system(
         request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
         config = request.app.state.settings
+        if config.money_auth_mode == "saas":
+            principal = current_principal(request)
+            principal.require_admin()
+            return {
+                **db.health(config.money_research_mode),
+                "version": config.money_version,
+                "environment": config.money_env,
+                "auth_mode": config.money_auth_mode,
+            }
         return {
             **db.health(config.money_research_mode),
             **db.operational_metrics(include_details=True),
@@ -402,9 +591,19 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
     def ready(request: Request, db: Annotated[ResearchStore, Depends(repository)]) -> JSONResponse:
         config = request.app.state.settings
         try:
+            if config.money_auth_mode == "saas":
+                with db.engine.connect() as connection:
+                    metrics = {
+                        "schema_revision": connection.scalar(
+                            text("SELECT version_num FROM alembic_version")
+                        )
+                        or "unknown"
+                    }
+            else:
+                metrics = db.operational_metrics()
             result = {
                 **db.health(config.money_research_mode),
-                **db.operational_metrics(),
+                **metrics,
                 "version": config.money_version,
                 "git_sha": config.money_git_sha,
                 "environment": config.money_env,

@@ -238,6 +238,27 @@ def test_supervisor_terminates_job_process_at_deadline(store: ResearchStore):
     assert result["packet"] is None
 
 
+def test_supervisor_cannot_spawn_before_durable_allowance_read(store: ResearchStore, monkeypatch):
+    from money import worker
+
+    job = store.create_job("DEMO.L", ResearchMandate())
+    claim = store.claim_job("allowance-check")
+    assert claim is not None
+
+    def unavailable():
+        raise RuntimeError("DATABASE_UNAVAILABLE")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store.engine, "connect", unavailable)
+        patch.setattr(
+            worker.multiprocessing, "get_context",
+            lambda *_: pytest.fail("Unbudgeted compute child was constructed"),
+        )
+        with pytest.raises(RuntimeError, match="DATABASE_UNAVAILABLE"):
+            supervise_job(store, config(store), claim, threading.Event())
+    assert store.get_job(job["id"])["packet"] is None
+
+
 def test_liveness_readiness_and_enqueue_idempotency_api(store: ResearchStore):
     with TestClient(create_app(config(store), store)) as client:
         assert client.get("/health/live").status_code == 200
@@ -245,7 +266,12 @@ def test_liveness_readiness_and_enqueue_idempotency_api(store: ResearchStore):
         store.heartbeat("ready-worker", "demo")
         ready = client.get("/health/ready")
         assert ready.status_code == 200
-        assert ready.json()["schema_revision"] in {"0002", "0003"}
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        assert ready.json()["schema_revision"] == ScriptDirectory.from_config(
+            Config("alembic.ini")
+        ).get_current_head()
         headers = {**HEADERS, "Idempotency-Key": "browser-retry"}
         first = client.post("/research/jobs", headers=headers, json={"ticker": "DEMO.L"})
         second = client.post("/research/jobs", headers=headers, json={"ticker": "DEMO.L"})

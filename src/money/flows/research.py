@@ -21,6 +21,7 @@ from money.adapters.eligibility import (
 from money.api.errors import classify_failure
 from money.crews.cross_examination import CrossExaminationPacket, run_cross_examination
 from money.policy.governance import consensus, evidence_independence, snapshot_failures
+from money.product.metering import CallMeter
 from money.research.budgets import BudgetLimits, BudgetReservation, TokenBudgetManager
 from money.scanner.discovery import discover_snapshot
 from money.schemas.contracts import (
@@ -113,13 +114,21 @@ def run_first_pass(
         raise ValueError("all three independent firms are required")
     if not sealed_firms <= FIRST_PASS_FIRMS:
         raise ValueError("unknown sealed firm")
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="money-first-pass") as pool:
-        futures = [
-            pool.submit(
-                firm.research,
+
+    def invoke(firm: FirstPassFirm) -> FirmReport:
+        def operation() -> FirmReport:
+            return firm.research(
                 ResearchMandate.model_validate_json(mandate.model_dump_json()),
                 ResearchSnapshot.model_validate_json(snapshot.model_dump_json()),
             )
+        reservation = (reservations or {}).get(getattr(firm, "firm", ""))
+        if budget and reservation:
+            return CallMeter(store).invoke_reserved(reservation, operation)
+        return operation()
+
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="money-first-pass") as pool:
+        futures = [
+            pool.submit(invoke, firm)
             for firm in firms
             if getattr(firm, "firm", None) not in sealed_firms
         ]
@@ -221,13 +230,19 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
             state=JobStatus.REJECTED,
         )
         return
-    candidate = (
-        Candidate.model_validate(artifacts["discovery"])
-        if "discovery" in artifacts
-        else runtime.discover(mandate, snapshot)
-        if runtime.discover
-        else discover_snapshot(snapshot)
-    )
+    if "discovery" in artifacts:
+        candidate = Candidate.model_validate(artifacts["discovery"])
+    elif runtime.discover is not None:
+        discovery = runtime.discover
+        candidate = (
+            CallMeter(store).invoke(
+                job_id, component="discovery", provider="money", model=None,
+                operation=lambda: discovery(mandate, snapshot),
+            )
+            if runtime.mode == "live" else discovery(mandate, snapshot)
+        )
+    else:
+        candidate = discover_snapshot(snapshot)
     if "discovery" not in artifacts:
         store.save_artifact(job_id, "discovery", candidate)
     if runtime.provenance is not None and "source_manifest" not in artifacts:
@@ -297,7 +312,13 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         lean = LeanValidationReport.model_validate(artifacts["lean"])
     else:
         store.update_stage(job_id, JobStatus.LEAN_VALIDATION)
-        lean = runtime.validate(snapshot, reports)
+        lean = (
+            CallMeter(store).invoke(
+                job_id, component="lean", provider="lean", model=None,
+                operation=lambda: runtime.validate(snapshot, reports),
+            )
+            if runtime.mode == "live" else runtime.validate(snapshot, reports)
+        )
         store.save_artifact(job_id, "lean", lean)
     if "audit" in artifacts:
         audit = CIOAuditReport.model_validate(artifacts["audit"])
@@ -322,7 +343,13 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
                     prompt_version="money-native-v1",
                 )
                 reservations[agent] = reservation
-        audit = runtime.audit(snapshot, locked_reports(job_id, store), lean)
+        def audit_operation() -> CIOAuditReport:
+            return runtime.audit(snapshot, locked_reports(job_id, store), lean)
+
+        audit = (
+            CallMeter(store).invoke_reserved(reservations["crewai"], audit_operation)
+            if budget and "crewai" in reservations else audit_operation()
+        )
         red_team = runtime.red_team(snapshot, reports)
         cio_runtime = runtime.cio_runtime() if runtime.cio_runtime else None
         store.save_cio_artifacts(job_id, audit, red_team, runtime=cio_runtime)

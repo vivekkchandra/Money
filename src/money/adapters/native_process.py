@@ -20,15 +20,17 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from money.adapters.native import NativeDeadline
+from money.adapters.native_isolation import install_dependency_restrictions
 from money.adapters.upstream import (
     InvalidUpstreamReport,
     UnsupportedSnapshotData,
     UpstreamUnavailable,
 )
 from money.data.security import ProviderFailure
+from money.research.call_telemetry import InferenceReceipt, capture_calls, emit_calls
 
 
 class ProviderEscapeDenied(PermissionError):
@@ -75,7 +77,9 @@ def _install_capability_guard(policy: NativeProcessPolicy, workdir: Path) -> Non
         return any(path.is_relative_to(root) for root in ((workdir,) if writing else read_roots))
 
     def guard(event: str, args: tuple[Any, ...]) -> None:
-        if event == "socket.getaddrinfo":
+        if event == "socket.bind":
+            raise ProviderEscapeDenied("native listener capability denied")
+        elif event == "socket.getaddrinfo":
             if str(args[0]).lower() not in allowed_hosts | allowed_addresses:
                 raise ProviderEscapeDenied("native DNS lookup outside configured inference gateway")
         elif event == "socket.connect":
@@ -107,6 +111,7 @@ def _install_capability_guard(policy: NativeProcessPolicy, workdir: Path) -> Non
             raise ProviderEscapeDenied("native filesystem links are not permitted")
 
     sys.addaudithook(guard)
+    install_dependency_restrictions(ProviderEscapeDenied)
 
 
 def _native_child(connection: Connection, runner: Callable[..., BaseModel],
@@ -124,11 +129,12 @@ def _native_child(connection: Connection, runner: Callable[..., BaseModel],
     sys.dont_write_bytecode = True
     os.chdir(workdir)
     # Native libraries may print raw responses or prompts; silence both channels.
-    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink), capture_calls() as calls:
         try:
             _install_capability_guard(policy, Path(workdir))
             result = runner(*arguments)
-            payload = json.dumps({"ok": True, "result": result.model_dump(mode="json")},
+            payload = json.dumps({"ok": True, "result": result.model_dump(mode="json"),
+                                  "calls": [call.model_dump(mode="json") for call in calls]},
                                  allow_nan=False).encode()
             if len(payload) > policy.maximum_output_bytes:
                 raise InvalidUpstreamReport("native report exceeds transport bound")
@@ -147,7 +153,8 @@ def _native_child(connection: Connection, runner: Callable[..., BaseModel],
             payload = json.dumps({"ok": False, "category": category,
                                   "failure_class": type(exc).__name__,
                                   "capability": str(exc) if isinstance(exc, ProviderEscapeDenied) else None,
-                                  "provider_code": provider_code, "retryable": provider_retryable}).encode()
+                                  "provider_code": provider_code, "retryable": provider_retryable,
+                                  "calls": [call.model_dump(mode="json") for call in calls]}).encode()
         connection.send_bytes(payload)
         connection.close()
 
@@ -174,6 +181,10 @@ class BoundedNativeRunner:
                 except (OSError, EOFError) as exc:
                     raise UpstreamUnavailable("native process returned no bounded report") from exc
                 payload = json.loads(raw)
+                receipts = payload.get("calls", [])
+                if not isinstance(receipts, list) or len(receipts) > 256:
+                    raise InvalidUpstreamReport("native call accounting exceeds transport bound")
+                emit_calls(TypeAdapter(list[InferenceReceipt]).validate_python(receipts))
                 if payload.get("ok") is not True:
                     if payload.get("provider_code") in {
                         "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED",

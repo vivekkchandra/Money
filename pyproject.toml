@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
     "apscheduler>=3.11.3",
-    "crewai[tools]>=1.15.21",
+    "cryptography==50.0.1",
     "duckdb>=1.5.5",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
@@ -35,6 +35,11 @@ dependencies = [
     "yfinance>=1.7.0",
 ]
 
+[project.optional-dependencies]
+# Native CIO belongs only in research compute, not the API/email/billing image.
+# Keep it in dev as well so plain `uv sync --locked` still runs real native tests.
+research = ["crewai[tools]>=1.15.21"]
+
 [project.scripts]
 money = "money:main"
 
@@ -44,6 +49,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "crewai[tools]>=1.15.21",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",

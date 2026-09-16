@@ -18,6 +18,7 @@ from money.crews.cross_examination import (
     ResponseCapability,
     run_cross_examination,
 )
+from money.product.metering import CallMeter
 from money.research.budgets import TokenBudgetManager
 from money.schemas.contracts import (
     CIOAuditReport,
@@ -87,7 +88,9 @@ class LiveCorrespondence:
                 selection.maximum_prompt_bytes + selection.max_output_tokens + 1024
             ), prompt_version="money-native-correspondence-v1",
         )
-        result = schema.model_validate_json(operation().model_dump_json())
+        result = schema.model_validate_json(
+            CallMeter(self.store).invoke_reserved(reservation, operation).model_dump_json()
+        )
         invocation = getattr(result, "invocation", None)
         if (invocation is None or invocation.runtime == "demo"
                 or invocation.component != component or invocation.provider != selection.provider

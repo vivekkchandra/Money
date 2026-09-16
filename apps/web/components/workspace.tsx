@@ -8,12 +8,14 @@ import { canonicalView } from "@/lib/routes";
 import { type SystemMetrics } from "@/lib/system";
 import { OperationalMetrics } from "./operational-metrics";
 import { CrossExamination } from "./cross-examination";
+import { Billing, CustomerToolbar, CustomerWatchlist, InternalAdmin, Notifications, ResearchHistory, TeamSettings, UsageSummary } from "./customer-tools";
 import { Badge, DataRecord, DataValue, EmptyState, FirmReportCard, Icon, JobList, SectionHeading } from "./primitives";
 
 const NAV = [
   ["", "Overview", "grid"], ["mandate", "Research mandate", "sliders"], ["universe", "Universe & eligibility", "grid"], ["discovery", "Candidate discovery", "search"], ["jobs", "Research jobs", "layers"],
   ["signals", "Research signals", "signal"], ["watch", "Watch list", "clock"], ["rejected", "Rejected & insufficient", "lock"], ["expired", "Expired research", "clock"], ["evidence", "Evidence explorer", "document"], ["outcomes", "Outcomes", "chart"], ["performance", "Performance & calibration", "chart"], ["health", "System health", "pulse"], ["settings", "Settings", "sliders"],
 ];
+const CUSTOMER_NAV = [["", "Overview", "grid"], ["jobs", "Research", "layers"], ["history", "Research history", "search"], ["watch", "Watchlist", "clock"], ["signals", "Research signals", "signal"], ["evidence", "Evidence explorer", "document"], ["outcomes", "Outcomes", "chart"], ["notifications", "Notifications", "clock"], ["mandate", "Research preferences", "sliders"], ["billing", "Plan & billing", "sliders"], ["team", "Team", "grid"], ["account", "Account", "lock"]];
 const TITLES: Record<string, [string, string]> = {
   "": ["A clearer view. An independent perspective.", "Your research workspace"],
   mandate: ["Define the boundaries.", "Research mandate"],
@@ -30,6 +32,11 @@ const TITLES: Record<string, [string, string]> = {
   evidence: ["Every conclusion has a source.", "Evidence explorer"],
   performance: ["Confidence must be earned.", "Performance & calibration"],
   settings: ["A workspace with clear boundaries.", "Settings"],
+  billing: ["A plan for your research.", "Plan & billing"],
+  history: ["Your research, ready when you return.", "Research history"],
+  notifications: ["Stay informed.", "Notifications"],
+  team: ["Independent research. Shared workspace.", "Team settings"],
+  admin: ["Service operations.", "Internal administration"],
 };
 
 function useResource<T>(path: string | null, refresh = 0, poll = false) {
@@ -55,7 +62,7 @@ function useResource<T>(path: string | null, refresh = 0, poll = false) {
   return { data: loadedPath === path ? data : null, error: loadedPath === path ? error : null, loading: !!path && loadedPath !== path };
 }
 
-export function Workspace({ view: requestedView }: { view: string[] }) {
+export function Workspace({ view: requestedView, commercial = false }: { view: string[]; commercial?: boolean }) {
   const view = canonicalView(requestedView);
   const page = view[0] ?? "";
   const [revision, setRevision] = useState(0);
@@ -80,9 +87,9 @@ export function Workspace({ view: requestedView }: { view: string[] }) {
     <aside className="sidebar">
       <Link href="/" className="brand" aria-label="Money home"><span className="brand-symbol">m<span>·</span></span><span>money<span className="brand-period">.</span></span></Link>
       <p className="sidebar-caption">INDEPENDENT BY DESIGN</p>
-      <div className="workspace-label"><span className="workspace-avatar">P</span><div>Personal workspace<small>UK equity research</small></div><Icon name="lock" size={15} /></div>
+      <div className="workspace-label"><span className="workspace-avatar">P</span><div>{commercial ? "Research workspace" : "Personal workspace"}<small>UK equity research</small></div><Icon name="lock" size={15} /></div>
       <p className="nav-label">WORKSPACE</p>
-      <nav aria-label="Main navigation">{NAV.map(([path, label, icon], index) => <Link href={`/${path}`} key={label} className={`nav-link ${page === path || (page === "research" && path === "jobs") ? "selected" : ""} ${index === 4 ? "nav-divider" : ""}`} aria-current={page === path ? "page" : undefined}><Icon name={icon} size={18} /><span>{label}</span>{path === "jobs" && active.length > 0 && <span className="nav-count">{active.length}</span>}</Link>)}</nav>
+      <nav aria-label="Main navigation">{(commercial ? CUSTOMER_NAV : NAV).map(([path, label, icon], index) => <Link href={`/${path || "dashboard"}`} key={label} className={`nav-link ${page === path || (page === "research" && path === "jobs") ? "selected" : ""} ${index === 4 ? "nav-divider" : ""}`} aria-current={page === path ? "page" : undefined}><Icon name={icon} size={18} /><span>{label}</span>{path === "jobs" && active.length > 0 && <span className="nav-count">{active.length}</span>}</Link>)}</nav>
       <div className="sidebar-bottom"><div className="manual-note"><Icon name="lock" size={18} /><div><strong>Your decisions. Always.</strong><p>Evidence and perspective.<br />Every investment decision stays yours.</p></div></div><div className="sidebar-footer"><span className="status-dot" />Research workspace<span>v0.1</span></div></div>
     </aside>
     <div className="main-column">
@@ -90,15 +97,21 @@ export function Workspace({ view: requestedView }: { view: string[] }) {
       <main id="main">
         <div className="page-heading"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div><span className="research-only"><Icon name="lock" size={14} />Research only</span></div>
         {sessionNotice && <div className="notice" role="status">{sessionNotice}</div>}
-        {session.loading ? <div className="notice" role="status">Opening your workspace…</div> : !authenticated ? <SignIn configured={session.data?.configured === true} error={session.error} onSuccess={() => { setSessionNotice(null); refresh(); }} /> : <>
+        {session.loading ? <div className="notice" role="status">Opening your workspace…</div> : !authenticated ? commercial ? <section className="panel"><h2>Welcome to your research workspace.</h2><p>{session.error ?? "Sign in to continue your investigations and inspect your saved research."}</p><Link className="button" href="/login">Sign in</Link> <Link className="text-button" href="/signup">Create an account</Link></section> : <SignIn configured={session.data?.configured === true} error={session.error} onSuccess={() => { setSessionNotice(null); refresh(); }} /> : <>
+          {commercial && <CustomerToolbar />}
           {jobsResource.error && <div className="notice error" role="alert">{jobsResource.error}<button onClick={refresh}>Retry</button></div>}
           {health.data?.mode === "demo" && <div className="notice demo"><strong>Demonstration environment</strong> Research uses synthetic fixtures. Use DEMO.L to explore the workflow. Reports are not live firm research or investment opportunities.</div>}
-          {page === "" && (jobsResource.loading ? <div className="notice" role="status">Loading saved investigations…</div> : <Dashboard jobs={jobs} active={active} health={health.data} onCreated={refresh} />)}
-          {page === "mandate" && <MandateEditor />}
-          {page === "jobs" && <><ResearchRequest onCreated={refresh} /><section className="panel"><SectionHeading title="Research activity" action={<button className="text-button" onClick={refresh}>Refresh <Icon name="arrow" size={15} /></button>} /><JobList jobs={jobs} /></section></>}
+          {page === "" && <>{commercial && <UsageSummary />}{jobsResource.loading ? <div className="notice" role="status">Loading saved investigations…</div> : <Dashboard jobs={jobs} active={active} health={health.data} onCreated={refresh} commercial={commercial} />}</>}
+          {page === "mandate" && <MandateEditor commercial={commercial} />}
+          {page === "jobs" && <><ResearchRequest onCreated={refresh} commercial={commercial} /><section className="panel"><SectionHeading title="Research activity" action={<button className="text-button" onClick={refresh}>Refresh <Icon name="arrow" size={15} /></button>} /><JobList jobs={jobs} /></section></>}
           {page === "research" && <ResearchDetail key={`${view[1]}-${view[2]}`} id={view[1]} section={view[2]} revision={revision} onRefresh={refresh} />}
           {page === "universe" && <Universe revision={revision} onRefresh={refresh} />}
-          {(page === "watch" || page === "rejected") && <ResearchCollection jobs={jobs} kind={page} loading={jobsResource.loading} />}
+          {(page === "watch" || page === "rejected") && (commercial && page === "watch" ? <CustomerWatchlist /> : <ResearchCollection jobs={jobs} kind={page} loading={jobsResource.loading} />)}
+          {commercial && page === "history" && <ResearchHistory />}
+          {commercial && page === "billing" && <Billing />}
+          {commercial && page === "notifications" && <Notifications />}
+          {commercial && page === "team" && <TeamSettings />}
+          {commercial && page === "admin" && <InternalAdmin />}
           {page === "evidence" && <EvidenceExplorer jobs={jobs} loading={jobsResource.loading} />}
           {page === "discovery" && <Discovery revision={revision} />}
           {(page === "signals" || page === "expired") && <Signals expired={page === "expired"} revision={revision} />}
@@ -127,13 +140,13 @@ function SignIn({ configured, error, onSuccess }: { configured: boolean; error: 
   return <div className="welcome-grid"><section className="welcome-hero"><p className="eyebrow">A RESEARCH COLLECTIVE</p><h2>More perspectives.<br />Better questions.</h2><p>Three independent firms investigate the same evidence. A validation laboratory tests their hypotheses. A separate investment office challenges the conclusions.</p><div className="firm-tokens"><span>TradingAgents</span><span>ai-hedge-fund</span><span>Qlib</span></div><div className="welcome-line"><Icon name="lock" size={17} />Shared facts. Independent opinions.</div></section><section className="panel sign-in"><span className="empty-icon"><Icon name="lock" size={25} /></span><h2>Your private research workspace</h2><p className="muted">Sign in to review evidence, follow research and investigate new ideas.</p>{configured ? <form onSubmit={submit}><label htmlFor="password">Workspace password</label><input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={512} /><button className="button full-width" disabled={pending}>{pending ? "Signing in…" : "Open workspace"}<Icon name="arrow" size={17} /></button></form> : <div className="notice">{error ?? "This workspace is awaiting secure configuration. Research access will become available once the workspace owner completes setup."}</div>}{message && <p className="form-error" role="alert">{message}</p>}<p className="small-print">Trading 212 provides an eligibility constraint only. Money never accesses your portfolio or executes trades.</p></section></div>;
 }
 
-function Dashboard({ jobs, active, health, onCreated }: { jobs: Job[]; active: Job[]; health: Health | null; onCreated: () => void }) {
+function Dashboard({ jobs, active, health, onCreated, commercial = false }: { jobs: Job[]; active: Job[]; health: Health | null; onCreated: () => void; commercial?: boolean }) {
   return <>
     <section className="overview-hero"><div><p className="eyebrow">YOUR RESEARCH, WITH PERSPECTIVE</p><h2>Conviction begins<br />with better evidence.</h2><p>Independent analysis. A rigorous challenge.<br />Space for your own judgement.</p><Link href="/jobs" className="button light">Start researching<Icon name="arrow" size={17} /></Link></div><div className="research-orbit" aria-label="Three independent firms feed a shared audit"><span className="orbit-center">m<span>·</span></span><span className="orbit-node node-one">TradingAgents<small>RESEARCH FIRM A</small></span><span className="orbit-node node-two">ai-hedge-fund<small>RESEARCH FIRM B</small></span><span className="orbit-node node-three">Qlib<small>QUANT FIRM C</small></span><span className="orbit-caption">INDEPENDENT PERSPECTIVES · SHARED FACTS</span></div></section>
     <div className="stats-grid"><Stat label="Active research" value={String(active.length).padStart(2, "0")} note="Independent investigations" icon="layers" /><Stat label="Completed reviews" value={String(jobs.filter((job) => job.status === "COMPLETE").length).padStart(2, "0")} note="Research records, not endorsements" icon="document" /><Stat label="Capital assumption" value="£200" note="Maximum · research only" icon="sliders" /><Stat label="Research horizon" value="1–30" note="Days · short-horizon evidence" icon="clock" /></div>
     <div className="content-grid"><section className="panel"><SectionHeading kicker="THE RESEARCH DESK" title="Recent investigations" action={<Link className="text-button" href="/jobs">View all <Icon name="arrow" size={15} /></Link>} /><JobList jobs={jobs.slice(0, 5)} /></section><section className="panel mandate-summary"><p className="eyebrow">YOUR NORTH STAR</p><h2>A focused mandate.</h2><div className="mandate-line"><span>Universe</span><strong>Trading 212 ISA</strong></div><div className="mandate-line"><span>Instruments</span><strong>Individual stocks</strong></div><div className="mandate-line"><span>Quote currency</span><strong>GBP / GBX</strong></div><div className="ethical-note"><Icon name="check" size={17} /><span>Defence, weapons and oil activities excluded.</span></div><Link href="/mandate" className="text-button">Review mandate <Icon name="arrow" size={15} /></Link></section></div>
-    <ResearchRequest onCreated={onCreated} />
-    <Alerts />
+    <ResearchRequest onCreated={onCreated} commercial={commercial} />
+    {!commercial && <Alerts />}
     <section className="protocol-panel"><div><p className="eyebrow">HOW MONEY THINKS</p><h2>Agreement is only the beginning.</h2><p>Research reaches you after independent analysis, historical validation and an adversarial review.</p></div><div className="protocol-steps"><span><b>01</b>Shared evidence</span><span><b>02</b>Blind research</span><span><b>03</b>Lock & challenge</span><span><b>04</b>Evidence consensus</span></div></section>
     {health && <p className="connection-note"><span className="status-dot" /> Research service: {health.status} · {health.mode} environment</p>}
   </>;
@@ -151,16 +164,18 @@ function loadMandate(): Mandate {
   return { ...DEFAULT_MANDATE };
 }
 
-function ResearchRequest({ onCreated }: { onCreated: () => void }) {
+function ResearchRequest({ onCreated, commercial = false }: { onCreated: () => void; commercial?: boolean }) {
   const [ticker, setTicker] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Job | null>(null);
   const requestIdentity = useRef<{ body: string; key: string } | null>(null);
+  useEffect(() => { const requested = new URLSearchParams(window.location.search).get("ticker"); if (requested && /^[A-Za-z0-9][A-Za-z0-9._-]{0,23}$/.test(requested)) { const timer = setTimeout(() => setTicker(requested), 0); return () => clearTimeout(timer); } }, []);
   async function submit(event: FormEvent) {
     event.preventDefault(); setPending(true); setError(null); setCreated(null);
     try {
-      const body = JSON.stringify({ ticker: ticker.trim().toUpperCase(), mandate: loadMandate() });
+      const mandate = commercial ? (await api<{ mandate: Mandate }>("/api/product/preferences")).mandate : loadMandate();
+      const body = JSON.stringify({ ticker: ticker.trim().toUpperCase(), mandate });
       if (requestIdentity.current?.body !== body) requestIdentity.current = { body, key: crypto.randomUUID() };
       const job = await api<Job>("/api/research", { method: "POST", headers: { "Idempotency-Key": requestIdentity.current.key }, body });
       requestIdentity.current = null; setCreated(job); setTicker(""); onCreated();
@@ -171,12 +186,14 @@ function ResearchRequest({ onCreated }: { onCreated: () => void }) {
   return <section className="request-panel"><div><p className="eyebrow">FOLLOW YOUR CURIOSITY</p><h2>What are you researching?</h2><p>Start with a ticker. Money checks the mandate before investigating.</p></div><form onSubmit={submit}><label className="sr-only" htmlFor="ticker">Stock ticker</label><div className="request-input"><Icon name="search" size={19} /><input id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value)} placeholder="Stock ticker, e.g. XYZ.L" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,23}" required maxLength={24} autoComplete="off" /><button className="button" disabled={pending}>{pending ? "Creating…" : "Request research"}<Icon name="plus" size={16} /></button></div>{error && <p className="form-error" role="alert">{error}</p>}{created && <p className="form-success" role="status">Research queued. <Link href={`/research/${created.id}`}>Follow {created.ticker} →</Link></p>}</form></section>;
 }
 
-function MandateEditor() {
+function MandateEditor({ commercial = false }: { commercial?: boolean }) {
   const [mandate, setMandate] = useState<Mandate>({ ...DEFAULT_MANDATE });
   const [saved, setSaved] = useState(false);
-  useEffect(() => { const timer = setTimeout(() => setMandate(loadMandate()), 0); return () => clearTimeout(timer); }, []);
-  function save(event: FormEvent) { event.preventDefault(); localStorage.setItem("money.mandate", JSON.stringify(mandate)); setSaved(true); }
-  return <div className="content-grid"><section className="panel form-panel"><SectionHeading kicker="RESEARCH CONSTRAINTS" title="Your research mandate" /><form onSubmit={save}><div className="field-grid"><div><label htmlFor="capital">Maximum assumed capital (£)</label><input id="capital" type="number" min="1" max="200" step="0.01" value={mandate.maximum_capital_gbp} onChange={(e) => { setSaved(false); setMandate({ ...mandate, maximum_capital_gbp: e.target.value }); }} /><small>Never more than £200. No portfolio access.</small></div><div><label htmlFor="minimum">Minimum horizon (days)</label><input id="minimum" type="number" min="1" max={mandate.maximum_horizon_days} value={mandate.minimum_horizon_days} onChange={(e) => { setSaved(false); setMandate({ ...mandate, minimum_horizon_days: Number(e.target.value) }); }} /></div><div><label htmlFor="maximum">Maximum horizon (days)</label><input id="maximum" type="number" min={mandate.minimum_horizon_days} max="30" value={mandate.maximum_horizon_days} onChange={(e) => { setSaved(false); setMandate({ ...mandate, maximum_horizon_days: Number(e.target.value) }); }} /></div></div><div className="fixed-policy"><span className="type-label fact">FACT / MANDATE</span><h3>Eligibility and ethical boundaries</h3><p>Trading 212 Stocks & Shares ISA · Individual stocks · GBP or GBX</p><div className="chips">{DEFAULT_MANDATE.excluded_activities.map((activity) => <span key={activity}>{humanize(activity)}</span>)}</div></div><div className="notice"><strong>£1,000 stretch objective</strong><span>Aspirational only. It cannot increase capital, weaken evidence standards or loosen risk limits.</span></div><button className="button" type="submit">Save mandate draft <Icon name="check" size={16} /></button>{saved && <span className="saved-message" role="status">Draft saved in this browser</span>}<p className="small-print">This browser draft is applied to new research requests. Each job stores its own immutable mandate version in the research database.</p></form></section><section className="panel side-note"><Icon name="lock" size={24} /><h2>Boundaries are part of the research.</h2><p>Unknown eligibility, prohibited business activities, stale critical evidence or a currency outside the mandate stop a candidate from progressing.</p><p>Enthusiasm cannot override these gates.</p></section></div>;
+  const [researchEmail, setResearchEmail] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { let active = true; if (commercial) { api<{ mandate: Mandate; research_email: boolean }>("/api/product/preferences").then((result) => { if (active) { setMandate(result.mandate); setResearchEmail(result.research_email); } }).catch((reason) => { if (active) setError(reason.message); }); return () => { active = false; }; } const timer = setTimeout(() => setMandate(loadMandate()), 0); return () => clearTimeout(timer); }, [commercial]);
+  async function save(event: FormEvent) { event.preventDefault(); setError(null); try { if (commercial) await api("/api/product/preferences", { method: "PUT", body: JSON.stringify({ mandate, research_email: researchEmail }) }); else localStorage.setItem("money.mandate", JSON.stringify(mandate)); setSaved(true); } catch (reason) { setError(reason instanceof Error ? reason.message : "Preferences could not be saved."); } }
+return <div className="content-grid"><section className="panel form-panel"><SectionHeading kicker="RESEARCH CONSTRAINTS" title="Your research mandate" /><form onSubmit={save}><div className="field-grid"><div><label htmlFor="capital">Maximum assumed capital (£)</label><input id="capital" type="number" min="1" max="200" step="0.01" value={mandate.maximum_capital_gbp} onChange={(e) => { setSaved(false); setMandate({ ...mandate, maximum_capital_gbp: e.target.value }); }} /><small>Never more than £200. No portfolio access.</small></div><div><label htmlFor="minimum">Minimum horizon (days)</label><input id="minimum" type="number" min="1" max={mandate.maximum_horizon_days} value={mandate.minimum_horizon_days} onChange={(e) => { setSaved(false); setMandate({ ...mandate, minimum_horizon_days: Number(e.target.value) }); }} /></div><div><label htmlFor="maximum">Maximum horizon (days)</label><input id="maximum" type="number" min={mandate.minimum_horizon_days} max="30" value={mandate.maximum_horizon_days} onChange={(e) => { setSaved(false); setMandate({ ...mandate, maximum_horizon_days: Number(e.target.value) }); }} /></div></div><div className="fixed-policy"><span className="type-label fact">FACT / MANDATE</span><h3>Eligibility and ethical boundaries</h3><p>Trading 212 Stocks & Shares ISA · Individual stocks · GBP or GBX</p><div className="chips">{DEFAULT_MANDATE.excluded_activities.map((activity) => <span key={activity}>{humanize(activity)}</span>)}</div></div><div className="notice"><strong>£1,000 stretch objective</strong><span>Aspirational only. It cannot increase capital, weaken evidence standards or loosen risk limits.</span></div>{commercial && <label className="checkbox-label"><input type="checkbox" checked={researchEmail} onChange={(event) => { setResearchEmail(event.target.checked); setSaved(false); }} /><span>Email workspace research updates</span></label>}<button className="button" type="submit">{commercial ? "Save workspace preferences" : "Save mandate draft"} <Icon name="check" size={16} /></button>{saved && <span className="saved-message" role="status">{commercial ? "Saved to your workspace" : "Draft saved in this browser"}</span>}{error && <p className="form-error" role="alert">{error}</p>}<p className="small-print">{commercial ? "Workspace preferences are stored securely and applied to new research requests." : "This browser draft is applied to new research requests."} Each job retains its own immutable mandate.</p></form></section><section className="panel side-note"><Icon name="lock" size={24} /><h2>Boundaries are part of the research.</h2><p>Unknown eligibility, prohibited business activities, stale critical evidence or a currency outside the mandate stop a candidate from progressing.</p><p>Enthusiasm cannot override these gates.</p></section></div>;
 }
 
 const RESEARCH_TABS = [["firms", "Independent firms"], ["audit", "CIO & Red Team"], ["cross-examination", "Cross-examination"], ["evidence", "Evidence & sources"], ["decision", "Money research state"]];

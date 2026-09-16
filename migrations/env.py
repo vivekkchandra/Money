@@ -5,6 +5,9 @@ import os
 from alembic import context
 from sqlalchemy import create_engine, text
 
+from money.accounts import models as account_models  # noqa: F401 - register customer tables
+from money.product import metering  # noqa: F401 - register append-only call receipts
+from money.product import models as product_models  # noqa: F401
 from money.storage import production_models  # noqa: F401 - register operational tables
 from money.storage.models import metadata
 
@@ -38,10 +41,12 @@ else:
                 # transaction releases its lock; no manual lock cleanup is needed.
                 connection.execute(text("SET LOCAL lock_timeout = '30s'"))
                 connection.execute(text("SET LOCAL statement_timeout = '300s'"))
-                connection.execute(text(
-                    "SELECT pg_advisory_xact_lock(hashtext(current_database()), "
-                    "hashtext(current_schema()))"
-                ))
+                connection.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock(hashtext(current_database()), "
+                        "hashtext(current_schema()))"
+                    )
+                )
             context.configure(connection=connection, target_metadata=metadata)
             with context.begin_transaction():
                 context.run_migrations()

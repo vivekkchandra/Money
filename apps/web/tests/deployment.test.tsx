@@ -33,6 +33,8 @@ describe("supported production product routes", () => {
     [["research"], "jobs", "Research jobs"],
     [["system"], "health", "System health"],
     [["health"], "health", "System health"],
+    [["plans"], "billing", "A plan for your research."],
+    [["history"], "history", "Research history"],
   ] as const)("renders %j without requiring a backend", (view, marker, title) => {
     const html = renderToStaticMarkup(<Workspace view={[...view]} />);
     expect(html).toContain(`data-money-page="${marker}"`);
@@ -55,7 +57,7 @@ describe("read-only deployed HTTP acceptance", () => {
     expect(result.backend_status).toBe("NOT_PROBED_WITHOUT_AUTHENTICATION");
     expect(result.assets).toEqual({ javascript: 1, stylesheets: 1 });
     expect(result.research_readiness).toBe("NOT_QUALIFIED_BY_WEB_CHECK");
-    expect(fetchImpl.mock.calls).toHaveLength(10);
+    expect(fetchImpl.mock.calls).toHaveLength(ROUTES.length + 6);
     expect(fetchImpl.mock.calls.every(([url]) => new URL(String(url)).origin === origin)).toBe(true);
   });
   it("recognizes generic Netlify 404 content, including a misleading HTTP 200", async () => {

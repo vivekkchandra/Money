@@ -118,6 +118,47 @@ class TokenBudgetManager:
                 raise ValueError("BUDGET_IDEMPOTENCY_CONFLICT")
             # Reusing an invocation identity must never initiate a second paid call.
             raise ValueError("BUDGET_INVOCATION_ALREADY_RESERVED")
+        # SaaS jobs carry an immutable admission record. Private jobs have none.
+        from money.product.models import usage_records
+        from money.reference import load_reference_catalog
+
+        admission = (
+            connection.execute(select(usage_records).where(usage_records.c.job_id == job_id))
+            .mappings()
+            .first()
+        )
+        if admission:
+            from money.storage.store import aware
+
+            if aware(admission["period_end"]) <= now:
+                raise ValueError("TOKEN_BUDGET_EXCEEDED")
+            charged_tokens = func.coalesce(
+                reservations.c.actual_tokens, reservations.c.reserved_tokens
+            )
+            job_used = (
+                connection.scalar(
+                    select(func.coalesce(func.sum(charged_tokens), 0)).where(
+                        reservations.c.job_id == job_id
+                    )
+                )
+                or 0
+            )
+            period_used = (
+                connection.scalar(
+                    select(func.coalesce(func.sum(charged_tokens), 0)).where(
+                        reservations.c.workspace_id == job["workspace_id"],
+                        reservations.c.created_at >= admission["period_start"],
+                        reservations.c.created_at < admission["period_end"],
+                    )
+                )
+                or 0
+            )
+            plan = load_reference_catalog().plan(admission["plan"])
+            if (
+                job_used + maximum_tokens > admission["max_tokens"]
+                or period_used + maximum_tokens > plan.monthly_tokens
+            ):
+                raise ValueError("TOKEN_BUDGET_EXCEEDED")
         charged = func.coalesce(reservations.c.actual_tokens, reservations.c.reserved_tokens)
         scopes: list[tuple[Any, int]] = [
             (reservations.c.job_id == job_id, self.limits.per_job),
@@ -212,11 +253,16 @@ class TokenBudgetManager:
                     artifacts.c.payload["usage"].label("usage"),
                 ).where(artifacts.c.job_id == job_id, artifacts.c.kind.startswith("cross_call_"))
             ):
-                reservation = connection.execute(
-                    select(reservations).where(
-                        reservations.c.id == call.reservation_id, reservations.c.job_id == job_id
+                reservation = (
+                    connection.execute(
+                        select(reservations).where(
+                            reservations.c.id == call.reservation_id,
+                            reservations.c.job_id == job_id,
+                        )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
                 self._settle(connection, reservation, Usage.model_validate(call.usage or {}))
             for agent, usage in sealed_usage.items():
                 row = (
@@ -225,9 +271,8 @@ class TokenBudgetManager:
                         .where(
                             reservations.c.job_id == job_id,
                             reservations.c.agent == agent,
-                            reservations.c.stage == (
-                                "CREWAI_AUDIT" if agent == "crewai" else "FIRST_PASS_RESEARCH"
-                            ),
+                            reservations.c.stage
+                            == ("CREWAI_AUDIT" if agent == "crewai" else "FIRST_PASS_RESEARCH"),
                         )
                         .order_by(reservations.c.created_at.desc(), reservations.c.id.desc())
                         .limit(1)
@@ -259,11 +304,15 @@ class TokenBudgetManager:
                 payload=dict(
                     row["payload"],
                     usage=serialized_usage,
-                    cost_status="known" if usage.cost_gbp is not None else "unknown",
+                    cost_status="estimated" if usage.cost_gbp is not None else "unknown",
                     overrun=actual is not None and actual > row["reserved_tokens"],
                 ),
             )
         )
+        from money.product.metering import record_reported_usage
+
+        job = connection.execute(select(jobs).where(jobs.c.id == row["job_id"])).mappings().one()
+        record_reported_usage(connection, row, usage, job)
 
 
 def research_depth(

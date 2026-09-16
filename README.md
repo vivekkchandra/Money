@@ -7,6 +7,22 @@ remain manual.
 
 ## Implemented product
 
+Commercial customer mode (`MONEY_AUTH_MODE=saas`) adds accounts and email
+verification, password reset, workspaces/roles/invitations, session-derived tenant
+access, subscription entitlements, transactional usage admission, Stripe checkout
+and durable webhook reconciliation, encrypted transactional email, watchlists,
+paginated history and notifications. The web root is a product website; customer
+onboarding and independent research records are separate application screens.
+
+Git reference tables remain Git assets. Schema/provenance/checksum validation runs
+at startup and in CI; mutable accounts, billing and research stay in PostgreSQL.
+Commercial rights are denied until reviewed, including when reading saved evidence.
+See [commercial deployment](docs/COMMERCIAL_DEPLOYMENT.md),
+[environment](docs/ENVIRONMENT.md), [data tables](docs/DATA_TABLES.md) and
+[security](SECURITY.md). These implemented paths are **not a commercial launch
+qualification**: live web/backend, SMTP, payment lifecycle, PostgreSQL recovery,
+monitoring, legal approval and licensed native research must pass acceptance.
+
 - Immutable mandates, objective snapshots and provider provenance with point-in-time checks.
 - ISA/ethics/currency gates, isolated first-pass inputs, write-once reports and a durable three-firm barrier.
 - Workspace-scoped submission, durable sessions/rate limits/idempotency, bounded retries, leased/fenced workers, checkpoint recovery and immutable decision packets.
@@ -21,6 +37,11 @@ It is clearly labelled synthetic, does not run the upstream firms, and finishes
 with **INSUFFICIENT_EVIDENCE** because real LEAN validation is absent. Production
 forbids demo mode. Unconfigured eligibility rejects a candidate; missing evidence
 or a runner never becomes an investment signal.
+
+Development/test commercial mode can enable synthetic-only `DEMO.L` admission with
+`MONEY_ENABLE_SYNTHETIC_DEMO=true`, through the durable worker. This cannot enable
+live research, consume inference tokens, or replace a failed real integration.
+Both production and preview reject this flag, including access to synthetic results.
 
 **PRODUCTION BLOCKED.** Implemented adapters are not qualified live integrations.
 Credentials/licences, verified ISA/business evidence, historical PIT archives,
@@ -64,6 +85,7 @@ uv run pytest
 uv run ruff check .
 uv run mypy src/money
 uv run python scripts/check_deployment.py
+uv run python scripts/validate_data_tables.py
 npm run lint --prefix apps/web
 npm run typecheck --prefix apps/web
 npm test --prefix apps/web

@@ -109,8 +109,17 @@ def _compute_process(settings: Settings, claim: Claim) -> None:
         from money.flows.research import build_runtime
 
         try:
+            job = store.get_job(claim.job_id)
+            selected_mode = settings.money_research_mode
+            if settings.money_auth_mode == "saas" and job and job["ticker"] == "DEMO.L":
+                if (
+                    settings.money_env not in {"development", "test"}
+                    or not settings.money_enable_synthetic_demo
+                ):
+                    raise ValueError("SYNTHETIC_DEMO_DISABLED")
+                selected_mode = "demo"
             runtime = build_runtime(
-                settings.money_research_mode,
+                selected_mode,
                 store=store.for_claim(claim),
                 live_manifest=settings.money_live_manifest,
                 manifest_hash=settings.money_live_manifest_sha256,
@@ -139,12 +148,24 @@ def supervise_job(
     store: ResearchStore, settings: Settings, claim: Claim, stop: threading.Event
 ) -> None:
     """Bound whole-job wall time, including hangs in upstream threads/native libraries."""
+    from sqlalchemy import select
+
+    from money.product.models import usage_records
+
+    with store.engine.connect() as connection:
+        allowance = connection.scalar(
+            select(usage_records.c.max_seconds).where(usage_records.c.job_id == claim.job_id)
+        )
+    # Resolve the durable allowance before any child can execute paid work. A
+    # database failure must not leave a child outside the cleanup boundary.
     process = multiprocessing.get_context("spawn").Process(
         target=_compute_process, args=(settings, claim), name="money-research-job"
     )
-    process.start()
-    deadline = time.monotonic() + settings.money_job_timeout_seconds
+    deadline = time.monotonic() + min(
+        settings.money_job_timeout_seconds, allowance or settings.money_job_timeout_seconds
+    )
     try:
+        process.start()
         while process.is_alive() and not stop.is_set() and time.monotonic() < deadline:
             process.join(timeout=1)
         if process.is_alive():

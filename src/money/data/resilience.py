@@ -60,7 +60,17 @@ class ProviderCircuit:
                 generation = row["payload"].get("generation", 0)
         started = monotonic()
         try:
-            result = operation()
+            if self.store.claim is not None:
+                from money.product.metering import CallMeter
+
+                provider_name, _, dataset = provider.partition(":")
+                result = CallMeter(self.store).invoke(
+                    self.store.claim.job_id, component=dataset or "fetch",
+                    provider=provider_name, model=None, operation=operation,
+                    kind="PROVIDER_OPERATION",
+                )
+            else:
+                result = operation()
         except Exception:
             self._record(provider, False, monotonic() - started, generation)
             raise

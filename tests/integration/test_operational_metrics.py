@@ -110,6 +110,9 @@ def test_metrics_are_scoped_and_unknown_usage_is_not_free(store: ResearchStore):
         "budget_charged_tokens": 160,
     }
     assert Decimal(result["costs"]["known_total"]) == Decimal("0.25")
+    assert result["costs"]["basis"] == "ESTIMATED_OR_UNVERIFIED_REPORT"
+    assert result["costs"]["actual_total"] is None
+    assert result["costs"]["actual_count"] == 0
     assert result["costs"]["known_count"] == 1
     assert result["costs"]["unknown_count"] == 2
     assert result["signals"]["insufficient_evidence"] == 1

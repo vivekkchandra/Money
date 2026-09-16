@@ -181,3 +181,27 @@ Final follow-up `graphify update .`: **1868 nodes, 5477 edges, 135 communities**
 The AST-only update required no API key/LLM. Graphify retained a curated backup;
 its pre-existing installed skill/package warning and optional label-refresh
 suggestion do not authorize global or upstream changes.
+# Commercial product extension (2026-09-16)
+
+- Question: where do private sessions become scoped research-store capabilities?
+  Graph: Money `graphify-out/graph.json`; query vocabulary `session workspace
+  settings store` (700 tokens), then narrowed auth/API lookups. Symbols:
+  `create_app`, `Settings`, `ResearchStore.for_workspace`, `create_job`.
+  Inspected only Money API/settings/store/models and web session/proxy seams.
+  Decision: keep queue/report/worker contracts; add backend-verified account
+  Principal and a second customer-session credential behind the web service token.
+- Question: where should commercial quota admission and immutable Git reference
+  data attach? Existing `create_job` transaction and token reservation seam.
+  Decision: transactional admission callback after idempotency checks; reference
+  catalog loaded read-only at startup and from explicitly mounted wheel assets.
+- No upstream source or graphs were changed for this commercial extension.
+# Release security investigation — 2026-09-16
+
+- Question: does Money's CIO require Chroma persistence, and where can unused capabilities be denied without replacing CrewAI?
+- Graphs/queries: Money `CrewAINativeRunner NativeProcessPolicy` (650 tokens); pinned CrewAI `ChromaDBClient KnowledgeStorage LanceDBStorage` (700 tokens).
+- Minimal upstream inspection: `knowledge/storage/knowledge_storage.py:1–100`, `rag/chromadb/client.py:1–100`; upstreams unchanged.
+- Seam/decision: keep native CrewAI Flow and memory-disabled tasks; Money-owned subprocess boundary denies listener/backend/client/embedding capabilities. Separate research dependency extra from API/email/billing. Containment is not advisory remediation; research audit remains failing.
+
+- Accounting question: where do budget reservations, settlements and native calls connect? Money query `budget token usage reserve provider model` (700 tokens) identified `TokenBudgetManager`, `HTTPInference`, `BoundedNativeRunner`, `ProviderCircuit.call`, `run_first_pass`, `run_research`, `LiveCorrespondence.invoke`. Only those Money files inspected; no upstream source needed. Fenced accounting stays outside firm capabilities, with strict content-free receipts transported to the parent process.
+
+- Offboarding question: how does deletion connect to billing, sessions and workspace ownership? Money queries `account deletion subscription session workspace` then `request_deletion` (700 tokens each) identified `AccountService.request_deletion` and `ProductService.subscription`. Minimal Money accounts service/models/API/email worker and product billing/worker inspected; extended those services plus migration0006, no upstream read. Final Money-only AST update:2609 nodes/7909 edges/152 communities.
