@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "tables": [
+    {
+      "table_name": "plans",
+      "path": "reference/plans.csv",
+      "schema_path": "schemas/plans.schema.json",
+      "metadata_path": "metadata/plans.json"
+    },
+    {
+      "table_name": "provider_licences",
+      "path": "reference/provider_licences.json",
+      "schema_path": "schemas/provider_licences.schema.json",
+      "metadata_path": "metadata/provider_licences.json"
+    },
+    {
+      "table_name": "provider_datasets",
+      "path": "reference/provider_datasets.csv",
+      "schema_path": "schemas/provider_datasets.schema.json",
+      "metadata_path": "metadata/provider_datasets.json"
+    },
+    {
+      "table_name": "exclusions",
+      "path": "reference/exclusions.csv",
+      "schema_path": "schemas/exclusions.schema.json",
+      "metadata_path": "metadata/exclusions.json"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "table_name": "plans",
+  "schema_version": 1,
+  "data_version": "1.0.0",
+  "source": "Money commercial product policy",
+  "source_date": "2026-09-16",
+  "updated_at": "2026-09-16T15:53:35Z",
+  "checksum": "58392f17d1d42b40b6e323d3951e1e3206bfcb6e372db14be8072f2272f6e04a",
+  "schema_checksum": "6d279f3f273ef7e6e710df266239ff9f70b9b93e2ad1539a0543af2704caefcc",
+  "owner": "Money product and research governance maintainers",
+  "licence": "Money-owned product configuration; does not grant rights to external provider data",
+  "provenance": "Bounded engineering launch defaults, not approved prices or guaranteed service availability."
+}

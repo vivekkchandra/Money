@@ -1,0 +1,5 @@
+plan_id,research_jobs_per_period,seats,retention_days,live_research,evidence_explorer,audit_export,monthly_tokens,max_job_tokens,max_job_seconds
+FREE,3,1,7,false,false,false,0,0,300
+PRO,30,1,365,true,true,false,100000,10000,1800
+TEAM,100,5,730,true,true,true,500000,20000,2400
+ENTERPRISE,300,25,1095,true,true,true,1000000,30000,3600

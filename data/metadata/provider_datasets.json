@@ -1,0 +1,13 @@
+{
+  "table_name": "provider_datasets",
+  "schema_version": 1,
+  "data_version": "1.0.0",
+  "source": "docs/DATA_PROVIDERS.md and existing Money-owned provider adapters",
+  "source_date": "2026-09-16",
+  "updated_at": "2026-09-16T15:53:35Z",
+  "checksum": "a882a9267ff12a3e1157305b7bcfa5491c597d63b43df7c335f6e131a16f2a30",
+  "schema_checksum": "84f4980c6f886d814239db58cb23b6cd977ce78883fc915c30eba136c52ec553",
+  "owner": "Money data governance maintainers",
+  "licence": "Money-owned product configuration; does not grant rights to external provider data",
+  "provenance": "Inventory of implemented datasets; coverage mapping is not proof of production or commercial qualification."
+}

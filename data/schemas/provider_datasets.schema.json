@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "mapping_id": {
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "title": "Mapping Id",
+      "type": "string"
+    },
+    "provider": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "dataset": {
+      "enum": [
+        "eligibility",
+        "instrument",
+        "ohlcv",
+        "financial",
+        "filing",
+        "announcement",
+        "news",
+        "corporate_action",
+        "spread",
+        "ethics",
+        "synthetic"
+      ],
+      "title": "Dataset",
+      "type": "string"
+    },
+    "purpose": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Purpose",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mapping_id",
+    "provider",
+    "dataset",
+    "purpose"
+  ],
+  "title": "ProviderDataset",
+  "type": "object"
+}

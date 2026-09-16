@@ -1,0 +1,13 @@
+{
+  "table_name": "exclusions",
+  "schema_version": 1,
+  "data_version": "1.0.0",
+  "source": "src/money/schemas/contracts.py EXCLUDED_ACTIVITIES",
+  "source_date": "2026-09-16",
+  "updated_at": "2026-09-16T15:53:35Z",
+  "checksum": "34e8d352530a467b7a233e7e0ba248060bcfb1d2db38f0ea30a152814b2f9665",
+  "schema_checksum": "e049f95e7d20b1ff0ea05ffb96735a5035f2bf3a82d8344fdd6f2c70649c1c9a",
+  "owner": "Money product and research governance maintainers",
+  "licence": "Money-owned product configuration; does not grant rights to external provider data",
+  "provenance": "Mirrors existing mandatory ethical exclusions. Runtime validation forbids removal."
+}

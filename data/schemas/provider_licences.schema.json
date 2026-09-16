@@ -1,0 +1,110 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "provider": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "licence": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Licence",
+      "type": "string"
+    },
+    "source": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "commercial_use": {
+      "enum": [
+        "APPROVED",
+        "UNKNOWN",
+        "PROHIBITED"
+      ],
+      "title": "Commercial Use",
+      "type": "string"
+    },
+    "redistribution": {
+      "enum": [
+        "APPROVED",
+        "UNKNOWN",
+        "PROHIBITED"
+      ],
+      "title": "Redistribution",
+      "type": "string"
+    },
+    "storage_restrictions": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Storage Restrictions",
+      "type": "string"
+    },
+    "retention_restrictions": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Retention Restrictions",
+      "type": "string"
+    },
+    "attribution": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Attribution",
+      "type": "string"
+    },
+    "credential_requirement": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Credential Requirement",
+      "type": "string"
+    },
+    "qualification_status": {
+      "enum": [
+        "READY",
+        "MISSING_CREDENTIAL",
+        "MISSING_RUNTIME",
+        "MISSING_DATA",
+        "MISSING_LICENCE",
+        "MISSING_QUALIFICATION",
+        "FAILED"
+      ],
+      "title": "Qualification Status",
+      "type": "string"
+    },
+    "review_reference": {
+      "maxLength": 2000,
+      "title": "Review Reference",
+      "type": "string"
+    },
+    "review_expires_on": {
+      "maxLength": 10,
+      "title": "Review Expires On",
+      "type": "string"
+    },
+    "notes": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Notes",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "licence",
+    "source",
+    "commercial_use",
+    "redistribution",
+    "storage_restrictions",
+    "retention_restrictions",
+    "attribution",
+    "credential_requirement",
+    "qualification_status",
+    "review_reference",
+    "review_expires_on",
+    "notes"
+  ],
+  "title": "ProviderLicence",
+  "type": "object"
+}

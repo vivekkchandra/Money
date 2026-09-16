@@ -1,0 +1,78 @@
+{
+  "additionalProperties": false,
+  "description": "Server-side allowances, never prices or a promise of live availability.",
+  "properties": {
+    "plan_id": {
+      "enum": [
+        "FREE",
+        "PRO",
+        "TEAM",
+        "ENTERPRISE"
+      ],
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "research_jobs_per_period": {
+      "maximum": 100000,
+      "minimum": 0,
+      "title": "Research Jobs Per Period",
+      "type": "integer"
+    },
+    "seats": {
+      "maximum": 10000,
+      "minimum": 1,
+      "title": "Seats",
+      "type": "integer"
+    },
+    "retention_days": {
+      "maximum": 3650,
+      "minimum": 1,
+      "title": "Retention Days",
+      "type": "integer"
+    },
+    "live_research": {
+      "title": "Live Research",
+      "type": "boolean"
+    },
+    "evidence_explorer": {
+      "title": "Evidence Explorer",
+      "type": "boolean"
+    },
+    "audit_export": {
+      "title": "Audit Export",
+      "type": "boolean"
+    },
+    "monthly_tokens": {
+      "maximum": 100000000,
+      "minimum": 0,
+      "title": "Monthly Tokens",
+      "type": "integer"
+    },
+    "max_job_tokens": {
+      "maximum": 1000000,
+      "minimum": 0,
+      "title": "Max Job Tokens",
+      "type": "integer"
+    },
+    "max_job_seconds": {
+      "maximum": 14400,
+      "minimum": 30,
+      "title": "Max Job Seconds",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "plan_id",
+    "research_jobs_per_period",
+    "seats",
+    "retention_days",
+    "live_research",
+    "evidence_explorer",
+    "audit_export",
+    "monthly_tokens",
+    "max_job_tokens",
+    "max_job_seconds"
+  ],
+  "title": "Plan",
+  "type": "object"
+}

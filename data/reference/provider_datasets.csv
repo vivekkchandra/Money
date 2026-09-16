@@ -1,0 +1,13 @@
+mapping_id,provider,dataset,purpose
+trading212_instrument,trading212,instrument,Instrument identifiers only; never customer account or execution data
+trading212_eligibility,trading212,eligibility,ISA availability requires separate reviewed evidence; metadata alone is insufficient
+companies_house_filing,companies-house,filing,Selected official company accounts with document-specific provenance
+companies_house_financial,companies-house,financial,Bounded normalized accounting facts; no raw filing redistribution by default
+eodhd_ohlcv,eodhd,ohlcv,UK historical market data subject to contract-specific rights
+eodhd_news,eodhd,news,Bounded facts and links only when licensed; no article redistribution
+eodhd_corporate_action,eodhd,corporate_action,Split and dividend evidence; not proof of all action types
+reviewed_archive_ohlcv,reviewed_archive,ohlcv,Publication-time-qualified archived market evidence
+reviewed_supplemental_ethics,reviewed_supplemental,ethics,Reviewed material business activity evidence
+reviewed_supplemental_spread,reviewed_supplemental,spread,Reviewed spread evidence with freshness controls
+reviewed_supplemental_eligibility,reviewed_supplemental,eligibility,Reviewed ISA availability; no inferred entitlement
+yfinance_ohlcv,yfinance,ohlcv,Development diagnostics only; not a commercial production authority

@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "activity": {
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "title": "Activity",
+      "type": "string"
+    },
+    "decision": {
+      "const": "REJECT",
+      "title": "Decision",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "activity",
+    "decision",
+    "reason"
+  ],
+  "title": "Exclusion",
+  "type": "object"
+}

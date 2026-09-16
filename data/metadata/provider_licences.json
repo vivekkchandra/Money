@@ -1,0 +1,13 @@
+{
+  "table_name": "provider_licences",
+  "schema_version": 1,
+  "data_version": "1.0.0",
+  "source": "Official provider documentation linked in each row; reviewed 2026-09-16",
+  "source_date": "2026-09-16",
+  "updated_at": "2026-09-16T15:53:35Z",
+  "checksum": "ed2576283633605b02f7f70a84e856dfa269e3f55c85b55e4cb85f3418311edd",
+  "schema_checksum": "7544a4d69cfdf73828d551f9b241e9fcec1a61e0ae43c12c68e75a1e152cbdce",
+  "owner": "Money data governance maintainers",
+  "licence": "Money-owned product configuration; does not grant rights to external provider data",
+  "provenance": "Inventory of unresolved rights, not legal approval. No commercial licence credentials or contracts were supplied."
+}
