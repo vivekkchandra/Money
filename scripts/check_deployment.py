@@ -56,17 +56,44 @@ def secret_findings(source: str) -> bool:
     return any(re.search(pattern, source) for pattern in patterns)
 
 
+def check_netlify_configuration(configuration: dict) -> None:
+    """Keep paths relative to the app base and prevent static-SPA deployment drift."""
+    expected = {"base": "apps/web", "command": "npm run build", "publish": ".next"}
+    for key, value in expected.items():
+        assert configuration["build"].get(key) == value, f"Netlify {key} must be {value}"
+    plugins = [plugin.get("package") for plugin in configuration.get("plugins", [])]
+    assert plugins.count("@netlify/plugin-nextjs") == 1, "Explicit Next.js SSR adapter required"
+    guard = "./netlify/plugins/money-ssr-guard"
+    assert plugins.count(guard) == 1, "Netlify SSR artifact guard required"
+    assert plugins.index(guard) > plugins.index("@netlify/plugin-nextjs"), "SSR guard must follow adapter"
+    for name, context in configuration.get("context", {}).items():
+        for key, value in expected.items():
+            assert key not in context or context[key] == value, f"Netlify {name} overrides {key}"
+    for redirect in configuration.get("redirects", []):
+        assert not (
+            redirect.get("from") == "/*" and redirect.get("to") == "/index.html"
+        ), "Next.js SSR cannot be replaced with a static SPA rewrite"
+
+
 def main() -> None:
     configuration = tomllib.loads((ROOT / "netlify.toml").read_text())
-    assert configuration["build"]["base"] == "apps/web"
-    assert configuration["build"]["publish"] == ".next"
-    assert "python" not in configuration["build"]["command"]
+    check_netlify_configuration(configuration)
     assert configuration["context"]["production"]["environment"]["MONEY_ENV"] == "production"
     assert configuration["context"]["deploy-preview"]["environment"]["MONEY_ENV"] == "preview"
     app = ROOT / "apps/web"
     package = json.loads((app / "package.json").read_text())
     assert {"dev", "build", "lint", "typecheck", "test", "test:browser"} <= package["scripts"].keys()
     assert (app / "package-lock.json").exists(), "Web dependency lock missing"
+    lock = json.loads((app / "package-lock.json").read_text())
+    adapter = package.get("devDependencies", {}).get("@netlify/plugin-nextjs", "")
+    assert re.fullmatch(r"5\.\d+\.\d+", adapter), "Reviewed exact Next.js adapter version required"
+    assert lock["packages"]["node_modules/@netlify/plugin-nextjs"]["version"] == adapter
+    for name in ("index.js", "manifest.yml"):
+        assert (app / "netlify/plugins/money-ssr-guard" / name).is_file(), "Local SSR guard missing"
+    assert (app / "app/[[...view]]/page.tsx").exists(), "SSR root route missing"
+    assert not re.search(r"output\s*:\s*['\"]export['\"]", (app / "next.config.ts").read_text()), "Money requires SSR and server route handlers"
+    for duplicate in (app / "netlify.toml", app / "apps/web", app / "public/_redirects"):
+        assert not duplicate.exists(), f"Unexpected shadow deployment configuration: {duplicate}"
     source_files = [
         file for directory in ("app", "lib", "components") for file in (app / directory).rglob("*")
     ]

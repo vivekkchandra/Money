@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import secrets
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -757,7 +758,8 @@ class ResearchStore:
             return {"snapshot": snapshot, "evidence": items}
 
     def save_artifact(self, job_id: str, kind: str, value: Any) -> None:
-        if kind not in {
+        correspondence_call = re.fullmatch(r"cross_call_[a-f0-9]{24}", kind) is not None
+        if not correspondence_call and kind not in {
             "eligibility",
             "discovery",
             "lean",
@@ -790,10 +792,13 @@ class ResearchStore:
                 and row["locked_at"] is None
             ):
                 raise BarrierNotLocked("Downstream artifacts require locked first-pass reports")
-            if kind == "cross_examination":
+            if kind == "cross_examination" or correspondence_call:
                 from money.crews.cross_examination import CrossExaminationPacket
 
-                checked_cross = CrossExaminationPacket.model_validate(data)
+                checked_cross = (
+                    CrossExaminationPacket.model_validate(data)
+                    if not correspondence_call else None
+                )
                 prior = {
                     item.kind: item.payload
                     for item in connection.execute(
@@ -810,7 +815,8 @@ class ResearchStore:
                     row["status"] != "CROSS_EXAMINATION"
                     or "lean" not in prior
                     or not prior.get("audit", {}).get("completed")
-                    or checked_cross.snapshot_id != row["snapshot_id"]
+                    or (checked_cross is not None
+                        and checked_cross.snapshot_id != row["snapshot_id"])
                 ):
                     raise StoreError(
                         "Cross-examination requires completed validation and initial CIO audit"

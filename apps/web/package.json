@@ -13,7 +13,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:smoke": "node scripts/smoke.mjs",
-    "test:browser": "node scripts/smoke.mjs --browser"
+    "test:browser": "node scripts/smoke.mjs --browser",
+    "check:deployment": "node scripts/check-deployment.mjs"
   },
   "dependencies": {
     "next": "16.3.5",
@@ -21,6 +22,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "5.15.11",
     "@playwright/test": "1.63.0",
     "@types/node": "22.20.2",
     "@types/react": "19.3.0",

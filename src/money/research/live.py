@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from decimal import Decimal
 from functools import partial
@@ -37,6 +38,11 @@ from money.data.identifiers import InstrumentIdentifiers
 from money.data.qualification import ProviderQualification
 from money.data.quality.market import evaluate_market_quality
 from money.data.resilience import ProviderCircuit
+from money.data.uk.filing_documents import (
+    CompaniesHouseFilingDocuments,
+    FinancialCurrencyProof,
+    ReviewedStorageHost,
+)
 from money.data.uk.live import CompaniesHouseProvider, EODHDProvider
 from money.models.registry import ModelRegistry
 from money.research.budgets import BudgetLimits
@@ -48,7 +54,9 @@ from money.schemas.contracts import (
     Candidate,
     CIOAuditReport,
     Contract,
+    DocumentFact,
     EvidenceRecord,
+    FinancialFact,
     FirmReport,
     InstrumentMetadata,
     LeanValidationReport,
@@ -107,29 +115,52 @@ class VerifiedInstrument(Contract):
     cost_applicability: CostApplicability
     archived_market_evidence: tuple[EvidenceRecord, ...] = Field(default=(), max_length=4000)
     archived_market_proof_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    filing_documents: tuple[FinancialCurrencyProof, ...] = Field(default=(), max_length=4)
+
+    @model_validator(mode="after")
+    def reviewed_filing_identity(self) -> VerifiedInstrument:
+        filings = [proof.filing_id for proof in self.filing_documents]
+        documents = [proof.document_content_hash for proof in self.filing_documents]
+        if len(filings) != len(set(filings)) or len(documents) != len(set(documents)):
+            raise ValueError("LIVE_FILING_DOCUMENT_DUPLICATE")
+        if any(
+            proof.company_number != self.identifiers.companies_house_number
+            for proof in self.filing_documents
+        ):
+            raise ValueError("LIVE_FILING_COMPANY_MISMATCH")
+        return self
 
 
 def validate_invocation_budgets(
     selections: tuple[InferenceSelection, InferenceSelection, InferenceSelection],
     calls: int,
     limits: BudgetLimits,
+    correspondence_challenges: int = 0,
 ) -> None:
+    if not 0 <= correspondence_challenges <= 24:
+        raise ValueError("LIVE_CORRESPONDENCE_CHALLENGE_LIMIT_INVALID")
     # UTF-8 bytes conservatively bound tokenized input plus protocol overhead.
     # Operators must deliberately budget the actual configured maximum; do not
     # silently reduce native roles or start a stage that cannot be admitted.
     reservations = tuple(
         calls * (item.maximum_prompt_bytes + item.max_output_tokens + 1024) for item in selections
     )
+    correspondence = tuple(
+        correspondence_challenges * 2 * count
+        * (item.maximum_prompt_bytes + item.max_output_tokens + 1024)
+        for item, count in zip(selections, (2, 1, 1), strict=True)
+    )
+    totals = tuple(base + extra for base, extra in zip(reservations, correspondence, strict=True))
     if (
-        sum(reservations) > min(limits.per_job, limits.per_candidate, limits.daily)
-        or max(reservations) > limits.per_agent
-        or max(sum(reservations[:2]), reservations[2]) > limits.per_stage
+        sum(totals) > min(limits.per_job, limits.per_candidate, limits.daily)
+        or max(totals) > limits.per_agent
+        or max(sum(reservations[:2]), reservations[2], sum(correspondence)) > limits.per_stage
     ):
         raise ValueError("LIVE_BUDGET_CONFIGURATION_INSUFFICIENT")
     for provider_model, limit in limits.per_model:
         required = sum(
             tokens
-            for item, tokens in zip(selections, reservations, strict=True)
+            for item, tokens in zip(selections, totals, strict=True)
             if f"{item.provider}/{item.model}" == provider_model
         )
         if required > limit:
@@ -145,6 +176,7 @@ class LiveManifest(Contract):
     provider_qualifications: tuple[ProviderQualification, ...] = Field(min_length=1)
     market_credential_environment_variable: str = "EODHD_API_KEY"
     filings_credential_environment_variable: str = "COMPANIES_HOUSE_API_KEY"
+    filing_document_storage_hosts: tuple[ReviewedStorageHost, ...] = Field(default=(), max_length=8)
     tradingagents: InferenceSelection
     ai_hedge_fund: InferenceSelection
     crewai: InferenceSelection
@@ -161,6 +193,8 @@ class LiveManifest(Contract):
     budgets: BudgetLimits
     signal_policy: SignalPolicy = Field(default_factory=SignalPolicy)
     discovery_policy: DiscoveryPolicy = Field(default_factory=DiscoveryPolicy)
+    enable_native_cross_examination: bool = False
+    cross_examination_maximum_challenges: int = Field(default=8, ge=1, le=24)
 
     @model_validator(mode="after")
     def qualification_consistency(self) -> LiveManifest:
@@ -170,6 +204,7 @@ class LiveManifest(Contract):
             (self.tradingagents, self.ai_hedge_fund, self.crewai),
             self.native_max_calls,
             self.budgets,
+            self.cross_examination_maximum_challenges if self.enable_native_cross_examination else 0,
         )
         providers = [item.provider for item in self.provider_qualifications]
         tickers = [item.metadata.ticker for item in self.instruments]
@@ -177,6 +212,15 @@ class LiveManifest(Contract):
             raise ValueError("LIVE_MANIFEST_DUPLICATE_IDENTITY")
         if not {"eodhd", "companies-house"} <= set(providers):
             raise ValueError("LIVE_MANIFEST_REQUIRED_PROVIDER_MISSING")
+        storage_hosts = [review.host for review in self.filing_document_storage_hosts]
+        if len(storage_hosts) != len(set(storage_hosts)):
+            raise ValueError("FILING_STORAGE_HOST_DUPLICATE")
+        if any(item.filing_documents for item in self.instruments):
+            company_qualification = next(
+                item for item in self.provider_qualifications if item.provider == "companies-house"
+            )
+            if not {"filing", "financial"} <= set(company_qualification.datasets):
+                raise ValueError("LIVE_FILING_DOCUMENT_COVERAGE_MISSING")
         return self
 
 
@@ -217,6 +261,7 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
         manifest.lean_qualification.historical_eligibility_hash,
         manifest.lean_qualification.survivorship_audit_hash,
         manifest.lean_qualification.corporate_action_audit_hash,
+        *(review.review_evidence_hash for review in manifest.filing_document_storage_hosts),
     }
     for item in manifest.instruments:
         required.update(
@@ -236,6 +281,7 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
             if item.archived_market_proof_hash is None:
                 raise ValueError("ARCHIVED_MARKET_PROOF_MISSING")
             required.add(item.archived_market_proof_hash)
+        required.update(proof.evidence_hash for proof in item.filing_documents)
     for provider in manifest.provider_qualifications:
         if provider.qualification_report_hash:
             required.add(provider.qualification_report_hash)
@@ -334,6 +380,51 @@ class LiveSnapshotBuilder:
                 "companies-house:filing", lambda: filing.filings(item.identifiers, snapshot_id, now)
             )
         )
+        if item.filing_documents:
+            document_provider = CompaniesHouseFilingDocuments(
+                os.environ.get(self.manifest.filings_credential_environment_variable, ""),
+                qualifications["companies-house"],
+                storage_hosts=self.manifest.filing_document_storage_hosts,
+            )
+            for selection in item.filing_documents:
+                bundle = self.circuit.call(
+                    "companies-house:filing-document",
+                    partial(
+                        document_provider.fetch,
+                        item.identifiers,
+                        selection.filing_id,
+                        snapshot_id,
+                        selection,
+                    ),
+                )
+                records.extend(bundle.evidence)
+                # Bounded safe projection is sealed by snapshot/decision-packet hashes.
+                # Never mutate the factory-time manifest, copy raw bytes, or duplicate
+                # all normalized facts into document metadata.
+                provenance = bundle.model_dump(
+                    mode="json", exclude={"raw_document", "evidence"}
+                )
+                records.append(
+                    EvidenceRecord(
+                        snapshot_id=snapshot_id,
+                        source="Companies House document retrieval provenance",
+                        provider="companies-house",
+                        source_id=bundle.evidence[0].source_id,
+                        canonical_source_id=bundle.evidence[0].canonical_source_id,
+                        observation_time=bundle.retrieval_time,
+                        publication_time=bundle.availability_time,
+                        retrieval_time=bundle.retrieval_time,
+                        fresh_until=min(record.fresh_until for record in bundle.evidence),
+                        pit_safe=True,
+                        critical=True,
+                        payload=DocumentFact(
+                            kind="filing",
+                            title="Verified document retrieval provenance; raw redistribution prohibited",
+                            excerpt=json.dumps(provenance, sort_keys=True, separators=(",", ":")),
+                            url=bundle.metadata_url,
+                        ),
+                    )
+                )
         for evidence in (*item.supplemental_evidence, item.spread_evidence):
             if evidence.provider not in qualifications:
                 raise ValueError("PROVIDER_UNQUALIFIED")
@@ -349,8 +440,6 @@ class LiveSnapshotBuilder:
             r.payload.kind == "financial" and r.payload.metric != "spread_bps" for r in records
         ):
             raise ValueError("CRITICAL_FUNDAMENTALS_MISSING")
-        from money.schemas.contracts import FinancialFact
-
         spread = item.spread_evidence.payload
         if (
             not isinstance(spread, FinancialFact)
@@ -406,6 +495,7 @@ class DiscoveryQuantFirm:
 
 def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> ResearchRuntime:
     from money.flows.research import ResearchRuntime
+    from money.research.correspondence import LiveCorrespondence
 
     model = ModelRegistry(store).load_active(
         manifest.qlib_registry_id, manifest.qlib_artifact_hash, utc_now()
@@ -541,6 +631,8 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
         cio_runtime=lambda: cio.last_result,
         signal_builder=signal_builder,
         discover=discover,
+        cross_examine=LiveCorrespondence(store, manifest, model).examine
+        if manifest.enable_native_cross_examination else None,
         provenance=LiveProvenance(
             manifest_hash=content_hash(manifest),
             provider_qualifications=manifest.provider_qualifications,

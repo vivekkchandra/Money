@@ -17,6 +17,7 @@ from money.schemas.contracts import (
     FirmReport,
     LeanValidationReport,
     ResearchSnapshot,
+    Usage,
     content_hash,
 )
 
@@ -31,6 +32,24 @@ class Challenge(Contract):
     original_report_hash: str
     question: str = Field(min_length=1, max_length=4000)
     evidence_ids: tuple[str, ...]
+    original_claim: Claim | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def claim_identity(self) -> Self:
+        if self.original_claim is not None and self.original_claim.claim_id != self.claim_id:
+            raise ValueError("challenge original claim identity differs")
+        return self
+
+
+class ChallengeInvocation(Contract):
+    component: Literal["tradingagents", "ai_hedge_fund", "crewai", "qlib", "lean"]
+    provider: str
+    model: str
+    prompt_version: str
+    upstream_sha: str
+    calls: int = Field(ge=0, le=2)
+    usage: Usage = Field(default_factory=Usage)
+    runtime: Literal["live", "demo", "deterministic"]
 
 
 class ChallengeResponse(Contract):
@@ -42,12 +61,27 @@ class ChallengeResponse(Contract):
     explanation: str = Field(min_length=1, max_length=4000)
     evidence_ids: tuple[str, ...]
     corrected_claim: Claim | None = None
+    invocation: ChallengeInvocation | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class ChallengeSourceCheck(Contract):
+    evidence_id: str
+    record_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    quoted_fact: str = Field(min_length=5, max_length=500)
+
+
+class ChallengeVerification(Contract):
+    finding: AuditFinding
+    invocation: ChallengeInvocation | None = Field(default=None, exclude_if=lambda value: value is None)
+    evidence_checks: tuple[ChallengeSourceCheck, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 class ChallengeExchange(Contract):
     challenge: Challenge
     response: ChallengeResponse | None = None
     verification: AuditFinding | None = None
+    verification_invocation: ChallengeInvocation | None = Field(default=None, exclude_if=lambda value: value is None)
+    verification_evidence_checks: tuple[ChallengeSourceCheck, ...] = Field(default=(), exclude_if=lambda value: not value)
     resolved: bool = False
     reason: str
 
@@ -79,6 +113,12 @@ class CrossExaminationPacket(Contract):
         pending = {challenge.challenge_id: challenge for challenge in self.challenges}
         if len(pending) != len(self.challenges):
             raise ValueError("cross-examination challenge identities must be unique")
+        originals = dict(self.report_hashes)
+        if len(self.report_hashes) != 3 or set(originals) != {"tradingagents", "ai_hedge_fund", "qlib"}:
+            raise ValueError("cross-examination requires exactly three original firm hashes")
+        originals.update({"lean": self.lean_hash, "cio": self.initial_audit_hash})
+        if any(originals.get(challenge.respondent) != challenge.original_report_hash for challenge in self.challenges):
+            raise ValueError("challenge original report hash differs from sealed provenance")
         for round_ in self.rounds:
             if {exchange.challenge.challenge_id for exchange in round_.exchanges} != set(pending):
                 raise ValueError("each round must address exactly the pending challenges")
@@ -89,13 +129,23 @@ class CrossExaminationPacket(Contract):
                 if exchange.challenge != challenge:
                     raise ValueError("cross-examination cannot revise an original challenge")
                 response, verification = exchange.response, exchange.verification
+                if ((response and response.invocation and response.invocation.runtime == "demo")
+                        or (exchange.verification_invocation and exchange.verification_invocation.runtime == "demo")):
+                    raise ValueError("unqualified native correspondence cannot enter a sealed packet")
                 if response is not None and (
                     response.challenge_id != challenge.challenge_id
                     or response.respondent != challenge.respondent
                     or response.snapshot_hash != self.snapshot_hash
                     or response.original_report_hash != challenge.original_report_hash
+                    or not set(response.evidence_ids) <= set(challenge.evidence_ids)
+                    or (response.corrected_claim is not None
+                        and not set(response.corrected_claim.evidence_ids) <= set(challenge.evidence_ids))
                 ):
                     raise ValueError("cross-examination response identity differs")
+                if verification is not None and not set(verification.evidence_ids) <= set(challenge.evidence_ids):
+                    raise ValueError("cross-examination verification exceeded permitted evidence")
+                if any(check.evidence_id not in challenge.evidence_ids for check in exchange.verification_evidence_checks):
+                    raise ValueError("cross-examination source check exceeded permitted evidence")
                 if exchange.resolved:
                     if (response is None or response.position != "MAINTAIN" or verification is None
                             or verification.state != "VERIFIED" or verification.claim_id != challenge.claim_id
@@ -118,7 +168,7 @@ class ResponseCapability(Protocol):
 
 class VerificationCapability(Protocol):
     def __call__(self, snapshot: ResearchSnapshot, challenge: Challenge,
-                 response: ChallengeResponse) -> AuditFinding: ...
+                 response: ChallengeResponse) -> AuditFinding | ChallengeVerification: ...
 
 
 def run_cross_examination(
@@ -131,6 +181,7 @@ def run_cross_examination(
     responders: Mapping[str, ResponseCapability] | None = None,
     verifier: VerificationCapability | None = None,
     maximum_rounds: int = 2,
+    maximum_challenges: int = 24,
 ) -> CrossExaminationPacket:
     """Only the downstream control plane, after durable lock/audit, calls this.
 
@@ -142,6 +193,8 @@ def run_cross_examination(
         raise InvalidUpstreamReport("cross-examination requires locked first pass and completed initial CIO audit")
     if not 0 <= maximum_rounds <= 2:
         raise ValueError("cross-examination allows at most two rounds")
+    if not 1 <= maximum_challenges <= 24:
+        raise ValueError("cross-examination allows at most 24 challenges")
     if len(reports) != 3 or {r.firm for r in reports} != {"tradingagents", "ai_hedge_fund", "qlib"}:
         raise InvalidUpstreamReport("cross-examination requires all three sealed first-pass reports")
     if lean.snapshot_id != snapshot.snapshot_id or audit.snapshot_id != snapshot.snapshot_id or any(
@@ -164,7 +217,7 @@ def run_cross_examination(
         if not findings:
             findings = [AuditFinding(auditor="CIO Contradiction Analyst", state="UNSUPPORTED",
                 explanation="Initial CIO audit records unresolved material disagreement without supported claims.")]
-    if len(findings) > 24:
+    if len(findings) > maximum_challenges:
         raise InvalidUpstreamReport("cross-examination challenge budget exceeded")
     challenges: dict[str, Challenge] = {}
     for index, finding in enumerate(findings):
@@ -173,9 +226,11 @@ def run_cross_examination(
             raise InvalidUpstreamReport("cross-examination audit references an unknown claim")
         target: Respondent = owner.firm if owner else "lean" if finding.auditor == "LEAN Auditor" else "cio"
         original_hash = content_hash(owner) if owner else content_hash(lean if target == "lean" else audit)
+        original_claim = next((claim for claim in owner.claims if claim.claim_id == finding.claim_id), None) if owner else None
+        permitted = tuple(dict.fromkeys((*finding.evidence_ids, *(original_claim.evidence_ids if original_claim else ()))))
         challenge = Challenge(challenge_id=f"challenge-{index + 1}", respondent=target,
             claim_id=finding.claim_id, original_report_hash=original_hash,
-            question=finding.explanation, evidence_ids=finding.evidence_ids)
+            question=finding.explanation, evidence_ids=permitted, original_claim=original_claim)
         if not set(challenge.evidence_ids) <= allowed_ids:
             raise InvalidUpstreamReport("challenge cites evidence outside the locked snapshot")
         challenges[challenge.challenge_id] = challenge
@@ -199,25 +254,42 @@ def run_cross_examination(
                 Challenge.model_validate_json(challenge.model_dump_json()), number,
             ).model_dump_json())
             any_response = True
+            if response.invocation is not None and response.invocation.runtime == "demo":
+                raise InvalidUpstreamReport("unqualified native challenge response cannot enter live cross-examination")
             if (response.challenge_id != challenge.challenge_id or response.respondent != challenge.respondent
                     or response.snapshot_hash != facts.hash or response.original_report_hash != challenge.original_report_hash
-                    or not set(response.evidence_ids) <= allowed_ids):
+                    or not set(response.evidence_ids) <= set(challenge.evidence_ids)):
                 raise InvalidUpstreamReport("cross-examination response provenance differs")
             if response.corrected_claim is not None and (
                 response.corrected_claim.claim_id in by_claim
                 or not response.corrected_claim.evidence_ids
-                or not set(response.corrected_claim.evidence_ids) <= allowed_ids
+                or not set(response.corrected_claim.evidence_ids) <= set(challenge.evidence_ids)
             ):
                 raise InvalidUpstreamReport("correction cannot overwrite original claim or add external evidence")
             verification = None
+            verification_invocation = None
+            verification_evidence_checks: tuple[ChallengeSourceCheck, ...] = ()
             resolved = False
             reason = "INDEPENDENT_VERIFICATION_UNAVAILABLE"
             if verifier is not None and response.position == "MAINTAIN":
-                verification = AuditFinding.model_validate_json(verifier(
+                checked = verifier(
                     ResearchSnapshot.model_validate_json(facts.model_dump_json()), challenge, response
-                ).model_dump_json())
+                )
+                if isinstance(checked, ChallengeVerification):
+                    verification = AuditFinding.model_validate_json(checked.finding.model_dump_json())
+                    verification_invocation = checked.invocation
+                    verification_evidence_checks = checked.evidence_checks
+                    evidence_hashes = {record.evidence_id: record.hash for record in facts.evidence}
+                    if any(evidence_hashes.get(check.evidence_id) != check.record_hash
+                           or check.evidence_id not in challenge.evidence_ids
+                           for check in verification_evidence_checks):
+                        raise InvalidUpstreamReport("challenge source check differs from frozen evidence hash")
+                    if verification_invocation is not None and verification_invocation.runtime == "demo":
+                        raise InvalidUpstreamReport("unqualified native verification cannot resolve a live challenge")
+                else:
+                    verification = AuditFinding.model_validate_json(checked.model_dump_json())
                 if (verification.claim_id != challenge.claim_id
-                        or not set(verification.evidence_ids) <= allowed_ids):
+                        or not set(verification.evidence_ids) <= set(challenge.evidence_ids)):
                     raise InvalidUpstreamReport("challenge verification provenance differs")
                 resolved = bool(verification.state == "VERIFIED" and verification.evidence_ids
                                 and set(verification.evidence_ids).intersection(response.evidence_ids))
@@ -227,7 +299,9 @@ def run_cross_examination(
             if resolved:
                 del unresolved[challenge.challenge_id]
             exchanges.append(ChallengeExchange(challenge=challenge, response=response,
-                verification=verification, resolved=resolved, reason=reason))
+                verification=verification, verification_invocation=verification_invocation,
+                verification_evidence_checks=verification_evidence_checks,
+                resolved=resolved, reason=reason))
         rounds.append(CrossExaminationRound(number=number, exchanges=tuple(exchanges)))
         if not any_response:
             break  # no fake second round when every respondent is unavailable

@@ -92,6 +92,49 @@ research. Sealed reports, initial CIO audit and LEAN must exist before challenge
 artifacts. Missing independent challenge capabilities leave disputes unresolved;
 the system does not iterate until agreement or overwrite first-pass reports.
 
+Native correspondence is now implemented behind explicit
+`enable_native_cross_examination=true`; the default remains disabled until the
+operator qualifies its runtimes and budget. Set
+`cross_examination_maximum_challenges` (1–24, default 8). At most two rounds run.
+Manifest budget validation includes worst-case TradingAgents two calls, AI-HF one
+call and independent CrewAI one call per challenge/round. No provider/model switch
+or quiet reduction in specialist work is used to fit a budget.
+
+Responses and independent verifications run in separate bounded native processes.
+Respondents receive only their own sealed report, objective snapshot and explicit
+challenge. Original claim/report hashes, permitted citations and independent
+source quotation/recalculation are checked. Each paid-capable invocation reserves
+tokens before execution, seals its typed result before settlement and reuses that
+result on recovery. Unmeasured interrupted calls retain the pessimistic charge.
+Qlib/LEAN rechecks cannot manufacture new validation or missing controls. The
+original audit, reports and hard vetoes remain immutable; a later correspondence
+finding is not permission to remove their deterministic vetoes. This path is
+tested with scripted native inference, not qualified paid production execution.
+
+## Reviewed filing-document ingestion
+
+`VerifiedInstrument.filing_documents` optionally contains up to four
+`FinancialCurrencyProof` objects: exact Companies House number, filing transaction
+ID, `currency="GBP"`, raw `document_content_hash` and review `evidence_hash`.
+The accounting units require independent review; a GBP/GBX stock quotation is
+not that proof. A changed document representation requires a new review.
+
+`LiveManifest.filing_document_storage_hosts` optionally contains up to eight exact
+hosts with `review_evidence_hash`. Both review hashes must reference actual bytes
+in `qualification_artifacts`. No wildcard/default cloud-storage host is trusted.
+Companies House qualification must cover both `filing` and `financial`. Install
+the pinned stream-read-xbrl converter in the research image; missing parser or
+unsupported PDF-only representation is an explicit failure, not a fallback.
+
+Selected documents run behind the provider circuit inside the supervised worker.
+Their safe provenance is sealed inside snapshot evidence, never retroactively
+added to the factory-time manifest. No raw document or signed location enters the
+packet. Availability is retrieval time, not the filing's processed date or an
+assumed historical publication date. Freshness is capped by all reviewed provider
+and identifier limits. WORK_FILINGS.md documents official APIs and exact live
+qualification requirements. Empty selections retain the existing explicit
+reviewed-facts path; they do not silently select or invent financial statements.
+
 Run opt-in genuine-provider tests only after reviewing cost/data access:
 
 ```sh

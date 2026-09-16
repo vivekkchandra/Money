@@ -3,7 +3,7 @@
 import os
 
 from alembic import context
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 from money.storage import production_models  # noqa: F401 - register operational tables
 from money.storage.models import metadata
@@ -27,7 +27,23 @@ if context.is_offline_mode():
     with context.begin_transaction():
         context.run_migrations()
 else:
-    with create_engine(database_url).connect() as connection:
-        context.configure(connection=connection, target_metadata=metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+    engine = create_engine(
+        database_url,
+        connect_args={"connect_timeout": 10} if database_url.startswith("postgresql") else {},
+    )
+    try:
+        with engine.connect() as connection, connection.begin():
+            if connection.dialect.name == "postgresql":
+                # One migration writer per actual database/schema. An interrupted
+                # transaction releases its lock; no manual lock cleanup is needed.
+                connection.execute(text("SET LOCAL lock_timeout = '30s'"))
+                connection.execute(text("SET LOCAL statement_timeout = '300s'"))
+                connection.execute(text(
+                    "SELECT pg_advisory_xact_lock(hashtext(current_database()), "
+                    "hashtext(current_schema()))"
+                ))
+            context.configure(connection=connection, target_metadata=metadata)
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        engine.dispose()

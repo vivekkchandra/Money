@@ -204,11 +204,31 @@ class TokenBudgetManager:
             ).first()
             if cio_usage is not None:
                 sealed_usage["crewai"] = Usage.model_validate(cio_usage[0] or {})
+            # Correspondence calls seal individually before their charge settles.
+            # Recover only accounting fields, never downstream opinions.
+            for call in connection.execute(
+                select(
+                    artifacts.c.payload["reservation_id"].as_string().label("reservation_id"),
+                    artifacts.c.payload["usage"].label("usage"),
+                ).where(artifacts.c.job_id == job_id, artifacts.c.kind.startswith("cross_call_"))
+            ):
+                reservation = connection.execute(
+                    select(reservations).where(
+                        reservations.c.id == call.reservation_id, reservations.c.job_id == job_id
+                    )
+                ).mappings().one()
+                self._settle(connection, reservation, Usage.model_validate(call.usage or {}))
             for agent, usage in sealed_usage.items():
                 row = (
                     connection.execute(
                         select(reservations)
-                        .where((reservations.c.job_id == job_id) & (reservations.c.agent == agent))
+                        .where(
+                            reservations.c.job_id == job_id,
+                            reservations.c.agent == agent,
+                            reservations.c.stage == (
+                                "CREWAI_AUDIT" if agent == "crewai" else "FIRST_PASS_RESEARCH"
+                            ),
+                        )
                         .order_by(reservations.c.created_at.desc(), reservations.c.id.desc())
                         .limit(1)
                     )

@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from importlib import import_module
 
+from money.adapters.native_attestation import require_pinned_module
 from money.data.security import SourceSecurityError, bounded_zip_members
 from money.schemas.contracts import EvidenceRecord, FinancialFact
 
@@ -44,6 +45,7 @@ def parse_company_archive(
         normalized = data.upper().replace(b"\x00", b"")
         if b"<!DOCTYPE" in normalized or b"<!ENTITY" in normalized:
             raise SourceSecurityError("XBRL_EXTERNAL_ENTITY_DENIED")
+    require_pinned_module("stream_read_xbrl")
     native = import_module("stream_read_xbrl")
     records, seen = [], set()
     for name, data in members:

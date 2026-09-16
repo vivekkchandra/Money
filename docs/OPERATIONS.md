@@ -93,9 +93,12 @@ readiness projection, not a claim of production research qualification.
    snapshot/PITR facilities or `pg_dump --format=custom --file=money-backup.dump`.
    Configure the destination, database connection and credentials through the
    host's secret mechanism; never place credentials in command logs or Git.
-3. Run `alembic upgrade head` once using a dedicated migration process. Serialize
-   releases at the host; running migrations independently in every API replica
-   is unsupported. Validate `alembic current` before starting the new processes.
+3. Run `alembic upgrade head` once using a dedicated migration process. PostgreSQL
+   migrations additionally take a transaction-scoped advisory lock keyed by the
+   database/schema, with 10-second connect, 30-second lock and 300-second statement
+   deadlines. Rollback/disconnection releases the lock. Still serialize releases
+   at the host; migrations are not API-replica startup work. Validate `alembic
+   current` before starting the new processes.
 4. Start compatible workers and API replicas, verify readiness, and run a scoped
    enqueue/retrieve smoke. Preserve the immutable packets and existing job rows.
 5. Let GitHub drive the existing Netlify production/Deploy Preview builds. Verify
@@ -114,6 +117,19 @@ jobs, then exercise the worker on separate synthetic test records. Test PITR to 
 known timestamp if the host provides WAL archives. Set recovery objectives,
 backup cadence/retention and a restore-drill owner before production; the repository
 does not supply managed backups or attest an unrun restore.
+
+Run `uv run python scripts/backend_acceptance.py` for a disposable local drill.
+It accepts no existing database URL, strips inherited provider/database secrets,
+creates its own Unix-socket cluster, runs three concurrent migration processes,
+interrupts a real worker after one sealed report, verifies lease/fence recovery,
+backs up, restarts PostgreSQL and restores into a separate empty database. It
+checks immutable packet/report hashes and session state. It removes only its own
+temporary data after confirmed shutdown; an uncertain shutdown retains it.
+The synthetic research is never live qualification. The present local run is
+blocked at `initdb` by shared-memory permission denial; no restore success is
+claimed. CI includes this separate drill in addition to PostgreSQL 17 tests.
+
+Lock semantics: [PostgreSQL advisory locks](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS).
 
 ## Monitoring and incidents
 

@@ -1,0 +1,48 @@
+name: Live web acceptance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: money-live-web-acceptance
+  cancel-in-progress: true
+
+jobs:
+  public-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Read-only, fixed existing project; no deploy token or production secrets.
+      - name: Observe public production root
+        id: root
+        shell: bash
+        run: |
+          if code=$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output /tmp/money-root.html --write-out '%{http_code}' https://neon-griffin-08e616.netlify.app/); then
+            echo "Initial public response observed."
+          else
+            code=NETWORK_ERROR
+          fi
+          echo "http_status=$code" >> "$GITHUB_OUTPUT"
+      - name: "Production root HTTP ${{ steps.root.outputs.http_status }}"
+        if: always()
+        run: echo "HTTP reachability is not complete Money deployment qualification."
+      - name: Verify Money routes, assets, auth closure and security headers
+        if: always()
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if node apps/web/scripts/check-deployment.mjs https://neon-griffin-08e616.netlify.app --production; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then sleep 15; fi
+          done
+          exit 1

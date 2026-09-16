@@ -111,7 +111,7 @@ def _compute_process(settings: Settings, claim: Claim) -> None:
         try:
             runtime = build_runtime(
                 settings.money_research_mode,
-                store=store,
+                store=store.for_claim(claim),
                 live_manifest=settings.money_live_manifest,
                 manifest_hash=settings.money_live_manifest_sha256,
             )

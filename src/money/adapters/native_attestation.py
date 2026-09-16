@@ -8,6 +8,9 @@ No provider can select a module path or replace these expected digests.
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
+from importlib.machinery import SourceFileLoader
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -19,6 +22,53 @@ SOURCE_DIGESTS = {
     "qlib": "11c4744c882a42171df754d70a6cc9d3b17c7b7973aa277ae5358e2a90cd152b",
     "crewai": "a94c3acee11475019649c8be91f2caad28ab8d41023b9b993d5481a7a6c301cb",
 }
+
+# SHA256 of exactly one source file at stream-read-xbrl's UPSTREAM_LOCK.txt SHA
+# b95b48bbf50727648cebcba56634b17dc9e60ad3. Never fingerprint site-packages.
+SINGLE_MODULE_SOURCE_DIGESTS = {
+    "stream_read_xbrl": "afff17f5a281e2474dcf11d6c8d407c08522cd144d7d075631e6e09c6ebc8b33",
+}
+
+
+def require_pinned_module(module: str) -> str:
+    """Attest an allowlisted, bounded standalone module before importing it."""
+    expected = SINGLE_MODULE_SOURCE_DIGESTS.get(module)
+    if expected is None:
+        raise UpstreamUnavailable("pinned native module is not allowlisted")
+    try:
+        spec = find_spec(module)
+        if (
+            spec is None
+            or spec.origin is None
+            or spec.submodule_search_locations is not None
+            or not isinstance(spec.loader, SourceFileLoader)
+        ):
+            raise UpstreamUnavailable("pinned native source module is unavailable")
+        path = Path(spec.origin)
+        if (
+            path.name != module + ".py"
+            or path.is_symlink()
+            or path.resolve() != path.absolute()
+            or not path.is_file()
+            or path.stat().st_size > 5_000_000
+        ):
+            raise UpstreamUnavailable("native source module is unsafe or oversized")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 5_000_000:
+                raise UpstreamUnavailable("native source module is unsafe or oversized")
+            content = stream.read(5_000_001)
+        if len(content) > 5_000_000:
+            raise UpstreamUnavailable("native source module is unsafe or oversized")
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != expected:
+            raise UpstreamUnavailable("installed native module differs from its pinned source")
+        return digest
+    except UpstreamUnavailable:
+        raise
+    except (ImportError, OSError, ValueError, RuntimeError) as error:
+        raise UpstreamUnavailable("pinned native source module is unavailable") from error
 
 
 def source_fingerprint(root: Path, package: str) -> str:
@@ -39,4 +89,6 @@ def require_pinned_source(package: str) -> None:
     if spec is None or spec.origin is None or package not in SOURCE_DIGESTS:
         raise UpstreamUnavailable("pinned native source package is unavailable")
     if source_fingerprint(Path(spec.origin).parent, package) != SOURCE_DIGESTS[package]:
-        raise UpstreamUnavailable("installed native source differs from its pinned upstream manifest")
+        raise UpstreamUnavailable(
+            "installed native source differs from its pinned upstream manifest"
+        )

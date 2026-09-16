@@ -1,10 +1,13 @@
 """Opt-in live provider checks. Ordinary CI has no secrets or paid calls."""
 
 import os
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
 
+from money.data.security import ProviderFailure
+from money.data.uk.filing_documents import CompaniesHouseFilingDocuments
 from money.data.uk.live import CompaniesHouseProvider, EODHDProvider, Trading212MetadataProvider
 from money.research.live import load_manifest
 from money.schemas.contracts import utc_now
@@ -68,3 +71,47 @@ def test_real_official_filing_source():
         specification.instruments[0].identifiers, "live-qualification", utc_now()
     )
     assert records, "Real configured company filing coverage is empty"
+
+
+def test_real_reviewed_machine_readable_filing_document():
+    specification = manifest()
+    selected = next((item for item in specification.instruments if item.filing_documents), None)
+    if selected is None:
+        pytest.skip("SKIPPED_MISSING_CREDENTIAL: reviewed filing selection configuration")
+    key = credential(specification.filings_credential_environment_variable)
+    if find_spec("stream_read_xbrl") is None:
+        pytest.skip("SKIPPED_EXTERNAL_UNAVAILABLE: pinned stream-read-xbrl runtime")
+    admission = next(
+        item for item in specification.provider_qualifications if item.provider == "companies-house"
+    )
+    provider = CompaniesHouseFilingDocuments(
+        key, admission, storage_hosts=specification.filing_document_storage_hosts
+    )
+    proof = selected.filing_documents[0]
+    try:
+        bundle = provider.fetch(
+            selected.identifiers, proof.filing_id, "live-document-qualification", proof
+        )
+    except ProviderFailure as error:
+        if error.retryable:
+            pytest.skip("SKIPPED_EXTERNAL_UNAVAILABLE: Companies House document transport")
+        raise
+    except ValueError as error:
+        if str(error) == "XBRL_PARSER_UNAVAILABLE":
+            pytest.skip("SKIPPED_EXTERNAL_UNAVAILABLE: pinned XBRL parser dependencies")
+        raise
+    assert bundle.evidence, "Reviewed live representation yielded no usable financial evidence"
+    assert bundle.content_hash == proof.document_content_hash
+    assert bundle.company_number == selected.identifiers.companies_house_number
+    assert bundle.availability_time == bundle.retrieval_time
+    assert bundle.original_publication_time is None
+    assert bundle.conversion_source_attestation == "PINNED_SOURCE_VERIFIED"
+    assert bundle.conversion_source_hash
+    assert "raw_document" not in bundle.model_dump()
+    assert all(
+        record.provider == "companies-house"
+        and record.snapshot_id == "live-document-qualification"
+        and record.publication_time == bundle.retrieval_time
+        and record.fresh_until <= min(admission.valid_until, selected.identifiers.valid_until)
+        for record in bundle.evidence
+    )

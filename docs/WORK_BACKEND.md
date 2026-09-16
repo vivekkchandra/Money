@@ -68,3 +68,20 @@ Storage and replay validate the cross-examination packet hash, snapshot identity
 Baseline integration suite: 15 passed, one PostgreSQL test skipped (no `TEST_DATABASE_URL`). After core backend implementation: 48 integration/security tests passed, one PostgreSQL skip, including concurrent token admission and persistent outcome checks. Additional signal suite: 11 passed using real TA-Lib. Additional production service suite: 10 passed including circuit races and later signal invalidation. The real PostgreSQL test now also verifies migration drift, concurrent enqueue deduplication, login counters, session revocation, recovery and stale-worker fencing when CI supplies `TEST_DATABASE_URL`. Dedicated mypy checks passed for all modified source modules; Ruff checks and formatting passed. CLI help was executed. Latest complete results are consolidated by the parent in `docs/VERIFICATION.md`.
 
 No actual PostgreSQL service, cloud deployment, production model qualification, provider credentials or external alert channel was fabricated as successful. Remaining operational work includes session/rate-history retention cleanup, exporter integration for JSON logs/metrics, and externally qualified email/Telegram delivery. Budget and provider-circuit services are owned by the parent integration workstream.
+
+An isolated acceptance runner is now available at `scripts/backend_acceptance.py`;
+see WORK_DEPLOY.md for its crash/restart/backup/restore contract. Local execution
+correctly reported a PostgreSQL shared-memory permission blocker before migrations;
+the runner's safety tests are not represented as a completed real PostgreSQL drill.
+
+The HTTP/browser smoke harness now uses bounded child lifecycle helpers. Synthetic
+worker jobs have a 30-second deadline; migrations wait at most 60 seconds and worker
+commands 90 seconds before bounded SIGTERM/SIGKILL handling. Signals target only
+tracked children. A killed/crashed worker may have an independently isolated compute
+child, so a non-clean worker exit conservatively retains the temporary database.
+Cleanup never replaces an original failure with an unrelated cleanup exception.
+Browser actions/navigation have explicit timeouts. Eight focused lifecycle tests,
+all 76 frontend tests, frontend lint and type checking passed locally. Listening
+sockets remain blocked here, so no local HTTP smoke pass is claimed. The earlier
+remote smoke failure's cause remains unproven without its diagnostics; these changes
+address an observed unbounded-wait defect rather than asserting that CI is fixed.

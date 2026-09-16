@@ -144,6 +144,10 @@ def test_live_manifest_budget_preflight_matches_native_limits():
         daily=2_000_000,
     )
     validate_invocation_budgets((selection, selection, selection), 16, limits)
+    with pytest.raises(ValueError, match="BUDGET_CONFIGURATION"):
+        validate_invocation_budgets((selection, selection, selection), 16, limits, 24)
+    with pytest.raises(ValueError, match="CHALLENGE_LIMIT"):
+        validate_invocation_budgets((selection, selection, selection), 16, limits, -1)
     with pytest.raises(ValueError, match="MODEL_BUDGET_CONFIGURATION"):
         validate_invocation_budgets(
             (selection, selection, selection),

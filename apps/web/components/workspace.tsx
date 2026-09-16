@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { DEFAULT_MANDATE, humanize, isTerminal, JOB_STAGES, signalState, unwrapSignal, validateJobInput, type Evidence, type Health, type Job, type Mandate, type RecordData, type Reports } from "@/lib/contracts";
 import { api } from "@/lib/client";
+import { canonicalView } from "@/lib/routes";
 import { type SystemMetrics } from "@/lib/system";
 import { OperationalMetrics } from "./operational-metrics";
+import { CrossExamination } from "./cross-examination";
 import { Badge, DataRecord, DataValue, EmptyState, FirmReportCard, Icon, JobList, SectionHeading } from "./primitives";
 
 const NAV = [
@@ -53,7 +55,8 @@ function useResource<T>(path: string | null, refresh = 0, poll = false) {
   return { data: loadedPath === path ? data : null, error: loadedPath === path ? error : null, loading: !!path && loadedPath !== path };
 }
 
-export function Workspace({ view }: { view: string[] }) {
+export function Workspace({ view: requestedView }: { view: string[] }) {
+  const view = canonicalView(requestedView);
   const page = view[0] ?? "";
   const [revision, setRevision] = useState(0);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
@@ -72,7 +75,7 @@ export function Workspace({ view }: { view: string[] }) {
   const active = jobs.filter((job) => !isTerminal(job.status));
   const [title, eyebrow] = TITLES[page] ?? ["This page is outside the research universe.", "Page not found"];
 
-  return <div className="app-shell">
+  return <div className="app-shell" data-money-page={page || "dashboard"}>
     <a className="skip-link" href="#main">Skip to content</a>
     <aside className="sidebar">
       <Link href="/" className="brand" aria-label="Money home"><span className="brand-symbol">m<span>·</span></span><span>money<span className="brand-period">.</span></span></Link>
@@ -176,12 +179,14 @@ function MandateEditor() {
   return <div className="content-grid"><section className="panel form-panel"><SectionHeading kicker="RESEARCH CONSTRAINTS" title="Your research mandate" /><form onSubmit={save}><div className="field-grid"><div><label htmlFor="capital">Maximum assumed capital (£)</label><input id="capital" type="number" min="1" max="200" step="0.01" value={mandate.maximum_capital_gbp} onChange={(e) => { setSaved(false); setMandate({ ...mandate, maximum_capital_gbp: e.target.value }); }} /><small>Never more than £200. No portfolio access.</small></div><div><label htmlFor="minimum">Minimum horizon (days)</label><input id="minimum" type="number" min="1" max={mandate.maximum_horizon_days} value={mandate.minimum_horizon_days} onChange={(e) => { setSaved(false); setMandate({ ...mandate, minimum_horizon_days: Number(e.target.value) }); }} /></div><div><label htmlFor="maximum">Maximum horizon (days)</label><input id="maximum" type="number" min={mandate.minimum_horizon_days} max="30" value={mandate.maximum_horizon_days} onChange={(e) => { setSaved(false); setMandate({ ...mandate, maximum_horizon_days: Number(e.target.value) }); }} /></div></div><div className="fixed-policy"><span className="type-label fact">FACT / MANDATE</span><h3>Eligibility and ethical boundaries</h3><p>Trading 212 Stocks & Shares ISA · Individual stocks · GBP or GBX</p><div className="chips">{DEFAULT_MANDATE.excluded_activities.map((activity) => <span key={activity}>{humanize(activity)}</span>)}</div></div><div className="notice"><strong>£1,000 stretch objective</strong><span>Aspirational only. It cannot increase capital, weaken evidence standards or loosen risk limits.</span></div><button className="button" type="submit">Save mandate draft <Icon name="check" size={16} /></button>{saved && <span className="saved-message" role="status">Draft saved in this browser</span>}<p className="small-print">This browser draft is applied to new research requests. Each job stores its own immutable mandate version in the research database.</p></form></section><section className="panel side-note"><Icon name="lock" size={24} /><h2>Boundaries are part of the research.</h2><p>Unknown eligibility, prohibited business activities, stale critical evidence or a currency outside the mandate stop a candidate from progressing.</p><p>Enthusiasm cannot override these gates.</p></section></div>;
 }
 
+const RESEARCH_TABS = [["firms", "Independent firms"], ["audit", "CIO & Red Team"], ["cross-examination", "Cross-examination"], ["evidence", "Evidence & sources"], ["decision", "Money research state"]];
+
 function ResearchDetail({ id, section, revision, onRefresh }: { id: string | undefined; section?: string; revision: number; onRefresh: () => void }) {
   const validId = id && /^[a-f0-9-]{36}$/i.test(id);
   const job = useResource<Job>(validId ? `/api/research/${id}` : null, revision, true);
   const reports = useResource<Reports>(validId ? `/api/research/${id}/reports` : null, revision, true);
   const evidence = useResource<Evidence>(validId ? `/api/research/${id}/evidence` : null, revision, true);
-  const [tab, setTab] = useState(["firms", "audit", "evidence", "decision"].includes(section ?? "") ? section! : "firms");
+  const [tab, setTab] = useState(RESEARCH_TABS.some(([key]) => key === section) ? section! : "firms");
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   if (!validId) return <EmptyState title="A valid research ID is required" detail="Open a research record from the research jobs page." />;
@@ -198,13 +203,14 @@ function ResearchDetail({ id, section, revision, onRefresh }: { id: string | und
     {packet?.runtime === "demo" && <div className="notice demo"><strong>Synthetic demonstration record</strong>These fixture reports demonstrate the workflow. The upstream firms did not conduct live research, and this packet cannot publish an investment signal.</div>}
     {record.error_message && <div className="notice error" role="alert"><strong>{humanize(record.error_code ?? "Research stopped")}</strong>{record.error_message}</div>}
     <div className="stage-track" aria-label="Research progress">{["QUEUED", "SNAPSHOT_BUILD", "FIRST_PASS_RESEARCH", "FIRST_PASS_LOCKED", "LEAN_VALIDATION", "CREWAI_AUDIT", "COMPLETE"].map((stage, i) => <div className={JOB_STAGES.indexOf((record.current_stage || record.status) as typeof JOB_STAGES[number]) >= JOB_STAGES.indexOf(stage as typeof JOB_STAGES[number]) ? "reached" : ""} key={stage}><span>{i + 1}</span><small>{humanize(stage)}</small></div>)}</div>
-    <div className="tabs" role="tablist" aria-label="Research sections">{[["firms", "Independent firms"], ["audit", "CIO & Red Team"], ["evidence", "Evidence & sources"], ["decision", "Money research state"]].map(([key, label]) => <button key={key} id={`tab-${key}`} role="tab" aria-selected={tab === key} aria-controls="research-panel" tabIndex={tab === key ? 0 : -1} onClick={() => setTab(key)} onKeyDown={(event) => {
-      const keys = ["firms", "audit", "evidence", "decision"];
+    <div className="tabs" role="tablist" aria-label="Research sections">{RESEARCH_TABS.map(([key, label]) => <button key={key} id={`tab-${key}`} role="tab" aria-selected={tab === key} aria-controls="research-panel" tabIndex={tab === key ? 0 : -1} onClick={() => setTab(key)} onKeyDown={(event) => {
+      const keys = RESEARCH_TABS.map(([key]) => key);
       const index = keys.indexOf(tab);
-      const next = event.key === "ArrowRight" ? (index + 1) % 4 : event.key === "ArrowLeft" ? (index + 3) % 4 : event.key === "Home" ? 0 : event.key === "End" ? 3 : -1;
+      const next = event.key === "ArrowRight" ? (index + 1) % keys.length : event.key === "ArrowLeft" ? (index + keys.length - 1) % keys.length : event.key === "Home" ? 0 : event.key === "End" ? keys.length - 1 : -1;
       if (next >= 0) { event.preventDefault(); setTab(keys[next]); document.getElementById(`tab-${keys[next]}`)?.focus(); }
     }}>{label}</button>)}</div>
     <section id="research-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} tabIndex={0}>
+      {tab === "cross-examination" && <CrossExamination artifact={artifacts.cross_examination} evidenceHref={`/research/${id}/evidence`} />}
       {tab === "firms" && <><div className={`barrier ${locked ? "locked" : ""}`}><Icon name="lock" size={20} /><div><strong>{locked ? "First-pass reports are locked" : "Independent research is sealed"}</strong><p>{locked ? "The three original reports are immutable. Downstream validation and audit can now inspect them together." : "No firm's conclusions are revealed to another firm during first-pass research. Reports unlock only when all three are persisted."}</p></div><Badge value={locked ? "FIRST_PASS_LOCKED" : "SEALED"} /></div><div className="firm-grid">{[["tradingagents", "TradingAgents", "A", "Technical, fundamental and market research"], ["ai_hedge_fund", "ai-hedge-fund", "B", "Independent investment philosophies"], ["qlib", "Qlib", "C", "Quantitative models and factor evidence"]].map(([key, name, letter, description]) => <FirmReportCard key={key} name={name} letter={letter} description={description} locked={locked} report={reports.data?.reports[key]} evidenceHref={`/research/${id}/evidence`} />)}</div><section className="panel validation-panel"><span className="type-label validation">VALIDATION RESULT</span><SectionHeading title="LEAN · Independent validation laboratory" />{artifacts.lean ? <DataValue value={artifacts.lean} /> : <p className="muted">Historical falsification begins after all first-pass reports are locked. LEAN is a validation laboratory, not another directional voter.</p>}</section></>}
       {tab === "audit" && <div className="content-grid"><section className="panel"><span className="type-label audit">AUDIT FINDING</span><SectionHeading title="CrewAI · Chief Investment Office" />{artifacts.audit ? <DataValue value={artifacts.audit} evidenceHref={`/research/${id}/evidence`} /> : <EmptyState title="Audit has not been published" detail="Auditors independently verify claims once first-pass reports are locked and validation evidence is available." icon="search" />}</section><section className="panel"><span className="type-label audit">RED TEAM FINDING</span><SectionHeading title="Red Team" />{artifacts.red_team ? <DataValue value={artifacts.red_team} evidenceHref={`/research/${id}/evidence`} /> : <EmptyState title="Challenge pending" detail="The Red Team looks for failure modes, unsupported claims and shared-source groupthink." icon="lock" />}</section><section className="panel"><span className="type-label inference">INFERENCE</span><SectionHeading title="Evidence independence" />{artifacts.independence ? <DataValue value={artifacts.independence} /> : <p className="muted">Source overlap is evaluated across reports. Three firms citing one article count as one underlying source.</p>}</section></div>}
       {tab === "evidence" && <section className="panel"><span className="type-label fact">FACT</span><SectionHeading title="Research snapshot & evidence" />{evidence.error ? <p role="alert">{evidence.error}</p> : evidence.data?.evidence.length ? <><p className="muted">Snapshot <code>{record.snapshot_id}</code> · Evidence retains provenance, timestamps and hashes.</p>{evidence.data.evidence.map((item, i) => <details open className="evidence-item" id={`evidence-${encodeURIComponent(String(item.evidence_id ?? i))}`} key={String(item.evidence_id ?? i)}><summary>{String(item.kind ?? item.category ?? "Evidence")} <span>{String(item.source ?? item.provider ?? `Record ${i + 1}`)}</span></summary><DataRecord data={item} /></details>)}{evidence.data.snapshot && <details className="evidence-item"><summary>Full immutable snapshot</summary><DataRecord data={evidence.data.snapshot} /></details>}</> : <EmptyState title="No snapshot has been published" detail="Money freezes eligible, point-in-time objective evidence before research begins." />}</section>}

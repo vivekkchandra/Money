@@ -75,6 +75,10 @@ class ResearchRuntime:
     cio_runtime: Callable[[], Contract | None] | None = None
     provenance: Contract | None = None
     discover: Callable[[ResearchMandate, ResearchSnapshot], Candidate] | None = None
+    cross_examine: Callable[
+        [str, ResearchMandate, ResearchSnapshot, tuple[FirmReport, ...],
+         LeanValidationReport, CIOAuditReport], CrossExaminationPacket
+    ] | None = None
     signal_builder: (
         Callable[
             [
@@ -334,7 +338,11 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         examination = CrossExaminationPacket.model_validate(artifacts["cross_examination"])
     elif audit.completed:
         store.update_stage(job_id, JobStatus.CROSS_EXAMINATION)
-        examination = run_cross_examination(snapshot, reports, lean, audit, first_pass_locked=True)
+        examination = (
+            runtime.cross_examine(job_id, mandate, snapshot, reports, lean, audit)
+            if runtime.cross_examine else
+            run_cross_examination(snapshot, reports, lean, audit, first_pass_locked=True)
+        )
         store.save_artifact(job_id, "cross_examination", examination)
     store.update_stage(job_id, JobStatus.CONSENSUS)
     state, reasons = consensus(

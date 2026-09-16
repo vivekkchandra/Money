@@ -40,7 +40,14 @@ jobs:
       - run: uv sync --locked --python 3.12
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync mypy src/money
-      - run: uv run --no-sync pytest
+      - run: uv run --no-sync pytest --junitxml=/tmp/money-pytest.xml
+      - name: Collect bounded Python test diagnostics
+        id: python-results
+        if: always()
+        run: python scripts/ci_diagnostics.py pytest /tmp/money-pytest.xml --github-output "$GITHUB_OUTPUT"
+      - name: "Python test results: ${{ steps.python-results.outputs.summary }}"
+        if: always()
+        run: echo "Consult the pytest step for complete test output."
       - run: uv run --no-sync python scripts/check_deployment.py
 
   web:
@@ -88,7 +95,14 @@ jobs:
         with:
           version: "0.12.5"
       - run: uv export --locked --no-dev --no-emit-project --no-hashes --format requirements-txt --output-file /tmp/money-locked-requirements.txt
-      - run: uv tool run --from pip-audit==2.10.1 pip-audit --strict --no-deps --disable-pip --timeout 15 --requirement /tmp/money-locked-requirements.txt
+      - run: uv tool run --from pip-audit==2.10.1 pip-audit --strict --no-deps --disable-pip --timeout 15 --requirement /tmp/money-locked-requirements.txt --format json --output /tmp/money-audit.json
+      - name: Collect bounded dependency diagnostics
+        id: audit-results
+        if: always()
+        run: python scripts/ci_diagnostics.py audit /tmp/money-audit.json --github-output "$GITHUB_OUTPUT"
+      - name: "Dependency results: ${{ steps.audit-results.outputs.summary }}"
+        if: always()
+        run: echo "Consult the audit step for complete advisory or retrieval errors."
 
   container:
     runs-on: ubuntu-latest
@@ -101,3 +115,22 @@ jobs:
           POSTGRES_PASSWORD: disposable-ci-password
           RESEARCH_API_TOKEN: disposable-ci-token-at-least-32-characters
         run: docker compose config --quiet
+
+  backend-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - run: uv sync --locked --python 3.12
+      - name: Install local PostgreSQL acceptance tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client
+          pg_config --version
+          pg_config --bindir >> "$GITHUB_PATH"
+      - name: Isolated migration, killed-worker recovery and backup restore
+        run: uv run --no-sync python scripts/backend_acceptance.py

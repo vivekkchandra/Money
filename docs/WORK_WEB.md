@@ -10,7 +10,7 @@
 | Honest availability | VERIFIED | Session-expiry handler, serialized bounded polling, safe gateway error, retry controls, explicit uncalibrated and integration-not-verified states | Unit tests | None for local contract |
 | Measured operational health | VERIFIED | Authenticated system endpoint; bounded metrics whitelist; workspace job/token/cost totals; explicitly shared provider observations; unknown usage/cost, stale observations and qualification separated | Component/security tests | Browser runtime test blocked below |
 | Web dependency install | VERIFIED | `npm_config_fetch_retries=0 npm_config_fetch_timeout=5000 npm ci --prefix apps/web` succeeded with 384 packages; offline installation also verified | Local sandbox | Install did not establish a fresh advisory scan; ESLint 9.39.4 emitted an unsupported-version deprecation warning |
-| Lint / TypeScript / tests / build | VERIFIED | `npm run lint`, `typecheck`, `test`, `build` — 53 tests across 5 files passing, dynamic Next.js production build successful; deployment checker passed afterwards | Local sandbox | None |
+| Lint / TypeScript / tests / build | VERIFIED | Initial 53-test baseline passed; deployment-routing follow-up expands this to 68 tests across 6 files. Exact latest command results below | Local sandbox | None for completed commands |
 | HTTP E2E / browser E2E | BLOCKED_ENVIRONMENT | `npm run test:smoke` and `npm run test:browser` both stop at `listen EPERM 127.0.0.1` | Local sandbox | Local socket permission; CI has browser install and real cross-process smoke |
 
 The browser smoke exercises real Next.js, API, a separate Python worker and a
@@ -43,3 +43,54 @@ source was inspected or modified for this work. Parent performs the final Money
 AST graph update after integrating all work streams.
 
 CSP implementation follows [Next.js nonce guidance](https://nextjs.org/docs/app/guides/content-security-policy).
+
+## Deployment-routing follow-up
+
+The clean pre-change baseline passed `npm ci`, lint, typecheck, 53 tests and the
+production build. Inspection of `.next/routes-manifest.json` confirmed that
+`/[[...view]]` matches `/` and nested paths. The server app-path manifest includes
+the SSR page and all API handlers. There is no requirement for an exported
+`index.html`: [Next.js optional catch-all routes](https://nextjs.org/docs/app/api-reference/file-conventions/dynamic-routes)
+include the base path, and [Netlify's Next.js adapter](https://docs.netlify.com/build/frameworks/framework-setup-guides/nextjs/overview/)
+provides SSR and API runtime functions. These facts do **not** establish the cause
+of a generic 404 on a remote deployment whose deployed artifacts/logs are unavailable.
+
+Concrete application gaps found and fixed: `/dashboard` now opens the existing
+overview, bare `/research` opens research jobs, and `/system` opens System Health.
+Research detail IDs and `/jobs` / `/health` remain unchanged. Authentication and
+dynamic rendering are preserved. No static export, catch-all SPA rewrite, fake
+index page, new Netlify project or Netlify configuration change was introduced.
+
+Read-only acceptance command for the deployment owner:
+
+```sh
+npm run check:deployment --prefix apps/web -- https://EXISTING-SITE.netlify.app --production
+```
+
+Omit `--production` for preview/local checks, where HSTS is not required by Money.
+The checker never authenticates, creates research or modifies the target. It
+verifies `/`, `/dashboard`, `/research`, `/system`, Money-specific screen markers,
+referenced same-origin JavaScript/CSS, HTTP/MIME correctness, security headers,
+per-request hydration nonces, session JSON and fail-closed unauthenticated control
+routes. It detects generic host 404 content and static assets incorrectly served
+as HTML. Bodies, redirects, asset count and request deadlines are bounded.
+Passing this check establishes only web delivery, not backend or research readiness.
+
+The existing cross-process smoke now runs these HTTP checks before login and after
+stopping its synthetic-test backend, checking that the web survives the outage.
+It includes safe stage labels and redacts generated credentials from diagnostics.
+Local execution was attempted again and remains blocked at
+`listen EPERM 127.0.0.1` before any service starts. The remote CI smoke failure
+reported by the coordinating agent cannot be diagnosed from this local permission
+error; its failure trace remains required. No HTTP/browser success is claimed.
+
+Regression tests cover supported route shells without a backend, alias/detail
+preservation, missing backend configuration, generic host 404, wrong catch-all
+screen, missing assets, HTML fallback assets, missing headers, unauthenticated
+data exposure, redirects, response bounds and credential-bearing origins.
+
+Final local results after the routing/checker changes: `npm run lint`,
+`npm run typecheck`, `npm test` (68 passed / 6 files), `npm run build` and
+`python scripts/check_deployment.py` all passed. The clean `npm ci` at the start
+also passed (384 installed packages); no dependency version was changed. The
+existing ESLint unsupported-version warning remains recorded, not concealed.

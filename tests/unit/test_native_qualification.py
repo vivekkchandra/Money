@@ -574,7 +574,8 @@ def _challenge_inputs(snapshot: ResearchSnapshot) -> tuple[tuple[FirmReport, ...
     return reports, LeanValidationReport(snapshot_id=snapshot.snapshot_id, state="INSUFFICIENT_EVIDENCE", runner_version="test"), CIOAuditReport(
         snapshot_id=snapshot.snapshot_id, completed=True, active_specialists=("Technical Auditor",),
         findings=(AuditFinding(auditor="Technical Auditor", claim_id=reports[0].claims[0].claim_id,
-            state="UNSUPPORTED", explanation="Relative volume needs independent recomputation.", evidence_ids=("bar-24",)),))
+            state="UNSUPPORTED", explanation="Relative volume needs independent recomputation.",
+            evidence_ids=tuple(f"bar-{i}" for i in range(4, 25))),))
 
 
 def _challenge_response(snapshot: ResearchSnapshot, own_report: FirmReport | None,

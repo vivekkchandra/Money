@@ -1,6 +1,8 @@
 """Adversarial regression checks for executable brokerage capabilities."""
 
 import runpy
+import tomllib
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -42,3 +44,20 @@ def test_credentials_are_detected_without_committing_a_real_secret() -> None:
 
 def test_entire_money_deployment_boundary() -> None:
     CHECKER["main"]()
+
+
+@pytest.mark.parametrize("change", [
+    {"build": {"base": "apps/web/apps/web", "command": "npm run build", "publish": ".next"}},
+    {"build": {"base": "apps/web", "command": "npm run build", "publish": "apps/web/.next"}},
+    {"context": {"production": {"publish": "."}}},
+    {"redirects": [{"from": "/*", "to": "/index.html", "status": 200}]},
+    {"plugins": []},
+    {"plugins": [{"package": "@netlify/plugin-nextjs"}, {"package": "@netlify/plugin-nextjs"}]},
+    {"plugins": [{"package": "@netlify/plugin-nextjs"}]},
+    {"plugins": [{"package": "./netlify/plugins/money-ssr-guard"}, {"package": "@netlify/plugin-nextjs"}]},
+])
+def test_netlify_path_and_ssr_contract_rejects_regressions(change):
+    configuration = tomllib.loads((Path(__file__).resolve().parents[2] / "netlify.toml").read_text())
+    modified = deepcopy(configuration) | change
+    with pytest.raises(AssertionError):
+        CHECKER["check_netlify_configuration"](modified)

@@ -7,6 +7,16 @@
   NODE_VERSION = "22"
   NEXT_TELEMETRY_DISABLED = "1"
 
+# This existing project did not auto-install the SSR adapter: the observed
+# production log built dynamic routes but uploaded zero functions. Keep this
+# explicit, with the exact adapter dependency recorded in apps/web/package-lock.json.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Same-hook order matters: inspect the adapter's final static/functions output.
+[[plugins]]
+  package = "./netlify/plugins/money-ssr-guard"
+
 [context.production.environment]
   MONEY_DEPLOYMENT_CONTEXT = "production"
   MONEY_ENV = "production"

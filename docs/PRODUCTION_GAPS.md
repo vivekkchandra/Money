@@ -23,3 +23,16 @@ the starting gaps; completion evidence belongs in VERIFICATION.md.
 | Product | Existing responsive workspace | Full states, separate provenance/report exploration / high | Next.js product | Unit/build/HTTP and browser smoke |
 | Operations | Compose/CI/basic health | Structured metrics, backup/restore, dependency checks / high | Health, CI, operations docs | Required commands, explicit blockers |
 | Live acceptance | No qualified real critical path | Credentials, licensed data, model, runtime/host acceptance / critical | Opt-in production qualification | Never inferred from mock tests |
+
+## Deployment follow-up at `acb38f1`
+
+| Requirement | Observed implementation | Gap / severity | Implementation target | Verification |
+| --- | --- | --- | --- | --- |
+| Live root | Correct paths/dynamic routes; supplied log/API confirms absent adapter/functions | Raw `.next` uploaded without SSR runtime / critical | Explicit locked Next adapter plus fail-closed post-build artifact guard | 19 artifact tests and HTTP checker; local latest CLI/live HTTP blocked, repaired deployment not observed |
+| Route aliases | Dashboard/jobs/health existed under other paths | `/dashboard`, `/research`, `/system` had incorrect screen selection / high | Aliases mapped without changing SSR | Included in final 129 web tests and successful Next build |
+| Remote CI | `acb38f1` run completed | pytest, HTTP smoke, pip-audit failed / critical | Bounded failure diagnostics + actual traceback/root-cause repair | Remote job metadata observed; full logs unavailable |
+| Restore/restart evidence | Operations runbook only | Actual PostgreSQL drill missing / critical | Isolated real-PG kill/recover/backup/restore runner, migration lock | Runner safety tests pass; shared-memory permission blocks real drill |
+| Native correspondence | Default unavailable responders | Actual firm responses and independent checking / high | Native TA/AI-HF/CrewAI plus deterministic quant/validation rechecks, durable paid-call journal | Scripted native and recovery tests; paid qualification remains blocked |
+| Filing documents | Filing index plus separate converter | Authoritative selected document-to-snapshot path missing / high | Reviewed content/units/hosts, bounded official fetch, converter and safe immutable provenance | Adversarial transport/assembly tests; live key/parser/source qualification still required |
+| Correspondence UX | Initial audit and raw packet only | Challenges/responses/independent checks not separately inspectable / high | Separate accessible cross-examination tab, expandable rounds and source checks | Component tests and build; real browser blocked |
+| Smoke lifetime | Some child waits/shutdowns unbounded | Hung processes can obscure original failure / high | Finite operation waits, termination escalation, retain data until safe | Eight lifecycle tests; not a diagnosis of the earlier remote failure |

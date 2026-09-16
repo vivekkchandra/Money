@@ -130,7 +130,54 @@ packages, paid credentials, approved datasets/models, LEAN image and host contro
 Scripted native-lifecycle tests are explicitly test/demo evidence, not live runs.
 Full per-workstream command evidence is in WORK_NATIVE.md and VERIFICATION.md.
 
-Final Money-only `graphify update .` refreshed the AST graph to 1512 nodes, 4348
+The earlier production-build Money-only `graphify update .` refreshed the AST graph to 1512 nodes, 4348
 edges and 106 communities without an LLM call. Document semantic extraction was
 not run. The existing skill/package warning and community-label suggestions were
 left untouched; no upstream/global skill refresh was performed.
+
+## Deployment/live-acceptance follow-up — 2026-09-16
+
+Existing graphs were queried before upstream source inspection. The five critical
+firms retain their original pinned seams; this follow-up adds downstream native
+correspondence, not a replacement first-pass organisation. No upstream code,
+graphs or pins were edited.
+
+| Exact question / query and graph | Symbols / minimal inspection | Money integration decision |
+| --- | --- | --- |
+| Money deployment/control boundaries: `How do Netlify root routing, LiveSnapshotBuilder, ResearchRuntime, and token budgets preserve deployment and sealed research boundaries?` / Money graph, 600 tokens | `ResearchRuntime`, `LiveSnapshotBuilder`, `ResearchStore`, deployment tests, token budget manager; only relevant local methods | Preserve existing monorepo/SSR topology; add HTTP acceptance, claimed-store binding and immutable post-lock paid-call journal |
+| TradingAgents own-report challenge: `create_research_manager create_bear_researcher`, narrowed `get_instrument_context_from_state opponent_argument_or_opening` / TradingAgents graph, 600 then 400 tokens | `agents/researchers/bear_researcher.py` role body and `agents/utils/agent_utils.py` lines 176–218 | Actual native bear factory, frozen permitted evidence, closed inference; no peer repository or uncontrolled instrument fetch |
+| AI-HF own-report challenge: `LLMAgent get_system_prompt build_snapshot predict _parse` / AI-HF graph, 600 tokens | `signals/llm_agent.py` lines 35–155 and `signals/buffett.py` lines 1–110 | Actual persona/predict lifecycle with Money response contract, private cache and inert data client |
+| Qlib approved inference recheck: `DatasetH LinearModel predict training validation feature version` / Qlib graph, 600 tokens | `DatasetH`, `LinearModel`, `DataHandlerLP`; no additional upstream source read | Preserve pinned static numeric inference; deterministic challenge verification recalculates approved model inputs/score without qualitative peer opinions |
+| LEAN fixed reader recheck: `CustomDataRegressionAlgorithm PythonData GetSource Reader` / LEAN graph, 600 tokens | `PythonData`, custom-data reader symbols including Python example; no additional upstream source read | Retain fixed isolated order-free study; correspondence cannot convert missing methodology or failed validation into a PASS |
+| Independent CIO verifier: `Agent Task output_pydantic kickoff` / CrewAI graph, 600 tokens | Agent/Task/Crew symbols; reused earlier minimal native source seam | Actual separate source-verification task with strict allowed citations, exact quotation/hash proof and measured usage; deterministic adverse checks precede inference |
+| Filing retrieval/provenance: `CompaniesHouseProvider SafeFetcher XBRL document publication availability` / Money graph, 650 tokens | `uk/live.py`, `uk/xbrl.py`, `data/security.py`, identity/qualification contracts | Authoritative document API transport, exact reviewed redirect hosts, credential separation and retrieval-only availability |
+| Bounded XBRL conversion: `stream_read_xbrl parse stream_read_xbrl` / stream-read-xbrl graph, 600 tokens | `_xbrl_to_rows`, `_parse`, `stream_read_xbrl_zip`; upstream `stream_read_xbrl.py` lines 74–102 only | Keep Money single-member conversion and explicit content-bound GBP units proof; no native process-pool fanout or historical publication inference |
+
+WORK_NATIVE.md and WORK_FILINGS.md record the official documentation, exact
+capabilities, tests and outstanding real-runtime qualification. Final Money-only
+AST refresh statistics are consolidated in VERIFICATION.md.
+
+Follow-up Money UI query `DataValue RecordData workspace evidence` (600 tokens)
+and `ResearchDetail DataValue tabs workspace research detail` (500 tokens) located
+the existing primitives and detail tabs for the separately expandable
+cross-examination view. No native research dependency enters the frontend.
+
+The XBRL closure hashes only the exact already-discovered standalone module,
+after verifying checkout SHA `b95b48bbf50727648cebcba56634b17dc9e60ad3` against
+UPSTREAM_LOCK.txt. Its SHA-256 is
+`afff17f5a281e2474dcf11d6c8d407c08522cd144d7d075631e6e09c6ebc8b33`.
+Money now attests that bounded file before import rather than recursively hashing
+site-packages. This source identity check is not qualification of live data.
+
+The Netlify incident was diagnosed from the supplied production log and the
+user's `plugins: []` / `available_functions: []` API findings, not a guessed
+framework rewrite. Official Netlify documentation and minimal installed published
+adapter/CLI artifact contracts informed the dependency-free build guard; exact
+package files/version assumptions are listed in
+`apps/web/netlify/plugins/money-ssr-guard/README.md`. No upstream repository was
+edited or newly cloned for this investigation.
+
+Final follow-up `graphify update .`: **1868 nodes, 5477 edges, 135 communities**.
+The AST-only update required no API key/LLM. Graphify retained a curated backup;
+its pre-existing installed skill/package warning and optional label-refresh
+suggestion do not authorize global or upstream changes.
