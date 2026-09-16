@@ -143,7 +143,9 @@ MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run pytest tests/production -v
 
 Native test-specific input paths are documented in WORK_NATIVE.md. Test runners
 report `PASSED`, `FAILED`, `SKIPPED_MISSING_CREDENTIAL` or
-`SKIPPED_EXTERNAL_UNAVAILABLE`; a skip is not successful qualification.
+`BLOCKED_EXTERNAL_INFRA`; a skip is not successful qualification. Production
+tests first select a current reviewed GBP/GBX ISA stock from the qualified
+manifest. They never default to its first entry or a global/US ticker.
 
 Offline baseline dataset preparation/training is documented in WORK_TRAINING.md.
 It uses actual NumPy ridge fits compatible with the Qlib inference feature order,

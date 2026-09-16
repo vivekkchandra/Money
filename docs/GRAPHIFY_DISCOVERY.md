@@ -247,3 +247,29 @@ suggestion do not authorize global or upstream changes.
 - Web navigation query: `ResearchDetail InstrumentPicker auth` at700tokens,
   inspect only Money request/proxy/result presentation. Separate personal evidence
   view, not a production signal or falsely locked first-pass barrier.
+
+## Qualified GBP/GBX ISA mandate follow-up — 2026-09-16
+
+- Question: where are hard eligibility, live catalogue and publication gates?
+  Existing Money graph; scoped `eligibility universe mandate stretch provider live`
+  query (750-token budget), then signal/DecisionPacket query (650). Important seams:
+  Trading212EligibilityService, InstrumentCatalogue, consensus, generate_signal,
+  Store publication/tenant filters. Inspected those Money modules and outcome/API
+  contracts. Decision: strengthen existing gates and add a read-only objective
+  projection after publication, not a parallel research engine.
+- Question: can current reviewed ISA coverage be exposed without claiming a complete
+  broker feed? Existing Money graph, Trading212EligibilityService/InstrumentCatalogue/
+  eligibility/ISA-universe query (650). Inspected Money eligibility, identifiers,
+  live manifest and instrument search. New ReviewedIsaUniverse retains proof hashes
+  and expiry; public broker metadata is not taken as proof of current ISA availability.
+- Question: which UI and proxy seams can show the new objective safely? Existing Money
+  graph and targeted workspace/proxy inspection; existing catch-all SSR navigation,
+  backend path allowlist and instrument parser reused. New views preserve historical
+  R&D records separately and never manufacture an opportunity or total broker count.
+- Question: is CrewAI's vulnerable vector dependency optional? Existing CrewAI graph
+  queried before investigation; no upstream source inspection or changes were needed.
+  Inspected Money dependency lock, subprocess restrictions and installed package
+  metadata. CrewAI 1.15.21 requires chromadb~=1.1.0; no safe patched compatible release
+  established. Preserve audit failure and isolation; do not suppress advisories or
+  replace pinned source attestation to accept the locally mismatched installation.
+- No upstream edits, clones or graph rebuilds; only Money's AST graph is updated.

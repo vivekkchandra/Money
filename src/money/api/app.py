@@ -31,6 +31,7 @@ from money.data.instruments import (
     InstrumentSearchResult,
 )
 from money.data.security import ProviderFailure
+from money.data.universe import IsaUniverseQuery, ReviewedIsaUniverse
 from money.product.api import router as product_router
 from money.product.api import safe_product_error
 from money.product.billing import BillingUnavailable
@@ -41,6 +42,7 @@ from money.reference import (
     require_manifest_commercial_rights,
     require_snapshot_commercial_rights,
 )
+from money.research.objective import ObjectivePageQuery
 from money.schemas.contracts import ResearchMandate, ResearchSnapshot, Ticker, utc_now
 from money.storage import models as stored
 from money.storage.store import (
@@ -662,6 +664,40 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
         require_result_rights(request, db, [item["job_id"] for item in result])
         return {"signals": result}
 
+    @application.get("/research/objective")
+    def objective(
+        request: Request, db: Annotated[ResearchStore, Depends(repository)],
+        query: Annotated[ObjectivePageQuery, Query()],
+    ) -> dict[str, Any]:
+        from money.research.objective import AsymmetryAnalyzer, rank_opportunities
+        from money.schemas.contracts import DecisionPacket
+        from money.signals.generation import SignalDesign
+
+        if request.app.state.settings.money_research_mode != "live":
+            raise AccountError("LIVE_RESEARCH_REQUIRED", "The objective compares qualified live research only", 409)
+        if len(request.query_params.multi_items()) != len(request.query_params):
+            raise AccountError("INVALID_REQUEST", "Use each page parameter once", 422)
+        budget = db.consume_rate_limit("objective-read", 30, 60)
+        if not budget["allowed"]:
+            raise HTTPException(429, "Please wait before refreshing", headers={"Retry-After": "60"})
+        rows = db.objective_publications(limit=query.limit, offset=query.offset)
+        page = rows[:query.limit]
+        require_result_rights(request, db, [row["job_id"] for row in page])
+        now = utc_now()
+        assessments = []
+        for row in page:
+            assessment = AsymmetryAnalyzer.assess(
+                DecisionPacket.model_validate(row["packet"]),
+                SignalDesign.model_validate(row["design"]), now,
+                invalidated=row["invalidated_at"] is not None,
+            )
+            if assessment is not None:
+                assessments.append(assessment)
+        return rank_opportunities(
+            tuple(assessments), now=now, examined=len(page), offset=query.offset,
+            has_more=len(rows) > query.limit,
+        ).model_dump(mode="json")
+
     @application.get("/research/outcomes")
     def outcomes(
         request: Request, db: Annotated[ResearchStore, Depends(repository)]
@@ -686,8 +722,23 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
 
     @application.get("/research/universe")
     def universe(
-        request: Request, db: Annotated[ResearchStore, Depends(repository)]
+        request: Request, db: Annotated[ResearchStore, Depends(repository)],
+        query: Annotated[IsaUniverseQuery, Query()],
     ) -> dict[str, Any]:
+        if request.app.state.settings.money_research_mode == "live":
+            if len(request.query_params.multi_items()) != len(request.query_params):
+                raise AccountError("INVALID_REQUEST", "Use each page parameter once", 422)
+            rate = db.consume_rate_limit("isa-universe", 60, 60)
+            if not rate["allowed"]:
+                raise HTTPException(429, "Please wait before refreshing", headers={"Retry-After": "60"})
+            try:
+                return ReviewedIsaUniverse(current_catalogue(request)).page(
+                    query, mandate=ResearchMandate(), now=utc_now(),
+                ).model_dump(mode="json")
+            except ValueError as error:
+                raise AccountError(
+                    "UNIVERSE_UNAVAILABLE", "Verified ISA coverage is temporarily unavailable", 503,
+                ) from error
         result = db.list_universe()
         require_result_rights(request, db, [item["job_id"] for item in result])
         return {"instruments": result, "coverage": "previously_researched_only"}

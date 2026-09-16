@@ -3,6 +3,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
@@ -336,6 +337,15 @@ def test_outcomes_persist_idempotently_and_never_claim_trade_or_calibration(stor
     assert first == second
     assert first["basis"] == "PUBLISHED_RESEARCH_REFERENCE"
     assert first["calibration_qualified"] is False
+    assert first["assumed_capital_gbp"] == "200"
+    assert first["illustrative_allocation_gbp"] == "100"
+    hypothetical = {item["calendar_days"]: item for item in first["hypothetical_gbp_outcomes"]}
+    assert hypothetical[1]["basis"] == "RESEARCH_REFERENCE_PRICE_CHANGE_EXCLUDING_COSTS"
+    assert Decimal(hypothetical[1]["price_change_gbp"]) == (
+        Decimal("100") * Decimal(first["horizons"][0]["return_fraction"])
+    )
+    assert hypothetical[20]["price_change_gbp"] is None
+    assert hypothetical[30]["price_change_gbp"] is None
     assert len(store.list_outcomes()) == 1
     with pytest.raises(StoreError):
         evaluate_signal_outcome(

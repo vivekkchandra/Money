@@ -1,6 +1,35 @@
 # Commercial implementation plan — 2026-09-16
 
-## Current scope: explicit personal live R&D
+## Current scope: qualified live GBP/GBX Trading 212 ISA research
+
+The latest mandate supersedes personal R&D as the primary product target. Preserve
+`live_rnd`, but never substitute it for qualified `live`. Starting baseline is
+published `cade435e0a58a754d15cf92c58173082c597acf3`; this follow-up is local.
+
+- DONE locally: current reviewed ISA directory with hard stock/GBP/GBX/ethics gates,
+  proof hashes, 24-hour eligibility expiry, bounded pagination and per-use qualification.
+  Coverage is explicitly a reviewed manifest subset, not a complete live broker feed.
+- DONE locally: post-publication £200 / 30-day objective comparison, reproducible
+  cost-adjusted scenarios, explicit ranking rules and no target-driven risk changes.
+  T+20 outcome sampling and allocation-based hypothetical GBP outcomes are persisted.
+- DONE locally: objective/universe UI, stale-record hiding, no fake opportunities,
+  acceptance selection from the eligible manifest rather than a fixed/global ticker.
+- DONE locally: sanitized CI source-location/error-code diagnostics to investigate
+  the actual PostgreSQL/HTTP failures without exposing exception bodies or secrets.
+- CREDENTIAL BLOCKED: current reviewed ISA/ethical evidence; qualified UK price,
+  filings/news/action datasets and their usage rights; pinned live manifest/hash;
+  inference configuration, promoted Qlib artifact and native runtime qualifications.
+- EXTERNAL INFRASTRUCTURE BLOCKED: Railway and Netlify connectors are administrator-
+  disabled; Git metadata is read-only; local Docker/listener/PG access is unavailable.
+- IN PROGRESS: real PostgreSQL, backend recovery, HTTP/browser and dependency release
+  acceptance. Published CI has failures; additional diagnostics are not their repair.
+- NOT STARTED: complete continuously refreshed broker universe acceptance and hosted
+  full-universe discovery/ranking qualification. Paginated workspace scenarios are
+  not a whole-market opportunity leaderboard or a validated portfolio optimiser.
+
+See VERIFICATION.md for current evidence, exact test counts and remaining gates.
+
+## Historical scope: explicit personal live R&D
 
 - DONE locally: yfinance adapter, official SEC/BoE/ONS/FRED/Companies House wrappers,
   source provenance, currency-preserving sealed R&D snapshots, durable cache/rates,

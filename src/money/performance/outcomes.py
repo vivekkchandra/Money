@@ -12,7 +12,7 @@ from pydantic import AwareDatetime, Field, model_validator
 
 from money.schemas.contracts import Contract, PositiveMoney, Ticker
 
-HORIZONS = (1, 3, 5, 10, 30)
+HORIZONS = (1, 3, 5, 10, 20, 30)
 
 
 class OutcomeBar(Contract):
@@ -127,7 +127,7 @@ def _touch(bar: OutcomeBar, issued_at: datetime) -> LevelOccurrence:
 def calculate_outcome(
     specification: OutcomeSpecification, bars: tuple[OutcomeBar, ...], as_of: datetime
 ) -> ResearchOutcome:
-    """Calculate 1/3/5/10/30-calendar-day outcomes from data available by as_of.
+    """Calculate 1/3/5/10/20/30-calendar-day outcomes from data available by as_of.
 
     Bars spanning issuance are excluded: their highs/lows may precede the signal.
     Endpoints may carry back only by the explicit maximum_endpoint_age_hours;

@@ -1,6 +1,19 @@
 # Commercial deployment
 
-## Personal R&D deployment target (2026-09-16)
+## Current release target: qualified live GBP/GBX ISA research
+
+Primary application settings are now `MONEY_ENV=production` and
+`MONEY_RESEARCH_MODE=live`, with the existing qualified manifest/provider/model
+startup gates. The personal R&D deployment instructions below describe a separate
+noncommercial mode, not a route around these gates. Existing project IDs, Git
+reference tables, Netlify SSR and API/private-worker boundaries are unchanged.
+
+Published `cade435` passed the release-SHA public web check in GitHub run
+35153377355. The same release's broader CI failed PostgreSQL, backend drill,
+HTTP smoke and research dependency checks. Do not promote this local follow-up
+until those failures and the hosted live research acceptance are resolved.
+
+## Personal R&D deployment target (2026-09-16; retained separately)
 
 This is separate from commercial launch. Use the existing owner-specified Railway
 **incredible-flexibility / production / Money + Postgres**, not a new project.

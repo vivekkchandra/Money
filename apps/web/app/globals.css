@@ -14,6 +14,36 @@ h2 { font-size: 21px; line-height: 1.3; }
 h3 { font-size: 16px; font-weight: 600; }
 svg { flex-shrink: 0; }
 .muted { color: var(--muted); }
+.objective-link { display: flex; align-items: center; justify-content: space-between; gap: 24px; border-left: 4px solid var(--green); }
+.objective-link p:not(.eyebrow) { max-width: 650px; color: #52634f; margin-top: 9px; font-size: 13px; }
+.objective-link .button { flex-shrink: 0; }
+.objective-hero { background: #f2f5e9; }
+.objective-hero h2 { font: 32px/1.2 Georgia, serif; margin: 17px 0; }
+.objective-hero p { color: #455740; max-width: 720px; font-size: 13px; line-height: 1.8; }
+.objective-numbers { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; border-top: 1px solid #ccd5bf; margin: 24px 0 0; padding-top: 24px; }
+.objective-numbers dt, .objective-metrics dt, .objective-facts dt { font-size: 11px; color: #52634f; }
+.objective-numbers dd { font: 30px/1.5 Georgia, serif; margin: 0; }
+.objective-updated { font-size: 11px; color: #52634f; margin: 20px 0; }
+.objective-scenarios { display: grid; gap: 20px; }
+.objective-scenario { border: 1px solid var(--line); border-radius: 9px; padding: 23px; }
+.objective-scenario header { display: flex; justify-content: space-between; align-items: start; gap: 14px; }
+.objective-scenario header h3 { font-size: 22px; overflow-wrap: anywhere; }
+.objective-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 20px 0; margin: 15px 0; border-block: 1px solid var(--line); }
+.objective-metrics dd { font-size: 23px; margin: 6px 0; overflow-wrap: anywhere; }
+.objective-metrics small { display: block; font-size: 10px; color: #596751; }
+.objective-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 15px 25px; }
+.objective-facts dd { margin: 4px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.objective-actions { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 22px; }
+.objective-provenance { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; font-size: 12px; }
+.objective-provenance summary { cursor: pointer; color: #35523c; }
+.objective-provenance ul, .objective-order { padding-left: 22px; line-height: 1.9; }
+.objective-provenance code { overflow-wrap: anywhere; font-size: 10px; }
+.objective-provenance dd { margin-left: 0; margin-bottom: 9px; }
+.objective-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 25px; font-size: 11px; }
+.objective-order { font-size: 13px; }
+.universe-provenance { overflow-wrap: anywhere; }
+@media (max-width: 1050px) { .objective-numbers { grid-template-columns: repeat(3, 1fr); } .objective-metrics { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .objective-link, .objective-pagination { align-items: stretch; flex-direction: column; } .objective-numbers { grid-template-columns: repeat(2, 1fr); } .objective-hero h2 { font-size: 27px; } .objective-scenario { padding: 17px; } .objective-facts { grid-template-columns: 1fr; } .objective-scenario header { flex-wrap: wrap; } }
 .eyebrow { font-size: 10px; font-weight: 600; letter-spacing: .15em; text-transform: uppercase; margin-bottom: 10px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; clip: rect(0,0,0,0); overflow: hidden; }
 .skip-link { position: fixed; top: -80px; left: 20px; padding: 12px; background: white; z-index: 99; }

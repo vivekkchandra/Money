@@ -5,9 +5,11 @@ import { productionEnvironment, serviceEndpoint } from "@/lib/service";
 import { parseSystemMetrics } from "@/lib/system";
 import { accountHeaders, saasMode } from "@/lib/commercial";
 import { instrumentQuery, parseInstrumentSearch } from "@/lib/instruments";
+import { objectiveQuery, parseObjectiveRanking } from "@/lib/objective";
+import { parseUniverse } from "@/lib/universe";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const allowed = new RegExp(`^(?:/health(?:/ready)?|/research/(?:signals|outcomes|discovery|universe|alerts|system|instruments)|/research/jobs(?:/${UUID}(?:/(?:reports|evidence))?)?)$`);
+const allowed = new RegExp(`^(?:/health(?:/ready)?|/research/(?:signals|outcomes|discovery|universe|alerts|system|instruments|objective)|/research/jobs(?:/${UUID}(?:/(?:reports|evidence))?)?)$`);
 
 export async function proxyBackend(request: Request, path: string): Promise<Response> {
   if (!allowed.test(path)) return json({ error: "Unknown endpoint" }, 404);
@@ -17,11 +19,14 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
   if (request.method === "POST" && !sameOrigin(request)) return json({ error: "Invalid request origin" }, 403);
   const search = path === "/research/instruments" ? instrumentQuery(new URL(request.url).searchParams) : undefined;
   if (search === null) return json({ error: "Enter a company name or ticker of at most 80 characters.", code: "INVALID_INSTRUMENT_QUERY" }, 400);
+  const objective = ["/research/objective", "/research/universe"].includes(path) ? objectiveQuery(new URL(request.url).searchParams) : undefined;
+  if (objective === null) return json({ error: "Use a publication page of 1–20 items and an offset of 0–10000.", code: "INVALID_OBJECTIVE_QUERY" }, 400);
   const token = process.env.RESEARCH_API_TOKEN;
   let endpoint: URL;
   try {
     endpoint = serviceEndpoint(path);
     if (search) endpoint.search = search.toString();
+    if (objective) endpoint.search = objective.toString();
     if (path === "/research/signals") {
       const expired = new URL(request.url).searchParams.get("expired");
       if (expired === "true" || expired === "false") endpoint.searchParams.set("expired", expired);
@@ -63,6 +68,7 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
       });
     }
     if (!response.ok) {
+      if (path === "/research/objective" && response.status === 409) return json({ error: "The objective comparison requires qualified live research. Demo and personal R&D results cannot populate it.", code: "LIVE_RESEARCH_REQUIRED" }, 409);
       if (path === "/research/instruments" && response.status >= 500) return json({ error: "Company search is temporarily unavailable. Please retry.", code: "INSTRUMENT_SEARCH_UNAVAILABLE" }, 503);
       if (path === "/research/jobs" && request.method === "POST" && response.status === 422) {
         const failure = await readLimitedJson(response) as Record<string, unknown>;
@@ -78,6 +84,8 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
       if (productionEnvironment() && catalogue.mode === "live_rnd") throw new Error("Personal R&D cannot authorize production research");
       return json(catalogue);
     }
+    if (path === "/research/objective") return json(parseObjectiveRanking(await readLimitedJson(response, 2_000_000)));
+    if (path === "/research/universe") return json(parseUniverse(await readLimitedJson(response, 2_000_000)));
     const result = await response.json();
     return json(path === "/research/system" ? parseSystemMetrics(result) : result, response.status);
   } catch { return path === "/research/instruments" ? json({ error: "Company search is temporarily unavailable. Please retry.", code: "INSTRUMENT_SEARCH_UNAVAILABLE" }, 503) : json({ error: "Research service is unavailable. Your saved research remains in durable storage." }, 503); }

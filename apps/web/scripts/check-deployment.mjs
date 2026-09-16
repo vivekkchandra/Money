@@ -6,6 +6,7 @@ export const ROUTES = [
   ["/product", "product", "One question. Independent perspectives."],
   ["/pricing", "pricing", "Start with understanding."],
   ["/dashboard", "dashboard", "Your research workspace"],
+  ["/objective", "objective", "30-Day Objective"],
   ["/research", "jobs", "Research jobs"],
   ["/jobs", "jobs", "Research jobs"],
   ["/system", "health", "System health"],
@@ -133,7 +134,7 @@ export async function checkDeployment(value, { fetchImpl = fetch, production = f
   requireCheck(sessionResponse.response.status === 503 ? typeof session.error === "string" : typeof session.configured === "boolean" && session.authenticated === false, "INVALID_SIGNED_OUT_SESSION_STATE");
   const controls = [];
   let deployedSha = "unknown";
-  for (const path of ["/api/health", "/api/research", "/api/research/system", "/api/research/instruments?query=DEMO.L"]) {
+  for (const path of ["/api/health", "/api/research", "/api/research/system", "/api/research/objective", "/api/research/universe", "/api/research/instruments?query=DEMO.L"]) {
     const { response, text } = await read(path, 8192);
     requireCheck([401, 503].includes(response.status), `UNAUTHENTICATED_CONTROL_NOT_CLOSED:${path}`);
     requireCheck((response.headers.get("content-type") ?? "").includes("application/json"), `CONTROL_RETURNED_HTML:${path}`);

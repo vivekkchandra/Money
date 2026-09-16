@@ -11,15 +11,20 @@ import { canonicalView } from "@/lib/routes";
 import { type SystemMetrics } from "@/lib/system";
 import { OperationalMetrics } from "./operational-metrics";
 import { CrossExamination } from "./cross-examination";
+import { ObjectiveDashboardCard, ObjectivePage } from "./objective";
+import { UniverseRecords } from "./universe";
+import { type UniversePage } from "@/lib/universe";
 import { Billing, CustomerToolbar, CustomerWatchlist, InternalAdmin, Notifications, ResearchHistory, TeamSettings, UsageSummary } from "./customer-tools";
 import { Badge, DataRecord, DataValue, EmptyState, FirmReportCard, Icon, JobList, SectionHeading } from "./primitives";
 
 const NAV = [
+  ["objective", "£200 / 30-Day Objective", "chart"],
   ["", "Overview", "grid"], ["mandate", "Research mandate", "sliders"], ["universe", "Universe & eligibility", "grid"], ["discovery", "Candidate discovery", "search"], ["jobs", "Research jobs", "layers"],
   ["signals", "Research signals", "signal"], ["watch", "Watch list", "clock"], ["rejected", "Rejected & insufficient", "lock"], ["expired", "Expired research", "clock"], ["evidence", "Evidence explorer", "document"], ["outcomes", "Outcomes", "chart"], ["performance", "Performance & calibration", "chart"], ["health", "System health", "pulse"], ["settings", "Settings", "sliders"],
 ];
-const CUSTOMER_NAV = [["", "Overview", "grid"], ["jobs", "Research", "layers"], ["history", "Research history", "search"], ["watch", "Watchlist", "clock"], ["signals", "Research signals", "signal"], ["evidence", "Evidence explorer", "document"], ["outcomes", "Outcomes", "chart"], ["notifications", "Notifications", "clock"], ["mandate", "Research preferences", "sliders"], ["billing", "Plan & billing", "sliders"], ["team", "Team", "grid"], ["account", "Account", "lock"]];
+const CUSTOMER_NAV = [["", "Overview", "grid"], ["objective", "£200 / 30-Day Objective", "chart"], ["jobs", "Research", "layers"], ["history", "Research history", "search"], ["watch", "Watchlist", "clock"], ["signals", "Research signals", "signal"], ["evidence", "Evidence explorer", "document"], ["outcomes", "Outcomes", "chart"], ["notifications", "Notifications", "clock"], ["mandate", "Research preferences", "sliders"], ["billing", "Plan & billing", "sliders"], ["team", "Team", "grid"], ["account", "Account", "lock"]];
 const TITLES: Record<string, [string, string]> = {
+  objective: ["Ambition, held to the evidence.", "£200 / 30-Day Objective"],
   "": ["A clearer view. An independent perspective.", "Your research workspace"],
   mandate: ["Define the boundaries.", "Research mandate"],
   discovery: ["More than one way to find an idea.", "Candidate discovery"],
@@ -108,6 +113,7 @@ export function Workspace({ view: requestedView, commercial = false, personalRnd
           {rnd && !personalRnd && <PersonalRndNotice />}
           {page === "" && <>{commercial && <UsageSummary />}{jobsResource.loading ? <div className="notice" role="status">Loading saved investigations…</div> : <Dashboard jobs={jobs} active={active} health={health.data} onCreated={refresh} commercial={commercial} />}</>}
           {page === "mandate" && <MandateEditor commercial={commercial} />}
+          {page === "objective" && <ObjectivePage />}
           {page === "jobs" && <><ResearchRequest onCreated={refresh} commercial={commercial} /><section className="panel"><SectionHeading title="Research activity" action={<button className="text-button" onClick={refresh}>Refresh <Icon name="arrow" size={15} /></button>} /><JobList jobs={jobs} /></section></>}
           {page === "research" && <ResearchDetail key={`${view[1]}-${view[2]}`} id={view[1]} section={view[2]} revision={revision} onRefresh={refresh} />}
           {page === "universe" && <Universe revision={revision} onRefresh={refresh} />}
@@ -151,6 +157,7 @@ function Dashboard({ jobs, active, health, onCreated, commercial = false }: { jo
     <div className="stats-grid"><Stat label="Active research" value={String(active.length).padStart(2, "0")} note="Independent investigations" icon="layers" /><Stat label="Completed reviews" value={String(jobs.filter((job) => job.status === "COMPLETE").length).padStart(2, "0")} note="Research records, not endorsements" icon="document" /><Stat label="Capital assumption" value="£200" note="Maximum · research only" icon="sliders" /><Stat label="Research horizon" value="1–30" note="Days · short-horizon evidence" icon="clock" /></div>
     <div className="content-grid"><section className="panel"><SectionHeading kicker="THE RESEARCH DESK" title="Recent investigations" action={<Link className="text-button" href="/jobs">View all <Icon name="arrow" size={15} /></Link>} /><JobList jobs={jobs.slice(0, 5)} /></section><section className="panel mandate-summary"><p className="eyebrow">YOUR NORTH STAR</p><h2>A focused mandate.</h2><div className="mandate-line"><span>Universe</span><strong>Trading 212 ISA</strong></div><div className="mandate-line"><span>Instruments</span><strong>Individual stocks</strong></div><div className="mandate-line"><span>Quote currency</span><strong>GBP / GBX</strong></div><div className="ethical-note"><Icon name="check" size={17} /><span>Defence, weapons and oil activities excluded.</span></div><Link href="/mandate" className="text-button">Review mandate <Icon name="arrow" size={15} /></Link></section></div>
     <ResearchRequest onCreated={onCreated} commercial={commercial} />
+    <ObjectiveDashboardCard />
     {!commercial && <Alerts />}
     <section className="protocol-panel"><div><p className="eyebrow">HOW MONEY THINKS</p><h2>Agreement is only the beginning.</h2><p>Research reaches you after independent analysis, historical validation and an adversarial review.</p></div><div className="protocol-steps"><span><b>01</b>Shared evidence</span><span><b>02</b>Blind research</span><span><b>03</b>Lock & challenge</span><span><b>04</b>Evidence consensus</span></div></section>
     {health && <p className="connection-note"><span className="status-dot" /> Research service: {health.status} · {health.mode} environment</p>}
@@ -271,8 +278,11 @@ function HealthView({ health, error, onRefresh }: { health: Health | null; error
 }
 
 function Universe({ revision, onRefresh }: { revision: number; onRefresh: () => void }) {
-  const resource = useResource<{ instruments: RecordData[] }>("/api/research/universe", revision);
-  return <section className="panel"><SectionHeading kicker="TRADING 212 · STOCKS & SHARES ISA" title="Reviewed instruments" action={<button className="text-button" onClick={onRefresh}>Refresh</button>} /><p className="muted">Persisted eligibility checks from research requests. This is not a complete broker instrument directory. GBP and GBX individual stocks must have current, verified ISA availability.</p>{resource.loading ? <div className="notice" role="status">Loading eligibility records…</div> : resource.error ? <div className="notice error" role="alert">{resource.error}<button onClick={onRefresh}>Retry</button></div> : resource.data?.instruments.length ? resource.data.instruments.map((item, index) => <details className="evidence-item" key={String(item.id ?? index)}><summary>Eligibility record {index + 1}<span>{String(item.created_at ?? "")}</span></summary><DataRecord data={item.payload && typeof item.payload === "object" ? item.payload as RecordData : item} />{typeof item.job_id === "string" && <Link className="text-button" href={`/research/${item.job_id}/evidence`}>Inspect research evidence →</Link>}</details>) : <EmptyState title="No verified universe records yet" detail="Money fails closed when ISA eligibility cannot be established. Request research to run the configured eligibility checks." icon="search" />}<div className="notice"><strong>100 GBX = £1 GBP.</strong>Original quote currency and normalized research values remain visible in the evidence record.</div></section>;
+  const [offset, setOffset] = useState(0), [now, setNow] = useState(() => Date.now());
+  const resource = useResource<UniversePage>(`/api/research/universe?limit=20&offset=${offset}`, revision, true);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  const live = resource.data?.coverage === "reviewed_manifest" ? resource.data : null;
+  return <section className="panel"><SectionHeading kicker="TRADING 212 · STOCKS & SHARES ISA" title="Reviewed instruments" action={<button className="text-button" onClick={onRefresh}>Refresh</button>} />{resource.loading ? <div className="notice" role="status">Loading eligibility records…</div> : resource.error ? <div className="notice error" role="alert">{resource.error}<button onClick={onRefresh}>Retry</button></div> : resource.data && <UniverseRecords page={resource.data} now={now} />}{live && <nav className="objective-pagination" aria-label="Reviewed universe pages"><button className="button secondary" disabled={offset === 0} onClick={() => setOffset(value => Math.max(0, value - 20))}>Previous instruments</button><span>Page {Math.floor(offset / 20) + 1}</span><button className="button secondary" disabled={!!resource.error || offset + 20 >= live.total || offset >= 10000} onClick={() => setOffset(value => value + 20)}>Next instruments</button></nav>}<div className="notice"><strong>100 GBX = £1 GBP.</strong>Original quote currency and normalized research values remain visible in the evidence record.</div></section>;
 }
 
 function ResearchCollection({ jobs, kind, loading }: { jobs: Job[]; kind: "watch" | "rejected"; loading: boolean }) {

@@ -57,11 +57,12 @@ def test_calendar_returns_extrema_and_reference_basis(specification):
         bar(5, close="91", high="103", low="85"),
     )
     result = calculate_outcome(specification, bars, ISSUED + timedelta(days=30))
-    assert [h.calendar_days for h in result.horizons] == [1, 3, 5, 10, 30]
+    assert [h.calendar_days for h in result.horizons] == [1, 3, 5, 10, 20, 30]
     assert [h.return_fraction for h in result.horizons] == [
         Decimal("0.02"),
         Decimal("0.08"),
         Decimal("-0.09"),
+        None,
         None,
         None,
     ]
@@ -72,6 +73,16 @@ def test_calendar_returns_extrema_and_reference_basis(specification):
     assert result.basis == "PUBLISHED_RESEARCH_REFERENCE"
     assert result.first_observed_target.interval_start == ISSUED + timedelta(days=2)
     assert result.first_observed_target.latest_seconds_after_issue == 3 * 86400
+
+
+def test_twenty_day_observation_is_not_extrapolated_from_day_ten(specification):
+    result = calculate_outcome(
+        specification, (bar(10, close="102"), bar(20, close="104")), ISSUED + timedelta(days=20),
+    )
+    by_day = {item.calendar_days: item for item in result.horizons}
+    assert by_day[20].state == "OBSERVED"
+    assert by_day[20].return_fraction == Decimal("0.04")
+    assert by_day[30].state == "NOT_MATURED" and by_day[30].return_fraction is None
 
 
 def test_target_and_invalidation_in_same_bar_are_ambiguous(specification):

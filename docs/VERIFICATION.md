@@ -1,7 +1,80 @@
-# Personal live R&D verification — 2026-09-16
+# Qualified live GBP/GBX ISA verification — 2026-09-16
 
-**R&D HOSTED ACCEPTANCE BLOCKED.** This is the current task; commercial licensing
-is not a blocker to personal use. Commercial production gates remain unchanged.
+**PRODUCTION BLOCKED.** This is the current mandate. Preserve `live_rnd` as a
+separate experiment, but production acceptance requires qualified `live`, current
+ISA/ethical evidence and GBP/GBX individual stocks. No live research result or
+eligible-universe count was fabricated. New work in this section is local,
+unpublished; the previously published baseline is `cade435e0a58a754d15cf92c58173082c597acf3`.
+
+| Requirement | Status | Actual command/test and evidence | Environment | Blocker |
+| --- | --- | --- | --- | --- |
+| Preserve published foundation | VERIFIED | Clean initial main, local/tracking/GitHub SHA `cade435`; previous commercial and R&D work retained | Git/read-only GitHub | This follow-up still needs publication |
+| Public Netlify baseline | VERIFIED | [Live-web run 35153377355](https://github.com/vivekkchandra/Money/actions/runs/35153377355), job 104986898151 at 21:38:15 UTC: root HTTP 200; routes/assets/headers/auth closure passed; checker enforces `/api/health` web SHA equals `cade435` | Actual existing public site | Not a signed-in research journey or deployment of this follow-up |
+| Final local public HTTP probe | BLOCKED_EXTERNAL_INFRA | `curl --connect-timeout 5 --max-time 15 ... https://neon-griffin-08e616.netlify.app/`: exit 6, hostname unresolved, HTTP 000 (no response) | Restricted local shell | Cannot independently repeat hosted baseline acceptance from this shell |
+| Remote deployment management | BLOCKED_EXTERNAL_INFRA | Plugin discovery reports Railway and Netlify DISABLED_BY_ADMIN / NOT_AVAILABLE; no alternate access route attempted | Current session | Approved connector access must be enabled by administrator |
+| Python install/lint/types | VERIFIED | `uv sync --locked` 191 resolved/188 checked; `ruff check .`; mypy source + ISA acceptance script: 110 files | Local | None |
+| Full Python regression | VERIFIED | `uv run pytest -q --junitxml=/private/tmp/money-gbp-final.xml`: **1097 passed, 0 failed, 157 skipped**, 28 warnings | Local | Skips excluded from acceptance |
+| Python breakdown | VERIFIED | Unit **853/0/0**; integration **244/0/146**; production **0/0/11**, passed/failed/skipped | JUnit | 144 missing PostgreSQL URL plus 2 PG-only variants; 11 explicit live opt-in skips |
+| Opt-in production suite | BLOCKED_CREDENTIAL | `MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run pytest tests/production -q`: **0 passed, 0 failed, 11 skipped**, all QUALIFICATION_MANIFEST_REQUIRED | Actual opt-in invocation | `MONEY_LIVE_MANIFEST` and matching hash with genuine qualifications |
+| Current ISA acceptance selection | BLOCKED_CREDENTIAL | `check_live_isa.py --select-only` with explicit opt-in exits 2, no candidates, research_execution NOT_RUN | Read-only preflight | No current qualified manifest; no hard-coded acceptance ticker |
+| Reviewed ISA service/API | VERIFIED | Local unit/API tests: stock and GBP/GBX hard gates; future/stale eligibility rejected including exact 24-hour expiry; deterministic ethics; source/proof hashes; bounded queries/rate limits | Fixtures/TestClient | Reviewed subset is not a complete broker-universe feed |
+| Objective API and arithmetic | VERIFIED | Tests reproduce sealed signal design, first validated target, conservative entry, existing allocation/costs; reject expiry/invalidation/tampering/demo/R&D; tenant isolation and read quota | Fixtures/TestClient | No genuinely qualified live publication available |
+| Outcome extension | VERIFIED | T+20 sampled only when available; allocation-based hypothetical GBP price changes persisted, explicitly excluding costs and actual trading assumptions | Fixtures/local persistence | No real production outcome/calibration qualification |
+| Web clean install/lint/types/build | VERIFIED | `npm ci`, lint, typecheck, tests and production build; **303 passed, 0 failed, 0 skipped**, 16 files | Local Next.js | Not new hosted/browser acceptance |
+| Objective/universe presentation | VERIFIED | Expiry hiding, bounded pagination, polling cancellation, no synthetic candidates, uncalibrated scenarios, reviewed-subset/historical distinction, proxy allowlists | Component/contract tests | Real browser journey unavailable |
+| Git-managed data assets | VERIFIED | `scripts/validate_data_tables.py`: all four schema 1/data 1.0.0 assets pass unchanged checksums; no upstream/reference diff | Git assets | None |
+| Deployment boundary | VERIFIED | `scripts/check_deployment.py` and regression tests retain SSR, thin proxy, private worker, no broker execution/client secrets | Local static/contracts | Does not prove hosted compute |
+| Published real PostgreSQL CI | FAILED | [CI 35153377328](https://github.com/vivekkchandra/Money/actions/runs/35153377328): 1128 cases/1 failure `test_postgres_migration_worker_claims_and_immutability`; backend drill failed phase postgresql_integration_tests / COMMAND_FAILED | GitHub/PostgreSQL | Full trace unavailable; root cause not identified or repaired |
+| Published HTTP/browser CI | FAILED | Same run: legacy HTTP smoke failed after lint/types/unit/build; later browser/commercial stages did not execute | GitHub Linux | Requires diagnosis and passing rerun |
+| New CI diagnostics | VERIFIED | 30 diagnostics tests; combined diagnostic/deployment/dependency boundary suite 69/0/0; YAML parses | Local | Next authorized CI run needed; no failure suppression |
+| Docker | BLOCKED_EXTERNAL_INFRA | Local build denied Docker socket access; Compose parses with disposable validation-only settings. Published baseline CI built default/research images | Local + baseline CI | No running hosted container acceptance |
+| HTTP/browser local acceptance | BLOCKED_EXTERNAL_INFRA | Legacy and commercial HTTP/browser commands stop at listener allocation EPERM, before journey execution | Restricted local shell | Listener/browser-capable environment |
+| Railway API/PostgreSQL/worker/migrations | BLOCKED_EXTERNAL_INFRA | Owner-selected incredible-flexibility / production / Money + Postgres unchanged, remote state not accessible | Current session | Enable approved access; then verify actual services, TLS, migrations, recovery and restore |
+| Research dependency security | FAILED | CrewAI 1.15.21 requires ChromaDB ~=1.1.0; installed 1.1.1 retains four advisories. Current official advisories do not establish a patched compatible version | Lock/installed metadata/primary advisories | Exclusion from control-plane and native capability denial are containment, not remediation |
+| Native research execution | BLOCKED_EXTERNAL_INFRA | TradingAgents/AI-HF/Qlib packages unavailable; model/LEAN/inference qualification inputs absent; CrewAI pinned-source attestation fails | Current runtime | Correct attested runtime/model artifacts plus controlled actual inference tests |
+| Public data and commercial rights | BLOCKED_CREDENTIAL | No current qualified ISA universe, UK market/filing/news/action manifest or approved production display rights available | Current configuration | Provider credentials/evidence and rights approval, not yfinance substitution |
+| New release publication | BLOCKED_EXTERNAL_INFRA | `.git` explicitly read-only; no stale lock deleted, no staging/commit/push attempted through alternate metadata | Current filesystem policy | Git-write-capable authorized session |
+| Money knowledge graph | VERIFIED | `graphify update .`: AST-only, 3059 nodes / 9435 edges / 168 communities | Local Money graph | No upstream graph rebuild or model/API calls |
+
+The live universe size, GBP/GBX counts, excluded count and last refresh remain
+**unknown**, not zero. The new service exposes only current reviewed manifest
+coverage. Trading 212's documented
+[instrument metadata endpoint](https://docs.trading212.com/api/instruments/instruments)
+does not establish current Stocks & Shares ISA buy availability. No balance,
+positions or order endpoint was added.
+
+The objective view is a paginated workspace publication comparison, not a complete
+market ranking, portfolio construction engine or calibrated return forecast. No
+qualified live candidate was evaluated here: upside/downside/£ contribution and
+remaining target gap are not estimated from invented inputs. The fixed aspiration
+remains £200 starting capital, £1,000 profit, £1,200 end value, +500%, 30 days.
+
+Current transaction-cost sources were checked without changing risk gates:
+[HMRC SDRT manual](https://www.gov.uk/hmrc-internal-manuals/stamp-taxes-shares-manual/stsm031030)
+and [Takeover Panel levy](https://www.thetakeoverpanel.org.uk/disclosure/ptm-levy).
+Existing versioned applicability/effective-date evidence remains required; the
+£200 comparison never assumes every instrument is exempt or extrapolates historical rules.
+
+Unresolved ChromaDB advisories:
+[CVE-2026-45829](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c),
+[CVE-2026-45833](https://github.com/advisories/GHSA-36p7-vc44-83pf),
+[CVE-2026-45830](https://github.com/advisories/GHSA-2wm9-hf6c-p5cr),
+[CVE-2026-45831](https://osv.dev/vulnerability/PYSEC-2026-3815).
+Published control-plane audit found zero findings across 75 dependency records;
+published Node production audit passed its configured threshold. A fresh local
+network advisory scan is blocked, not passed. No audit was suppressed.
+
+Remaining engineering, separate from credentials: diagnose and repair real PG/HTTP
+CI failures; qualify continuous full-universe discovery/scheduling, full-universe
+ranking and native research on genuine inputs; remediate the research dependency
+gate; execute hosted auth→queue→firms→validation→result→return, backup/restore and
+operational alert acceptance. The current schema remains additive revision 0008;
+this follow-up introduces no database migration or upstream change.
+
+## Historical personal live R&D verification — 2026-09-16
+
+**R&D HOSTED ACCEPTANCE BLOCKED (historical).** Commercial licensing was not a
+blocker to that personal-use scope. Commercial production gates remain unchanged.
 The implementation now supports real public-data evidence studies on the durable
 queue, not a complete native multi-firm R&D workflow. No synthetic live result,
 new deployment, new project, production migration, commit or push is claimed.

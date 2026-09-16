@@ -1207,6 +1207,32 @@ class ResearchStore:
                 "mode": mode,
             }
 
+    def objective_publications(self, *, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """Bounded, tenant-scoped immutable inputs; no reports or providers are executed."""
+        if not 1 <= limit <= 50 or not 0 <= offset <= 10000:
+            raise ValueError("Invalid objective page")
+        with self.engine.connect() as connection:
+            invalidations = self._signal_invalidations()
+            rows = connection.execute(
+                select(
+                    db.jobs.c.id.label("job_id"),
+                    db.packets.c.payload.label("packet"),
+                    db.artifacts.c.payload.label("design"),
+                    invalidations.c.invalidated_at,
+                )
+                .select_from(db.jobs)
+                .join(db.packets, db.packets.c.job_id == db.jobs.c.id)
+                .join(db.signals, db.signals.c.job_id == db.jobs.c.id)
+                .join(db.artifacts, (db.artifacts.c.job_id == db.jobs.c.id)
+                      & (db.artifacts.c.kind == "signal_design"))
+                .outerjoin(invalidations, invalidations.c.job_id == db.jobs.c.id)
+                .where(self._workspace_filter(), db.jobs.c.research_kind == "standard",
+                       db.jobs.c.status == "COMPLETE")
+                .order_by(db.jobs.c.created_at.desc(), db.jobs.c.id)
+                .offset(offset).limit(limit + 1)
+            ).mappings()
+            return [serialize(row) for row in rows]
+
     def list_signals(self, *, expired: bool = False) -> list[dict[str, Any]]:
         with self.engine.connect() as connection:
             invalidations = self._signal_invalidations()

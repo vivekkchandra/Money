@@ -46,7 +46,14 @@ def reviewed_fixture(now, **changes):
         source="Test only",
     )
     return SimpleNamespace(
-        instruments=(SimpleNamespace(metadata=metadata, identifiers=identifiers),),
+        instruments=(
+            SimpleNamespace(
+                metadata=metadata,
+                identifiers=identifiers,
+                eligibility_proof_hash="a" * 64,
+                ethical_proof_hash="b" * 64,
+            ),
+        ),
         provider_qualifications=(),
     )
 

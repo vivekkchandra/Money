@@ -59,6 +59,8 @@ class InstrumentSearchPage(Contract):
 class ReviewedInstrument:
     metadata: InstrumentMetadata
     identifiers: InstrumentIdentifiers | None
+    eligibility_proof_hash: str | None = None
+    ethical_proof_hash: str | None = None
 
     def failures(self, mandate: ResearchMandate, now: datetime) -> tuple[str, ...]:
         failures = eligibility_failures(self.metadata, mandate, now)
@@ -78,7 +80,12 @@ class ReviewedInstrument:
     def result(self, now: datetime, *, synthetic: bool) -> InstrumentSearchResult:
         failures = self.failures(ResearchMandate(), now)
         fresh_identity = not set(failures).intersection(
-            {"ELIGIBILITY_STALE", "IDENTIFIER_MAPPING_STALE", "IDENTIFIER_MAPPING_MISMATCH"}
+            {
+                "ELIGIBILITY_STALE",
+                "IDENTIFIER_MAPPING_STALE",
+                "IDENTIFIER_MAPPING_MISMATCH",
+                "ELIGIBILITY_PROVENANCE_MISSING",
+            }
         )
         metadata = self.metadata
         eligibility: Literal["VERIFIED_ELIGIBLE", "VERIFIED_INELIGIBLE", "UNKNOWN"] = "UNKNOWN"
@@ -145,7 +152,13 @@ class InstrumentCatalogue:
     def from_manifest(cls, manifest: LiveManifest) -> InstrumentCatalogue:
         return cls(
             tuple(
-                ReviewedInstrument(item.metadata, item.identifiers) for item in manifest.instruments
+                ReviewedInstrument(
+                    item.metadata,
+                    item.identifiers,
+                    item.eligibility_proof_hash,
+                    item.ethical_proof_hash,
+                )
+                for item in manifest.instruments
             ),
             "live",
             manifest.provider_qualifications,
@@ -172,6 +185,8 @@ class InstrumentCatalogue:
 
     def require_current(self, now: datetime) -> None:
         for qualification in self.qualifications:
+            if not qualification.datasets:
+                raise ValueError("PROVIDER_COVERAGE_MISSING")
             for dataset in qualification.datasets:
                 qualification.require(dataset, now)
 

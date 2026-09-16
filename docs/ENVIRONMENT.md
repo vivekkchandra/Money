@@ -2,6 +2,27 @@
 
 Examples in `.env.example` are placeholders only. Secrets are never Git assets.
 
+## Primary product: qualified GBP/GBX ISA research
+
+Use `MONEY_ENV=production`, `MONEY_RESEARCH_MODE=live`,
+`MONEY_ENABLE_SYNTHETIC_DEMO=false` only with an actually qualified live manifest.
+`MONEY_LIVE_MANIFEST` and `MONEY_LIVE_MANIFEST_SHA256` must identify the reviewed
+provider, instrument, model and native-runtime evidence, not a synthetic fixture.
+Do not change these settings merely to make readiness green. `live_rnd` remains a
+separate development experiment; USD/AAPL is not a production acceptance candidate.
+
+Read-only selection preflight:
+`MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run python scripts/check_live_isa.py --select-only`.
+This checks current reviewed ISA/GBP/GBX/stock/ethical membership; it does not fetch
+the complete broker universe or certify a provider, deployment or research run.
+Opt-in `tests/production` reuse that selection before any native inference.
+
+The owner-specified Railway project remains `incredible-flexibility / production`,
+with existing `Money`/`Postgres` services. Use `${{Postgres.DATABASE_URL}}` as the
+database service reference, never disclose its resolution. Configure Netlify's
+server-only `RESEARCH_API_URL` and matching `RESEARCH_API_TOKEN` only after the
+actual API passes readiness. This session has not verified those remote services.
+
 ## Explicit personal live R&D (not commercial production)
 
 API, worker and web use `MONEY_ENV=development`, `MONEY_RESEARCH_MODE=live_rnd`,

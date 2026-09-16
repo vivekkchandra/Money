@@ -1,6 +1,7 @@
 """Persist research-reference observations separately from manually recorded trades."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from sqlalchemy import select
@@ -77,8 +78,22 @@ def evaluate_signal_outcome(
             "adjustment_basis": adjustment_basis,
             "reference_evidence_id": prices[-1].evidence_id,
             "calibration_qualified": False,
+            "assumed_capital_gbp": str(signal.assumed_capital_gbp),
+            "illustrative_allocation_gbp": str(signal.illustrative_allocation_gbp),
+            "hypothetical_gbp_outcomes": [
+                {
+                    "calendar_days": item["calendar_days"],
+                    "state": item["state"],
+                    "price_change_gbp": str(
+                        signal.illustrative_allocation_gbp * Decimal(item["return_fraction"])
+                    ) if item["return_fraction"] is not None else None,
+                    "basis": "RESEARCH_REFERENCE_PRICE_CHANGE_EXCLUDING_COSTS",
+                }
+                for item in result["horizons"]
+            ],
             "limitations": [
                 *result["limitations"],
+                "GBP outcomes use only the published illustrative allocation, not a broker balance or an assumed executed position.",
                 "Numeric invalidation comes from the immutable signal design when available; otherwise it is unknown.",
                 "Operator-supplied observations require independent provider and corporate-action verification before calibration.",
             ],

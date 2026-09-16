@@ -1,6 +1,26 @@
 # Production gap matrix
 
-## Personal R&D scope — supersedes commercial licensing as this task's gate
+## Current primary mandate: qualified live GBP/GBX ISA stocks
+
+**PRODUCTION BLOCKED.** The latest mandate restores production data qualification;
+the personal-R&D section below is historical, not the current release standard.
+
+| Requirement | Status | Actual remaining gap |
+| --- | --- | --- |
+| Preserved published baseline | VERIFIED | Local/tracking/GitHub main `cade435`; new changes remain local because `.git` is read-only |
+| Published Netlify web | VERIFIED | Live-web run 35153377355 verified root HTTP 200, routes/assets/headers and served `cade435` SHA; not the authenticated research journey or this new code |
+| Reviewed ISA universe boundary | VERIFIED | Local contracts/tests: current stock/GBP/GBX/ethics gates, proof hashes and expiry; explicitly incomplete broker coverage |
+| Complete current ISA universe | NOT_IMPLEMENTED | Public instrument metadata does not prove ISA/current-buy availability. No current reviewed eligibility feed/manifest supplied; no counts invented |
+| Objective and allocation outcomes | VERIFIED | Local gated scenario projection, explicit ordering, ≤£200, no probabilities or actual trading inference, T+20 sampling |
+| Whole-market discovery and performance | NOT_IMPLEMENTED | Existing scanner/scheduler primitives are not qualified live full-universe discovery, portfolio construction or calibrated component weighting |
+| Live data / runtime qualification | BLOCKED_CREDENTIAL | Manifest/hash, real approved ISA/ethics proofs, qualified UK providers and native qualification inputs missing; production checks explicitly skip |
+| Native runtime execution | BLOCKED_EXTERNAL_INFRA | TradingAgents/AI-HF/Qlib packages and promoted model/LEAN runtime unavailable; CrewAI installed source fails pinned attestation |
+| PostgreSQL / backup / recovery | FAILED | Published CI 35153377328 fails real PG test and backend drill; full failure trace unavailable here, no repair or restore acceptance claimed |
+| HTTP/browser journey | FAILED | Same CI fails legacy HTTP smoke before browser/commercial stages; local listener EPERM prevents reproduction |
+| Research dependency security | FAILED | Four ChromaDB advisories remain; control-plane exclusion and native capability restrictions are containment, not remediation |
+| Railway / new deployment | BLOCKED_EXTERNAL_INFRA | Administrator-disabled connectors, read-only Git metadata, no verified remote API/worker/database or new release |
+
+## Historical personal R&D scope — not the primary production mandate
 
 | Requirement | Status | Actual remaining gap |
 | --- | --- | --- |

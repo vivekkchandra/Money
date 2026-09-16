@@ -30,6 +30,7 @@ describe("supported production product routes", () => {
   it.each([
     [[], "dashboard", "Your research workspace"],
     [["dashboard"], "dashboard", "Your research workspace"],
+    [["objective"], "objective", "30-Day Objective"],
     [["research"], "jobs", "Research jobs"],
     [["system"], "health", "System health"],
     [["health"], "health", "System health"],
@@ -57,7 +58,9 @@ describe("read-only deployed HTTP acceptance", () => {
     expect(result.backend_status).toBe("NOT_PROBED_WITHOUT_AUTHENTICATION");
     expect(result.assets).toEqual({ javascript: 1, stylesheets: 1 });
     expect(result.research_readiness).toBe("NOT_QUALIFIED_BY_WEB_CHECK");
-    expect(fetchImpl.mock.calls).toHaveLength(ROUTES.length + 7);
+    expect(result.controls.map(({ path }) => path)).toContain("/api/research/objective");
+    expect(result.controls.map(({ path }) => path)).toContain("/api/research/universe");
+    expect(fetchImpl.mock.calls).toHaveLength(ROUTES.length + result.controls.length + 3);
     expect(fetchImpl.mock.calls.every(([url]) => new URL(String(url)).origin === origin)).toBe(true);
   });
   it("recognizes generic Netlify 404 content, including a misleading HTTP 200", async () => {
