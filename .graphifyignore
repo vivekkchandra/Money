@@ -8,3 +8,9 @@ __pycache__/
 .ruff_cache/
 AGENTS.md
 .codex/
+optional_reference/
+node_modules/
+.next/
+.netlify/
+apps/web/node_modules/
+apps/web/.next/

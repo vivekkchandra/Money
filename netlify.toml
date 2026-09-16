@@ -1,0 +1,20 @@
+[build]
+  base = "apps/web"
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[context.production.environment]
+  MONEY_DEPLOYMENT_CONTEXT = "production"
+
+[context.deploy-preview.environment]
+  MONEY_DEPLOYMENT_CONTEXT = "preview"
+
+[dev]
+  command = "npm run dev"
+  targetPort = 3000
+  port = 8888
+  autoLaunch = false

@@ -27,3 +27,10 @@ build/
 
 optional_reference/
 graphify-out/
+node_modules/
+.next/
+.netlify/
+*.tsbuildinfo
+npm-debug.log*
+playwright-report/
+test-results/
