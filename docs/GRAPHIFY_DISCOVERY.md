@@ -74,7 +74,7 @@ seams**, not claims that live provider/model integration has been validated.
   them offline and isolated, with no public arbitrary-code endpoint. Promotion
   must record an independent approval and validation artifact hashes.
 
-## Status and follow-up
+## Foundation status (historical baseline; superseded by build audit below)
 
 This audit establishes source-informed adapter boundaries for the first vertical
 slice. `src/money/adapters/upstream.py` now implements validated injected runners
@@ -104,3 +104,33 @@ explicitly synthetic and cannot satisfy production research gates.
 OpenBB and ixbrl-parse remain optional references and were not inspected or
 integrated. Trading 212 eligibility requires separately verified ISA-specific
 coverage; a generic instrument listing alone does not establish ISA eligibility.
+
+## Production-build integration audit — 2026-09-16
+
+The following queries used the existing component graphs at the paths above,
+normally `--budget 600`, narrowed to exact discovered symbols. Money queries also
+located queue/security/deployment/discovery seams before local source inspection.
+No unchanged upstream graph was rebuilt. Source fingerprints read package bytes
+for hashing only, not a recursive source dump into model context.
+
+| Question / actual scoped query | Important symbols / minimal files inspected | Implemented Money-owned decision |
+| --- | --- | --- |
+| TA snapshot-only assembly: `GraphSetup setup_graph analyst tool nodes llm memory`; `create_market_analyst create_research_manager create_portfolio_manager Propagator`; `create_bull_researcher create_bear_researcher create_neutral_debator` | `graph/setup.py`, `propagation.py`, `conditional_logic.py`; `agents/analysts/market_analyst.py`, `managers/research_manager.py`, `managers/portfolio_manager.py`, `researchers/bull_researcher.py`, `risk_mgmt/neutral_debator.py`, `utils/structured.py` | Native research/risk factories assembled without native transaction-planning nodes; Money inference binding supplies immutable evidence, no native data tools or shared peer memory |
+| AI-HF overridden evidence lifecycle: `LLMAgent DataClient create_snapshot analyze`; `BuffettAgent LynchAgent DamodaranAgent PromptCache LLMClient` | `signals/llm_agent.py`, `signals/buffett.py`, `features/snapshot.py`, `llm/client.py` | Native `predict`/persona machinery with UK Money facts and private cache; no US-TTM relabelling, numeric confidence or native data client |
+| Qlib static numeric inference: `DatasetH DataHandlerLP StaticDataLoader Model predict LinearModel` | `qlib/contrib/model/linear.py`, `data/dataset/loader.py`, `handler.py`, `__init__.py` | Native LinearModel over in-memory PIT frame and approved JSON coefficients; no pickle, arbitrary class lookup, live data provider or invented cross-sectional rank |
+| LEAN fixed offline consumer: `config algorithm-type-name algorithm-location live-mode data-folder results-destination`; `CustomDataAlgorithm PythonData GetSource Reader` | Targeted `Launcher/config.json` and `Algorithm.Python/CustomDataRegressionAlgorithm.py` | Fixed Money PythonData study in isolated OCI boundary; no order/portfolio operations; stable economic/source/publication dataset identity |
+| CrewAI real structured flow: `Flow start listen Agent Task output_pydantic Crew kickoff` | `flow/flow.py`; targeted `agent/core.py`, `task.py`, `crew.py`, `llms/base_llm.py` | Actual Flow + conditional tasks, independent deterministic auditors, structured Red Team, provider-neutral bridge |
+| Remove optional platform-auth/filesystem escape: `TokenManager get_auth_token token_manager`; `TraceBatchManager get_auth_token`; `lock_store FileLockStore locks_dir` | `lib/crewai-core/src/crewai_core/auth/token.py`, `__init__.py`, `lock_store.py`; `events/listeners/tracing/trace_batch_manager.py`; installed counterparts only to reconcile traceback/source mismatch | No platform token lookup, dotenv disabled, private temporary locks/storage; production source fingerprint mismatch rejected |
+| TA-Lib numeric seam: `Function RSI MACD ATR` | `talib/abstract.py` selected declaration; existing discovered native function API | Actual RSI/MACD/EMA/SMA/ATR/ADX/ROC and explicit volume/trend/breakout policy, warmup and finite checks |
+| UK streaming facts: `stream_read_xbrl_zip _COLUMNS _xbrl_to_rows` | `stream_read_xbrl.py` column declaration and parser/zip seam | Bounded archive/XML prevalidation and selected GBP/company facts; historical publication proof stays mandatory |
+| Money multi-channel composition: `discover_snapshot union_candidates` | `scanner/discovery.py`, `scanner/technical.py`, `adapters/native_qlib.py` relevant methods | Objective Qlib screening privately reused by its firm; catalyst title triggers and financial deltas replace evidence-presence triggers |
+
+Real native execution qualification is still blocked by absent/mismatched pinned
+packages, paid credentials, approved datasets/models, LEAN image and host controls.
+Scripted native-lifecycle tests are explicitly test/demo evidence, not live runs.
+Full per-workstream command evidence is in WORK_NATIVE.md and VERIFICATION.md.
+
+Final Money-only `graphify update .` refreshed the AST graph to 1512 nodes, 4348
+edges and 106 communities without an LLM call. Document semantic extraction was
+not run. The existing skill/package warning and community-label suggestions were
+left untouched; no upstream/global skill refresh was performed.

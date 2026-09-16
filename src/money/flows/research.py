@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from importlib.metadata import version
+from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
@@ -15,15 +18,21 @@ from money.adapters.eligibility import (
     Trading212EligibilityService,
     eligibility_failures,
 )
+from money.api.errors import classify_failure
+from money.crews.cross_examination import CrossExaminationPacket, run_cross_examination
 from money.policy.governance import consensus, evidence_independence, snapshot_failures
+from money.research.budgets import BudgetLimits, BudgetReservation, TokenBudgetManager
 from money.scanner.discovery import discover_snapshot
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
     AuditFinding,
+    Candidate,
     CIOAuditReport,
     Claim,
+    Contract,
     DecisionPacket,
     DocumentFact,
+    EvidenceIndependenceReport,
     EvidenceRecord,
     FinancialFact,
     FirmReport,
@@ -36,9 +45,13 @@ from money.schemas.contracts import (
     RedTeamReport,
     ResearchMandate,
     ResearchSnapshot,
+    ResearchState,
     TradingAgentsResearchReport,
+    Usage,
+    content_hash,
     utc_now,
 )
+from money.signals.generation import SignalDesign
 from money.storage.store import FIRST_PASS_FIRMS, ResearchStore
 
 
@@ -57,6 +70,27 @@ class ResearchRuntime:
         [ResearchSnapshot, tuple[FirmReport, ...], LeanValidationReport], CIOAuditReport
     ]
     red_team: Callable[[ResearchSnapshot, tuple[FirmReport, ...]], RedTeamReport]
+    budget_limits: BudgetLimits | None = None
+    invocation_budgets: tuple[tuple[str, str, str, int], ...] = ()
+    cio_runtime: Callable[[], Contract | None] | None = None
+    provenance: Contract | None = None
+    discover: Callable[[ResearchMandate, ResearchSnapshot], Candidate] | None = None
+    signal_builder: (
+        Callable[
+            [
+                str,
+                ResearchMandate,
+                ResearchSnapshot,
+                tuple[FirmReport, ...],
+                LeanValidationReport,
+                CIOAuditReport,
+                RedTeamReport,
+                ResearchState,
+            ],
+            SignalDesign,
+        ]
+        | None
+    ) = None
 
 
 def run_first_pass(
@@ -65,10 +99,16 @@ def run_first_pass(
     mandate: ResearchMandate,
     snapshot: ResearchSnapshot,
     firms: tuple[FirstPassFirm, ...],
+    *,
+    sealed_firms: frozenset[str] = frozenset(),
+    budget: TokenBudgetManager | None = None,
+    reservations: dict[str, str] | None = None,
 ) -> None:
     """Each firm capability is only two immutable contracts, never a report reader."""
     if len(firms) != 3:
         raise ValueError("all three independent firms are required")
+    if not sealed_firms <= FIRST_PASS_FIRMS:
+        raise ValueError("unknown sealed firm")
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="money-first-pass") as pool:
         futures = [
             pool.submit(
@@ -77,6 +117,7 @@ def run_first_pass(
                 ResearchSnapshot.model_validate_json(snapshot.model_dump_json()),
             )
             for firm in firms
+            if getattr(firm, "firm", None) not in sealed_firms
         ]
         for future in as_completed(futures):
             report = future.result()
@@ -90,6 +131,8 @@ def run_first_pass(
             if any(not set(c.evidence_ids).issubset(evidence_ids) for c in report.claims):
                 raise ValueError("firm cites evidence outside the frozen snapshot")
             store.save_report(job_id, report.firm, report)
+            if budget and reservations and report.firm in reservations:
+                budget.settle(reservations[report.firm], report.usage)
     # Atomic storage operation verifies that all persisted identities are present.
     store.lock_first_pass(job_id)
 
@@ -108,10 +151,28 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
     if job is None:
         raise ValueError("research job not found")
     mandate = ResearchMandate.model_validate(store.get_mandate(job_id))
-    instrument = runtime.eligibility.get_instrument_metadata(job["ticker"])
+    checkpoint = store.get_checkpoint(job_id)
+    artifacts = checkpoint["artifacts"]
+    budget = TokenBudgetManager(store, runtime.budget_limits) if runtime.budget_limits else None
+    if budget:
+        budget.reconcile_job(job_id)
+    if "source_manifest" in artifacts:
+        if runtime.provenance is None or content_hash(artifacts["source_manifest"]) != content_hash(
+            runtime.provenance
+        ):
+            raise ValueError("RESEARCH_CONFIGURATION_CHANGED")
+    elif runtime.provenance is not None:
+        store.save_artifact(job_id, "source_manifest", runtime.provenance)
+        artifacts["source_manifest"] = runtime.provenance.model_dump(mode="json")
+    instrument = (
+        InstrumentMetadata.model_validate(artifacts["eligibility"])
+        if "eligibility" in artifacts and "passed" not in artifacts["eligibility"]
+        else runtime.eligibility.get_instrument_metadata(job["ticker"])
+    )
     failures = eligibility_failures(instrument, mandate, utc_now())
     if failures:
-        store.save_artifact(job_id, "eligibility", {"passed": False, "reasons": failures})
+        if "eligibility" not in artifacts:
+            store.save_artifact(job_id, "eligibility", {"passed": False, "reasons": failures})
         store.complete_job(
             job_id,
             {
@@ -128,13 +189,18 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         )
         return
     assert instrument is not None
-    store.save_artifact(job_id, "eligibility", instrument)
-    store.update_stage(job_id, JobStatus.DISCOVERY)
-    store.update_stage(job_id, JobStatus.SNAPSHOT_BUILD)
-    snapshot = runtime.snapshot_builder(instrument)
+    if "eligibility" not in artifacts:
+        store.save_artifact(job_id, "eligibility", instrument)
+    if checkpoint["snapshot"] is None:
+        if checkpoint["stage"] in {"ELIGIBILITY_CHECK", "DISCOVERY"}:
+            store.update_stage(job_id, JobStatus.DISCOVERY)
+        store.update_stage(job_id, JobStatus.SNAPSHOT_BUILD)
+        snapshot = runtime.snapshot_builder(instrument)
+        store.save_snapshot(job_id, snapshot)
+    else:
+        snapshot = ResearchSnapshot.model_validate(checkpoint["snapshot"])
     if snapshot.ticker != job["ticker"]:
         raise ValueError("snapshot ticker mismatch")
-    store.save_snapshot(job_id, snapshot)
     failures = snapshot_failures(snapshot, utc_now())
     if failures:
         store.complete_job(
@@ -151,34 +217,150 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
             state=JobStatus.REJECTED,
         )
         return
-    candidate = discover_snapshot(snapshot)
-    store.save_artifact(job_id, "discovery", candidate)
-    store.update_stage(job_id, JobStatus.FIRST_PASS_RESEARCH)
-    try:
-        run_first_pass(job_id, store, mandate, snapshot, runtime.firms)
-    except Exception:
-        # A missing report cannot be converted into agreement or substituted.
-        store.fail_job(
+    candidate = (
+        Candidate.model_validate(artifacts["discovery"])
+        if "discovery" in artifacts
+        else runtime.discover(mandate, snapshot)
+        if runtime.discover
+        else discover_snapshot(snapshot)
+    )
+    if "discovery" not in artifacts:
+        store.save_artifact(job_id, "discovery", candidate)
+    if runtime.provenance is not None and "source_manifest" not in artifacts:
+        store.save_artifact(job_id, "source_manifest", runtime.provenance)
+    if runtime.mode == "live" and not candidate.discovery:
+        store.complete_job(
             job_id,
-            "FIRST_PASS_FAILED",
-            "An independent firm failed; no research signal was issued.",
+            {
+                "research_id": job_id,
+                "ticker": job["ticker"],
+                "final_state": "REJECT",
+                "snapshot_id": snapshot.snapshot_id,
+                "mandate": mandate.model_dump(mode="json"),
+                "signal": None,
+                "reasons": ["NO_DISCOVERY_EVIDENCE"],
+                "runtime": "live",
+            },
+            state=JobStatus.REJECTED,
         )
         return
+    reservations: dict[str, str] = {}
+    if budget:
+        requests = []
+        for agent, provider, model, maximum in runtime.invocation_budgets:
+            if agent in checkpoint["sealed_firms"] or agent == "crewai":
+                continue
+            reservation = f"{job_id}:{job['attempt_count']}:{agent}"
+            requests.append(
+                BudgetReservation(
+                    reservation_id=reservation,
+                    job_id=job_id,
+                    stage="FIRST_PASS_RESEARCH",
+                    agent=agent,
+                    provider=provider,
+                    model=model,
+                    maximum_tokens=maximum,
+                    prompt_version="money-native-v1",
+                )
+            )
+            reservations[agent] = reservation
+        budget.reserve_many(tuple(requests))
+    if job["locked_at"] is None:
+        store.update_stage(job_id, JobStatus.FIRST_PASS_RESEARCH)
+        try:
+            run_first_pass(
+                job_id,
+                store,
+                mandate,
+                snapshot,
+                runtime.firms,
+                sealed_firms=frozenset(checkpoint["sealed_firms"]),
+                budget=budget,
+                reservations=reservations,
+            )
+        except Exception as error:
+            if classify_failure(error).retryable:
+                raise
+            # A missing report cannot be converted into agreement or substituted.
+            store.fail_job(
+                job_id,
+                "FIRST_PASS_FAILED",
+                "An independent firm failed; no research signal was issued.",
+            )
+            return
     reports = locked_reports(job_id, store)
-    store.update_stage(job_id, JobStatus.LEAN_VALIDATION)
-    lean = runtime.validate(snapshot, reports)
-    store.save_artifact(job_id, "lean", lean)
-    store.update_stage(job_id, JobStatus.CREWAI_AUDIT)
-    audit = runtime.audit(snapshot, locked_reports(job_id, store), lean)
-    red_team = runtime.red_team(snapshot, reports)
-    store.save_artifact(job_id, "audit", audit)
-    store.save_artifact(job_id, "red_team", red_team)
-    independence = evidence_independence(snapshot, reports)
-    store.save_artifact(job_id, "independence", independence)
+    if "lean" in artifacts:
+        lean = LeanValidationReport.model_validate(artifacts["lean"])
+    else:
+        store.update_stage(job_id, JobStatus.LEAN_VALIDATION)
+        lean = runtime.validate(snapshot, reports)
+        store.save_artifact(job_id, "lean", lean)
+    if "audit" in artifacts:
+        audit = CIOAuditReport.model_validate(artifacts["audit"])
+        if "red_team" not in artifacts:
+            raise ValueError("CIO_CHECKPOINT_INCOMPLETE")
+        red_team = RedTeamReport.model_validate(artifacts["red_team"])
+    else:
+        store.update_stage(job_id, JobStatus.CREWAI_AUDIT)
+        if budget:
+            for agent, provider, model, maximum in runtime.invocation_budgets:
+                if agent != "crewai":
+                    continue
+                reservation = f"{job_id}:{job['attempt_count']}:{agent}"
+                budget.reserve(
+                    reservation_id=reservation,
+                    job_id=job_id,
+                    stage="CREWAI_AUDIT",
+                    agent=agent,
+                    provider=provider,
+                    model=model,
+                    maximum_tokens=maximum,
+                    prompt_version="money-native-v1",
+                )
+                reservations[agent] = reservation
+        audit = runtime.audit(snapshot, locked_reports(job_id, store), lean)
+        red_team = runtime.red_team(snapshot, reports)
+        cio_runtime = runtime.cio_runtime() if runtime.cio_runtime else None
+        store.save_cio_artifacts(job_id, audit, red_team, runtime=cio_runtime)
+        if budget and "crewai" in reservations:
+            budget.settle(reservations["crewai"], getattr(cio_runtime, "usage", Usage()))
+    if "independence" in artifacts:
+        independence = EvidenceIndependenceReport.model_validate(artifacts["independence"])
+    else:
+        independence = evidence_independence(snapshot, reports)
+        store.save_artifact(job_id, "independence", independence)
+    examination = None
+    if "cross_examination" in artifacts:
+        examination = CrossExaminationPacket.model_validate(artifacts["cross_examination"])
+    elif audit.completed:
+        store.update_stage(job_id, JobStatus.CROSS_EXAMINATION)
+        examination = run_cross_examination(snapshot, reports, lean, audit, first_pass_locked=True)
+        store.save_artifact(job_id, "cross_examination", examination)
     store.update_stage(job_id, JobStatus.CONSENSUS)
     state, reasons = consensus(
-        mandate, snapshot, reports, lean, audit, red_team, independence, utc_now()
+        mandate,
+        snapshot,
+        reports,
+        lean,
+        audit,
+        red_team,
+        independence,
+        utc_now(),
+        rounds=len(examination.rounds) if examination else 0,
+        cross_examination_disagreement=examination.material_disagreement if examination else False,
     )
+    signal = None
+    if runtime.signal_builder is not None:
+        if "signal_design" in artifacts:
+            design = SignalDesign.model_validate(artifacts["signal_design"])
+        else:
+            design = runtime.signal_builder(
+                job_id, mandate, snapshot, reports, lean, audit, red_team, state
+            )
+            store.save_artifact(job_id, "signal_design", design)
+        signal = design.signal
+        if state in {ResearchState.RESEARCH_CANDIDATE, ResearchState.WATCH} and signal is None:
+            state, reasons = ResearchState.INSUFFICIENT_EVIDENCE, design.reasons
     packet = DecisionPacket(
         research_id=job_id,
         mandate=mandate,
@@ -195,7 +377,14 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         reasons=reasons,
         sources=snapshot.evidence,
         issued_at=utc_now(),
+        signal=signal,
         runtime="demo" if runtime.mode == "demo" else "live",
+        money_version=version("money"),
+        git_commit=os.environ.get("MONEY_GIT_SHA", "unknown"),
+        frozen_snapshot=snapshot,
+        source_manifest_hash=content_hash(runtime.provenance) if runtime.provenance else None,
+        cross_examination_hash=examination.hash if examination else None,
+        cross_examination_rounds=len(examination.rounds) if examination else 0,
     )
     store.complete_job(job_id, packet)
 
@@ -360,7 +549,19 @@ def demo_red_team(snapshot: ResearchSnapshot, reports: tuple[FirmReport, ...]) -
     )
 
 
-def build_runtime(mode: str) -> ResearchRuntime:
+def build_runtime(
+    mode: str,
+    *,
+    store: ResearchStore | None = None,
+    live_manifest: Path | None = None,
+    manifest_hash: str | None = None,
+) -> ResearchRuntime:
+    if mode == "live":
+        if store is None or live_manifest is None or manifest_hash is None:
+            raise ValueError("LIVE_RUNTIME_CONFIGURATION_REQUIRED")
+        from money.research.live import build_live_runtime, load_manifest
+
+        return build_live_runtime(store, load_manifest(live_manifest, manifest_hash))
     if mode not in {"demo", "unconfigured"}:
         raise ValueError("unknown research runtime mode")
     instruments: tuple[InstrumentMetadata, ...] = ()

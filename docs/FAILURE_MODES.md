@@ -15,4 +15,19 @@
 
 Errors sent to clients use bounded safe codes/messages; provider payloads, tokens, database URLs and exception traces stay out of responses.
 
-Native runners must have enforced execution deadlines before live qualification. Worker leases fence crashed/lost workers; a still-heartbeating hung native library is a separate failure and cannot be solved by a lease alone. The current fixture runtime is bounded; no unqualified native runner is enabled by deployment configuration.
+Native subprocess and whole-job deadlines are enforced independently of renewable
+leases; a still-heartbeating hung call is terminated. Only classified transient
+provider failures receive bounded jittered retries. Permanent bad artifacts,
+PIT/ethical/currency failures and malformed output never get optimistic fallback.
+Retries keep source/model selections fixed and reuse independently sealed reports.
+Missing native runtime configuration produces safe final failure, not demo research.
+
+Provider circuit generation fencing prevents a late old success closing a newly
+opened circuit. Half-open probes are serialized. Budget batch failure rolls back
+unspent reservations; saved usage reconciles on recovery, while lost unmeasured
+invocations stay pessimistically charged. Unknown costs stay unknown.
+
+Generic current instrument metadata is not ISA proof. Retrieval-time historical
+bars are excluded at past decision clocks. Split-adjusted volume mixed with raw
+prices, incomplete corporate actions, or conflicting archive/current values block
+qualification rather than introducing an adjustment guessed by Money.

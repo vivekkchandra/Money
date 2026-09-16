@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -14,8 +16,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DatabaseError
 
 from money.flows.research import build_runtime
-from money.schemas.contracts import ResearchMandate
-from money.storage import ResearchStore
+from money.research.budgets import BudgetLimits, TokenBudgetManager
+from money.schemas.contracts import ResearchMandate, Usage, utc_now
+from money.storage import LeaseLost, ResearchStore
 from money.storage import models as db
 from money.worker import run_once
 
@@ -42,6 +45,7 @@ def test_postgres_migration_worker_claims_and_immutability(monkeypatch: pytest.M
         configuration = Config("alembic.ini")
         configuration.attributes["database_url"] = scoped_url
         command.upgrade(configuration, "head")
+        command.check(configuration)
         for _ in range(4):
             store.create_job("DEMO.L", ResearchMandate())
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -53,6 +57,68 @@ def test_postgres_migration_worker_claims_and_immutability(monkeypatch: pytest.M
         with pytest.raises(DatabaseError, match="immutable"):
             with store.engine.begin() as connection:
                 connection.execute(db.packets.delete())
+        # Real PostgreSQL row locks protect idempotency and login counters across workers.
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            duplicate_jobs = list(
+                executor.map(
+                    lambda _: store.create_job(
+                        "DEMO.L", ResearchMandate(), idempotency_key="pg-key"
+                    ),
+                    range(8),
+                )
+            )
+        assert len({job["id"] for job in duplicate_jobs}) == 1
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            allowed = list(
+                executor.map(
+                    lambda _: store.consume_rate_limit("postgres-login", 3, 60)["allowed"],
+                    range(8),
+                )
+            )
+        assert sum(allowed) == 3
+        store.create_session("a" * 64, "b" * 64, utc_now() + timedelta(hours=1))
+        assert store.session_valid("a" * 64, "b" * 64)
+        store.revoke_session("a" * 64, "b" * 64)
+        assert not store.session_valid("a" * 64, "b" * 64)
+        old = store.claim_job("postgres-old")
+        assert old is not None
+        with store.engine.begin() as connection:
+            connection.execute(
+                db.jobs.update()
+                .where(db.jobs.c.id == old.job_id)
+                .values(
+                    lease_until=utc_now() - timedelta(seconds=1),
+                )
+            )
+        assert store.get_job(old.job_id)["status"] == "QUEUED"
+        with store.engine.begin() as connection:
+            connection.execute(
+                db.jobs.update()
+                .where(db.jobs.c.id == old.job_id)
+                .values(
+                    available_at=utc_now() - timedelta(seconds=1),
+                )
+            )
+        new = store.claim_job("postgres-new")
+        assert new is not None and new.job_id == old.job_id and new.token != old.token
+        with pytest.raises(LeaseLost):
+            store.for_claim(old).fail_job(old.job_id, "STALE", "must not publish")
+        budget = TokenBudgetManager(store, BudgetLimits())
+        budget.reserve(
+            reservation_id="metrics",
+            job_id=job["id"],
+            stage="FIRST_PASS_RESEARCH",
+            agent="metrics",
+            provider="test-only",
+            model="fixture",
+            maximum_tokens=100,
+            prompt_version="test-v1",
+        )
+        budget.settle("metrics", Usage(input_tokens=20, output_tokens=30, cost_gbp=Decimal("0.25")))
+        measured = store.operational_metrics(include_details=True)
+        assert measured["tokens"]["known_tokens"] == 50
+        assert Decimal(measured["costs"]["known_total"]) == Decimal("0.25")
+        assert measured["jobs"]["duration"]["samples"] == 1
     finally:
         store.engine.dispose()
         with admin.begin() as connection:

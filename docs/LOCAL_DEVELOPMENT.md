@@ -1,6 +1,10 @@
 # Local development
 
-The Python package stays at `src/money`. Use Python 3.12+, uv 0.12.5 and Node 22. Install locked dependencies with `uv sync --locked` and `npm ci --prefix apps/web`. Native research dependencies stay in the existing locked Python environment; they never enter the Netlify build.
+The Python package stays at `src/money`. Use Python 3.12+, uv 0.12.5 and Node 22.
+Install locked base dependencies with `uv sync --locked` and
+`npm ci --prefix apps/web`. The base environment does not contain every pinned
+native firm package; separately qualified runtimes are required for live research.
+They never enter the Netlify build.
 
 Create `.env` from `.env.example`. Set a URL-safe `POSTGRES_PASSWORD` and random `RESEARCH_API_TOKEN` (32+ characters). Use `MONEY_ENV=development` and `MONEY_RESEARCH_MODE=demo` for the synthetic `DEMO.L` demonstration. Run `docker compose up --build`; Compose waits for PostgreSQL, applies `alembic upgrade head`, then starts separate API and worker processes. Database data lives in a named volume. Do not remove that volume unless intentionally deleting local research.
 
@@ -11,6 +15,7 @@ RESEARCH_API_URL=http://127.0.0.1:8000
 RESEARCH_API_TOKEN=<same token as backend, at least 32 characters>
 MONEY_WEB_PASSWORD=<unique workspace password, at least 16 characters>
 SESSION_SECRET=<independent random secret, at least 32 characters>
+MONEY_ENV=development
 ```
 
 Terminal 2: `npm run dev --prefix apps/web`, then open `http://localhost:3000`. Alternatively run `npx netlify dev` at the repository root; the configured proxy listens on port 8888. Sign in and request `DEMO.L`. API requests only enqueue; keep the worker running separately.

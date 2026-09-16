@@ -18,28 +18,45 @@ services:
 
   migrate:
     build: .
+    init: true
     environment:
       DATABASE_URL: postgresql+psycopg://money:${POSTGRES_PASSWORD}@postgres:5432/money
       MONEY_ENV: ${MONEY_ENV:-development}
     command: ["alembic", "upgrade", "head"]
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
 
   research-api:
     build: .
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    stop_grace_period: 30s
     environment: &research-environment
       DATABASE_URL: postgresql+psycopg://money:${POSTGRES_PASSWORD}@postgres:5432/money
       RESEARCH_API_TOKEN: ${RESEARCH_API_TOKEN:?Set RESEARCH_API_TOKEN in .env}
       MONEY_ENV: ${MONEY_ENV:-development}
       MONEY_RESEARCH_MODE: ${MONEY_RESEARCH_MODE:-unconfigured}
+      MONEY_AUTH_MODE: private
+      MONEY_WORKSPACE_ID: ${MONEY_WORKSPACE_ID:-private}
+      MONEY_DB_POOL_SIZE: ${MONEY_DB_POOL_SIZE:-5}
+      MONEY_DB_POOL_TIMEOUT_SECONDS: ${MONEY_DB_POOL_TIMEOUT_SECONDS:-10}
+      MONEY_DB_STATEMENT_TIMEOUT_MS: ${MONEY_DB_STATEMENT_TIMEOUT_MS:-15000}
+      MONEY_JOB_TIMEOUT_SECONDS: ${MONEY_JOB_TIMEOUT_SECONDS:-1800}
+      MONEY_JOB_MAX_ATTEMPTS: ${MONEY_JOB_MAX_ATTEMPTS:-3}
+      XDG_CACHE_HOME: /tmp/cache
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -48,8 +65,20 @@ services:
 
   research-worker:
     build: .
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=512m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 4g
+    stop_grace_period: 45s
     environment: *research-environment
     command: ["python", "-m", "money.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "money.worker", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       migrate:
         condition: service_completed_successfully

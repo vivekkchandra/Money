@@ -5,6 +5,7 @@ import os
 from alembic import context
 from sqlalchemy import create_engine
 
+from money.storage import production_models  # noqa: F401 - register operational tables
 from money.storage.models import metadata
 
 config = context.config

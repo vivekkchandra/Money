@@ -4,6 +4,12 @@ Deploy `apps/web` from GitHub to Netlify, production branch `main`, with pull-re
 
 Required environment and commands are detailed in NETLIFY.md and LOCAL_DEVELOPMENT.md. API and web credentials must be separate from provider credentials. Restrict backend network access where possible. Deploy previews use a separate database/API and credentials. Upstreams are pinned by UPSTREAM_LOCK.txt and are not bundled accidentally into the lightweight foundation image; live firm runtimes require a separately qualified image.
 
+Use [OPERATIONS.md](OPERATIONS.md) for migration/API/worker commands, graceful
+shutdown, resource limits, pool sizing, backups, restore drills and rollout/rollback.
+[LIVE_CONFIGURATION.md](LIVE_CONFIGURATION.md) describes the typed qualification
+manifest and actual live-runtime constraints. Existing Netlify initialization and
+GitHub connection must not be repeated.
+
 ## Release acceptance
 
 - Python tests, Ruff, mypy and web lint/typecheck/tests/production build pass.

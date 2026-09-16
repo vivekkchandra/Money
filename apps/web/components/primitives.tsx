@@ -35,22 +35,36 @@ export function JobList({ jobs }: { jobs: Job[] }) {
   return <div className="job-list">{jobs.map((job) => <Link className="job-row" href={`/research/${job.id}`} key={job.id}><div className="ticker-mark">{job.ticker.slice(0, 2)}</div><div className="job-name"><strong>{job.ticker}</strong><span>{humanize(job.current_stage || job.status)}</span></div><Badge value={job.status} /><span className="job-date">{new Date(job.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span><Icon name="arrow" size={17} /></Link>)}</div>;
 }
 
-export function DataValue({ value }: { value: unknown }) {
-  if (value === null || value === undefined) return <span className="muted">Not available</span>;
-  if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>;
-  if (Array.isArray(value)) return value.length ? <div className="data-array">{value.map((item, index) => <div key={index}><DataValue value={item} /></div>)}</div> : <span className="muted">None recorded</span>;
-  if (typeof value === "object") return <DataRecord data={value as RecordData} />;
-  return <span className="data-text">{String(value)}</span>;
+export function safeSourceUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
 }
 
-export function DataRecord({ data }: { data: RecordData }) {
-  return <dl className="data-record">{Object.entries(data).map(([key, value]) => <div key={key}><dt>{humanize(key)}</dt><dd><DataValue value={value} /></dd></div>)}</dl>;
+export function DataValue({ value, evidenceHref, depth = 0 }: { value: unknown; evidenceHref?: string; depth?: number }) {
+  if (depth > 8) return <span className="muted">Nested record exceeds the display limit</span>;
+  if (value === null || value === undefined) return <span className="muted">Not available</span>;
+  if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>;
+  if (Array.isArray(value)) return value.length ? <div className="data-array">{value.slice(0, 100).map((item, index) => <div key={index}><DataValue value={item} evidenceHref={evidenceHref} depth={depth + 1} /></div>)}{value.length > 100 && <p>Showing the first 100 records.</p>}</div> : <span className="muted">None recorded</span>;
+  if (typeof value === "object") return <DataRecord data={value as RecordData} evidenceHref={evidenceHref} depth={depth + 1} />;
+  return <span className="data-text">{String(value).slice(0, 20000)}{String(value).length > 20000 ? "… [display limit]" : ""}</span>;
+}
+
+export function DataRecord({ data, evidenceHref, depth = 0 }: { data: RecordData; evidenceHref?: string; depth?: number }) {
+  // Raw licensed documents are not redistributed; show their facts and source links.
+  const excluded = /^(?:raw_content|raw_text|document_text|html|api_key|password|session_secret|access_token)$/i;
+  return <dl className="data-record">{Object.entries(data).filter(([key]) => !excluded.test(key)).slice(0, 100).map(([key, value]) => {
+    const source = /^(?:url|source_url|document_url|canonical_url)$/.test(key) ? safeSourceUrl(value) : null;
+    return <div key={key}><dt>{humanize(key)}</dt><dd>{source ? <a className="source-link" href={source} target="_blank" rel="noopener noreferrer">Open source ({new URL(source).hostname}) ↗</a> : key === "evidence_ids" && evidenceHref && Array.isArray(value) ? <div className="citation-list">{value.slice(0, 100).map((id) => <Link key={String(id)} href={`${evidenceHref}#evidence-${encodeURIComponent(String(id))}`}>{String(id)}</Link>)}</div> : <DataValue value={value} evidenceHref={evidenceHref} depth={depth} />}</dd></div>;
+  })}</dl>;
 }
 
 export function SectionHeading({ kicker, title, action }: { kicker?: string; title: string; action?: React.ReactNode }) {
   return <div className="section-heading"><div>{kicker && <p className="eyebrow">{kicker}</p>}<h2>{title}</h2></div>{action}</div>;
 }
 
-export function FirmReportCard({ name, letter, description, locked, report }: { name: string; letter: string; description: string; locked: boolean; report?: RecordData }) {
-  return <article className="panel firm-card"><div className="firm-top"><span className="firm-letter">{letter}</span><span className="type-label opinion">FIRM OPINION</span></div><h2>{name}</h2><p>{description}</p><Badge value={locked && report ? "COMPLETE" : "SEALED"} />{locked && report ? <details><summary>Read independent report <Icon name="arrow" size={15} /></summary><DataRecord data={report} /></details> : <div className="sealed-note"><Icon name="lock" size={15} />Awaiting the blind-report barrier</div>}</article>;
+export function FirmReportCard({ name, letter, description, locked, report, evidenceHref }: { name: string; letter: string; description: string; locked: boolean; report?: RecordData; evidenceHref?: string }) {
+  return <article className="panel firm-card"><div className="firm-top"><span className="firm-letter">{letter}</span><span className={`type-label ${letter === "C" ? "inference" : "opinion"}`}>{letter === "C" ? "QUANT EVIDENCE" : "FIRM OPINION"}</span></div><h2>{name}</h2><p>{description}</p><Badge value={locked && report ? "COMPLETE" : "SEALED"} />{locked && report ? <details><summary>Read independent report <Icon name="arrow" size={15} /></summary><DataRecord data={report} evidenceHref={evidenceHref} /></details> : <div className="sealed-note"><Icon name="lock" size={15} />Awaiting the blind-report barrier</div>}</article>;
 }

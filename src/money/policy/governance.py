@@ -106,6 +106,7 @@ def consensus(
     now: datetime,
     *,
     rounds: int = 0,
+    cross_examination_disagreement: bool = False,
 ) -> tuple[ResearchState, tuple[str, ...]]:
     """Return research quality only. No BUY/SELL vote, position or order is constructed."""
     if not 0 <= rounds <= 2:
@@ -146,7 +147,7 @@ def consensus(
         reasons.append("LEAN_VALIDATION_METADATA_INCOMPLETE")
     if not audit.completed:
         reasons.append("CIO_AUDIT_INCOMPLETE")
-    if audit.material_disagreement:
+    if audit.material_disagreement or cross_examination_disagreement:
         reasons.append("UNRESOLVED_MATERIAL_DISAGREEMENT")
     if any(f.state in {"UNSUPPORTED", "CONTRADICTED"} for f in audit.findings):
         reasons.append("UNVERIFIED_CLAIMS")

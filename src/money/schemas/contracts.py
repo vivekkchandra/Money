@@ -324,6 +324,9 @@ class LeanValidationReport(Contract):
     survivorship_checked: bool = False
     costs_included: bool = False
     sensitivity_checked: bool = False
+    scenario_policy_hash: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None
+    )
     spread_bps: float | None = Field(default=None, ge=0)
     slippage_bps: float | None = Field(default=None, ge=0)
     maximum_drawdown: Fraction | None = None
@@ -421,10 +424,24 @@ class DecisionPacket(Contract):
     signal: ResearchSignal | None = None
     cross_examination_rounds: int = Field(default=0, ge=0, le=2)
     runtime: Literal["live", "demo"]
+    # Optional/omitted for old packets: existing immutable hashes remain valid.
+    money_version: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    git_commit: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    frozen_snapshot: ResearchSnapshot | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    source_manifest_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    cross_examination_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     hash: str = ""
 
     @model_validator(mode="after")
     def consistent_packet(self) -> Self:
+        if self.frozen_snapshot is not None and (
+            self.frozen_snapshot.hash != self.snapshot_hash
+            or self.frozen_snapshot.snapshot_id != self.snapshot_id
+            or self.frozen_snapshot.evidence != self.sources
+        ):
+            raise ValueError("packet frozen snapshot mismatch")
         if {r.firm for r in self.reports} != {"tradingagents", "ai_hedge_fund", "qlib"}:
             raise ValueError("packet requires all independent firms")
         if len(self.reports) != 3:

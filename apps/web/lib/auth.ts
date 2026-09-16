@@ -1,11 +1,19 @@
 import "server-only";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { authService, productionEnvironment } from "@/lib/service";
 
 export const SESSION_COOKIE = "money_session";
 export const SESSION_SECONDS = 60 * 60 * 8;
 
 export function authConfigured(): boolean {
-  return (process.env.MONEY_WEB_PASSWORD?.length ?? 0) >= 16 && (process.env.SESSION_SECRET?.length ?? 0) >= 32;
+  const environment = process.env.MONEY_ENV;
+  if (environment && !["development", "test", "preview", "production"].includes(environment)) return false;
+  if (process.env.NODE_ENV === "production" && !environment) return false;
+  if (process.env.MONEY_AUTH_MODE && process.env.MONEY_AUTH_MODE !== "private") return false;
+  const password = process.env.MONEY_WEB_PASSWORD ?? "";
+  const secret = process.env.SESSION_SECRET ?? "";
+  return password.length >= 16 && secret.length >= 32 && password !== secret &&
+    (!productionEnvironment() || !/^(?:password|changeme|change-me|default|example|test)[-\s_\d!]*$/i.test(password));
 }
 
 export function passwordMatches(password: string): boolean {
@@ -21,21 +29,50 @@ function sign(payload: string): string {
 }
 
 export function createSession(now = Date.now()): string {
-  const payload = String(Math.floor(now / 1000) + SESSION_SECONDS);
+  const payload = `${Math.floor(now / 1000) + SESSION_SECONDS}.${randomBytes(32).toString("base64url")}`;
   return `${payload}.${sign(payload)}`;
 }
 
 export function validSession(cookie: string | undefined, now = Date.now()): boolean {
-  if (!authConfigured() || !cookie || !/^\d{10}\.[A-Za-z0-9_-]{43}$/.test(cookie)) return false;
-  const [payload, signature] = cookie.split(".");
-  const expiry = Number(payload);
+  if (!authConfigured() || !cookie || !/^\d{10}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/.test(cookie)) return false;
+  const [timestamp, nonce, signature] = cookie.split(".");
+  const payload = `${timestamp}.${nonce}`;
+  const expiry = Number(timestamp);
   if (expiry <= now / 1000 || expiry > now / 1000 + SESSION_SECONDS + 5) return false;
   return timingSafeEqual(Buffer.from(signature), Buffer.from(sign(payload)));
 }
 
-export function requestAuthenticated(request: Request): boolean {
+export function requestSession(request: Request): string | undefined {
   const cookie = request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${SESSION_COOKIE}=`));
-  return validSession(cookie?.slice(SESSION_COOKIE.length + 1));
+  return cookie?.slice(SESSION_COOKIE.length + 1);
+}
+
+export const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+export const credentialVersion = () => digest(`${process.env.SESSION_SECRET}:${process.env.MONEY_WEB_PASSWORD}`);
+
+export async function requestAuthenticated(request: Request): Promise<boolean> {
+  const cookie = requestSession(request);
+  if (!validSession(cookie)) return false;
+  const result = await authService<{ valid: boolean }>("sessions/validate", { token_hash: digest(cookie!), credential_version: credentialVersion() });
+  return result.valid === true;
+}
+
+export async function registerSession(cookie: string): Promise<void> {
+  const result = await authService<{ created: boolean }>("sessions", {
+    token_hash: digest(cookie), credential_version: credentialVersion(),
+    expires_at: new Date(Number(cookie.split(".")[0]) * 1000).toISOString(),
+  });
+  if (result.created !== true) throw new Error("Session could not be registered");
+}
+
+export async function revokeSession(request: Request): Promise<void> {
+  const cookie = requestSession(request);
+  if (!validSession(cookie)) return;
+  await authService("sessions/revoke", { token_hash: digest(cookie!), credential_version: credentialVersion() });
+}
+
+export function sessionCookie(cookie: string, request: Request, maxAge = SESSION_SECONDS): string {
+  return `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${productionEnvironment() || new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
 
 export function sameOrigin(request: Request): boolean {
@@ -65,15 +102,8 @@ export async function readLimitedJson(request: Request, limit = 8192): Promise<u
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-// Defense in depth within an instance. Configure Netlify's durable edge rate limit
-// for /api/session before exposing the single-user workspace publicly.
-const attempts = new Map<string, { count: number; reset: number }>();
-export function loginAllowed(request: Request, now = Date.now()): boolean {
-  const key = request.headers.get("x-nf-client-connection-ip") ?? "local";
-  for (const [address, attempt] of attempts) if (attempt.reset < now) attempts.delete(address);
-  const current = attempts.get(key) ?? { count: 0, reset: now + 60_000 };
-  if (attempts.size >= 4096 && !attempts.has(key)) return false;
-  current.count += 1;
-  attempts.set(key, current);
-  return current.count <= 8;
+export async function loginAllowed(): Promise<{ allowed: boolean; retry_after: number }> {
+  // A global private-workspace bucket cannot be bypassed by forged IP headers.
+  // PostgreSQL owns the counter across every Netlify function instance.
+  return authService("rate-limit", { key: digest("money:private:login"), limit: 8, window_seconds: 60 });
 }

@@ -18,3 +18,15 @@ __pycache__
 .ruff_cache
 data
 logs
+.github
+docs
+knowledge
+scripts
+dist
+build
+htmlcov
+*.pem
+*.key
+**/.env
+**/.env.*
+**/__pycache__

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_MANDATE, isTerminal, signalState, unwrapSignal, validateJobInput, type Job } from "@/lib/contracts";
-import { Badge, DataRecord, FirmReportCard, JobList } from "@/components/primitives";
+import { Badge, DataRecord, FirmReportCard, JobList, safeSourceUrl } from "@/components/primitives";
 
 describe("research mandate", () => {
   it("accepts the default and narrower capital/horizon assumptions", () => {
@@ -41,6 +41,17 @@ describe("research lifecycle presentation", () => {
     expect(sealed).not.toContain(props.report.thesis);
     const locked = renderToStaticMarkup(<FirmReportCard {...props} locked />);
     expect(locked).toContain(props.report.thesis);
+  });
+  it("links claims to their frozen evidence without redistributing raw documents", () => {
+    const html = renderToStaticMarkup(<DataRecord evidenceHref="/research/record/evidence" data={{ evidence_ids: ["filing&1"], source_url: "https://example.test/filing", raw_content: "unlicensed raw document", raw_text: "raw private copy" }} />);
+    expect(html).toContain("/research/record/evidence#evidence-filing%261");
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).not.toContain("unlicensed raw document");
+    expect(html).not.toContain("raw private copy");
+  });
+  it.each(["javascript:alert(1)", "data:text/html,unsafe", "file:///etc/passwd", "https://user:secret@example.test/"])("rejects unsafe source links: %s", (url) => {
+    expect(safeSourceUrl(url)).toBeNull();
+    expect(renderToStaticMarkup(<DataRecord data={{ source_url: url }} />)).not.toContain("href=");
   });
 });
 

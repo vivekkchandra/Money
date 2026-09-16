@@ -10,4 +10,14 @@ First-pass reports have a unique `(job_id, firm)` key and immutable content hash
 
 Decision packets contain all reports and provenance, quality gates, validation, audit/red team, independence, versions, costs and resulting research state. Packets are insert-only. Signals expire by time on every read; an expiry sweep is housekeeping, not the authority for validity. Research outcomes are separate from any later manually entered actual trades.
 
-The initial workspace is single-user. Multi-user profiles/row-level ownership, full provider-call metrics and component-performance aggregates require additional migrations before offering multi-user tenancy.
+Migrations `0002_security_recovery` and `0003_production_services` add workspaces,
+durable sessions, idempotency/retry scheduling, budget reservations, model
+registry/promotion events, provider circuits, alert outbox and replay runs. Resource
+lookups enforce workspace ownership. Identity remains private; this does not claim
+completed multi-user onboarding or database row-level security.
+
+Cross-examination, signal design, manifest provenance and CIO runtime usage are
+insert-only artifacts. Later signal invalidation is an evidence-linked audit event,
+never an edit to its packet. Token/circuit/session rows are mutable operational
+state, not immutable research evidence. Performance aggregates and a durable
+maintenance scheduler remain future work.

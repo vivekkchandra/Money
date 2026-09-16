@@ -41,6 +41,14 @@ jobs = Table(
     Column("id", String(36), primary_key=True),
     Column("ticker", String(32), nullable=False),
     Column("mandate_id", ForeignKey("research_mandates.id"), nullable=False),
+    Column("workspace_id", String(80), nullable=False, server_default="private"),
+    Column("idempotency_key", String(128), nullable=True),
+    Column("request_hash", String(64), nullable=True),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("max_attempts", Integer, nullable=False, server_default="3"),
+    Column("available_at", DateTime(timezone=True), nullable=True),
+    Column("deadline_at", DateTime(timezone=True), nullable=True),
+    Column("resume_stage", String(40), nullable=True),
     Column("candidate_id", String(128), nullable=True),
     Column("snapshot_id", String(128), nullable=True),
     Column("status", String(40), nullable=False),
@@ -58,6 +66,9 @@ jobs = Table(
 )
 Index("ix_jobs_queue", jobs.c.status, jobs.c.created_at)
 Index("ix_jobs_lease", jobs.c.lease_until)
+Index("ix_jobs_workspace_created", jobs.c.workspace_id, jobs.c.created_at)
+Index("ix_jobs_available", jobs.c.status, jobs.c.available_at)
+Index("uq_jobs_idempotency", jobs.c.workspace_id, jobs.c.idempotency_key, unique=True)
 eligibility = record_table("eligibility", job=True)
 discoveries = record_table("candidate_discovery", job=True)
 snapshots = record_table("research_snapshots", job=True)
@@ -125,6 +136,33 @@ queue_control = Table(
     metadata,
     Column("id", Integer, primary_key=True),
 )
+sessions = Table(
+    "web_sessions",
+    metadata,
+    Column("token_hash", String(64), primary_key=True),
+    Column("workspace_id", String(80), nullable=False),
+    Column("credential_version", String(64), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+)
+Index("ix_sessions_expiry", sessions.c.expires_at)
+rate_limits = Table(
+    "rate_limits",
+    metadata,
+    Column("bucket", String(160), primary_key=True),
+    Column("window_started_at", DateTime(timezone=True), nullable=False),
+    Column("count", Integer, nullable=False),
+)
+Index("ix_audit_job_created", audit_events.c.job_id, audit_events.c.created_at)
+Index(
+    "ix_audit_event_job_time",
+    audit_events.c.event,
+    audit_events.c.job_id,
+    audit_events.c.created_at,
+)
+Index("ix_evidence_job", evidence.c.job_id)
+Index("ix_discovery_job", discoveries.c.job_id)
 
 IMMUTABLE_TABLES = (
     "research_mandates",

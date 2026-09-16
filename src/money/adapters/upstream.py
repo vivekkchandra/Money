@@ -89,6 +89,8 @@ def _validate_report[ReportT: FirmReport](
 class TradingAgentsAdapter:
     """Money graph assembly must inject snapshot tools into native GraphSetup."""
 
+    firm = "tradingagents"
+
     def __init__(self, runner: QualitativeRunner | None = None) -> None:
         self._runner = runner
 
@@ -107,6 +109,8 @@ class TradingAgentsAdapter:
 
 class AIHedgeFundAdapter:
     """An injected native runner may use AIHedgeFundSnapshotClient below."""
+
+    firm = "ai_hedge_fund"
 
     def __init__(self, runner: QualitativeRunner | None = None) -> None:
         self._runner = runner
@@ -151,6 +155,8 @@ class QlibRunner(Protocol):
 
 
 class QlibAdapter:
+    firm = "qlib"
+
     def __init__(self, runner: QlibRunner | None = None) -> None:
         self._runner = runner
 

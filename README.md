@@ -5,11 +5,14 @@ Netlify and a separate Python compute plane backed by PostgreSQL. Money never
 accesses a broker portfolio or creates executable orders. Investment decisions
 remain manual.
 
-## What works in this slice
+## Implemented product
 
 - Immutable mandates, objective snapshots and provider provenance with point-in-time checks.
 - ISA/ethics/currency gates, isolated first-pass inputs, write-once reports and a durable three-firm barrier.
-- Authenticated job submission, a separate worker with database leases, immutable decision packets and evidence retrieval after process restart.
+- Workspace-scoped submission, durable sessions/rate limits/idempotency, bounded retries, leased/fenced workers, checkpoint recovery and immutable decision packets.
+- Bounded UK data fetchers, provider qualification, explicit identifiers/GBP/GBX, TA-Lib/catalyst/fundamental/qualified-Qlib discovery and archived-publication PIT controls.
+- Native snapshot-only firm assemblies, isolated LEAN runner, actual CrewAI Flow, independent verification, bounded cross-examination and deterministic signal gates.
+- Durable token budgets, provider-neutral inference, manual model registry, immutable replay, informational alerts and research-reference outcomes.
 - Responsive research workspace: mandate drafts, discovery, jobs, separate firm reports, audits, evidence, active/expired signals, outcomes and health.
 - PostgreSQL migrations, Compose, GitHub CI and Netlify configuration.
 
@@ -19,11 +22,12 @@ with **INSUFFICIENT_EVIDENCE** because real LEAN validation is absent. Productio
 forbids demo mode. Unconfigured eligibility rejects a candidate; missing evidence
 or a runner never becomes an investment signal.
 
-Snapshot-backed adapter boundaries for TradingAgents, AI-HF, Qlib and LEAN are
-implemented and tested. Fully qualified native firm workflows, UK provider
-connections, CrewAI execution and calibrated live signals remain deployment
-gates. See [implementation plan](docs/IMPLEMENTATION_PLAN.md) and the actual
-[Graphify discovery audit](docs/GRAPHIFY_DISCOVERY.md).
+**PRODUCTION BLOCKED.** Implemented adapters are not qualified live integrations.
+Credentials/licences, verified ISA/business evidence, historical PIT archives,
+approved model, pinned native runtimes, LEAN image and external host verification
+remain required. See the [verification matrix](docs/VERIFICATION.md),
+[implementation plan](docs/IMPLEMENTATION_PLAN.md), [live configuration](docs/LIVE_CONFIGURATION.md)
+and [Graphify audit](docs/GRAPHIFY_DISCOVERY.md). No synthetic result is a live signal.
 
 ## Local start
 
@@ -66,8 +70,9 @@ npm test --prefix apps/web
 npm run build --prefix apps/web
 ```
 
-Connect GitHub to Netlify with `main` as production branch and pull-request Deploy
-Previews. Host the container API and worker separately with PostgreSQL; Netlify
+Preserve the existing GitHub → Netlify connection: `main` is the production branch
+and pull requests use Deploy Previews. Do not reinitialize Netlify. Host the API
+and worker separately with PostgreSQL; Netlify
 routes only authenticate, validate, enqueue and read. Cloud accounts and credentials
 are not provisioned by this repository.
 

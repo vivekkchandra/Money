@@ -23,3 +23,20 @@ availability times feed calendar-day returns and interval-valued target/failure
 occurrences; same-bar ordering stays ambiguous. `offline_research/promotion.py`
 binds four validation artifacts and an independent reviewer to a model hash;
 eligibility for manual promotion never executes or activates the artifact.
+
+New strict contracts outside the core file:
+
+- `research/live.py`: administrator-owned `LiveManifest`, `InferenceSelection`,
+  reviewed identifier/source artifacts and frozen `LiveProvenance`.
+- `data/qualification.py`, `data/quality/market.py`, `risk/costs.py`: explicit
+  provider admission, deterministic quality and dated instrument-specific costs.
+- `adapters/native_qlib.py`, `models/registry.py`: bounded JSON linear artifacts,
+  feature/training/validation versions and append-only manual promotion history.
+- `crews/cross_examination.py`: sealed original-report hashes, challenges,
+  independently verified responses, at most two rounds and unresolved IDs.
+- `signals/generation.py`: a reproducible `SignalDesign` retaining policy,
+  normalized/raw price levels, measured quality, costs and bounded downside.
+
+New packet version/snapshot/manifest/cross-examination references omit themselves
+when absent, preserving legacy packet hashes. Storage independently recomputes
+consensus, evidence independence and positive signal design before publishing.

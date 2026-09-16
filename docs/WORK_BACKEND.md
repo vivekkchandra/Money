@@ -1,0 +1,70 @@
+# Backend production work — 2026-09-16
+
+| Requirement | Prior gap | Implemented | Verification |
+| --- | --- | --- | --- |
+| Private workspace ownership | API reads shared all jobs | Server-configured workspace; jobs/mandates/reports/evidence/signals/outcomes/discovery/universe/alerts filtered; no caller-selected tenant | Cross-workspace API and repository tests |
+| Durable web authentication | Cookie only; no logout invalidation | Hashed sessions, expiry, credential rotation binding, revocation; service-token-only internal endpoints | Session restart/expiry/revocation/scope tests |
+| Login throttling | Process-local counters | Database-serialized global and per-identifier limits across replicas | Concurrent admission test; global bucket test |
+| Enqueue idempotency | Duplicate requests created duplicate compute | Workspace-scoped unique keys with canonical request digest, conflict rejection | Concurrent six-request test and HTTP 202 retry test |
+| Recovery | Lost worker finalized immediately | Attempts, exponential jitter backoff, resume stage, immutable checkpoint inventory; root flow reuses sealed reports | Partial first-pass recovery invokes missing firms only |
+| Whole-job timeout | Heartbeating hung task could run forever | Database deadline fences writes; CLI supervises one fresh process per job and terminates/kills process group | Supervised deadline process test; stale heartbeat rejection |
+| Health/configuration | Legacy heartbeat only | Explicit preview/private settings, pool/connect/statement deadlines, build/schema/queue health, live/ready, worker `--healthcheck` | Readiness and unsafe configuration tests |
+| Observability | Unstructured logging | Allowlisted JSON request/job failure events and response request IDs | Lint/types and response checks |
+| Model registry | Pure promotion gate only | Immutable metadata/hash registration; verify actual validation-report bytes; independent manual approval events; withdrawal; PIT active lookup | Hash/manual/reviewer/withdrawal/database immutability tests |
+| Alerts | No implementation | Atomic informational web completion notification with packet; workspace reads; idempotent outbox and fenced external delivery claims | Atomic presence, parallel delivery and duplicate enqueue tests |
+| Replay | No replay service | Original immutable snapshot/packet, original decision timestamp, deterministic consensus, separate immutable replay record | Unchanged original packet; workspace and immutable replay tests |
+| Outcomes | Pure calculator only | Operator service stores typed research-reference results idempotently; no actual-trade inference; source/dataset metadata; calibration remains unqualified | Outcome identity, workspace, missing signal and adjustment rejection tests |
+| Research scenarios | Completed packet never contained a signal | Deterministic `generate_signal`: real TA-Lib ATR after current consensus/quality gates, sourced cost calculations, explicit policy levels and hypothetical allocation bounded to £200 and 2%/£4 downside | 11 signal tests cover native ATR, currency equivalence, cost/risk/quality barriers and absent calibration |
+| Later signal invalidation | Immutable signal could only expire by original time | Immutable `SIGNAL_INVALIDATED` audit sidecar with fresh verified Money evidence; read-time effective expiry and atomic informational web notification | Repeated invalidation is idempotent; all read surfaces expire; original packet stays unchanged |
+
+The Graphify query used the existing Money graph before source inspection:
+`graphify query 'How do ResearchStore Settings create_app coordinate job claims fencing ownership authentication and health?' --budget 600`.
+It identified `src/money/storage/store.py`, `src/money/api/settings.py`, `src/money/api/app.py` and integration tests. No upstream source or graph was modified by this work.
+
+## Operational contracts
+
+Migration `0002_security_recovery.py` adds ownership, sessions, rate limits and queue recovery fields. It is forward-only: rollback retains security state and requires a reviewed restore into a separate database. Root-owned migration 0003 supplies model/outbox/replay/budget tables; both are required before the updated API/worker starts.
+
+The deployment mode is explicitly private/single-user. `MONEY_WORKSPACE_ID` defaults to `private`, preserving existing records. The bearer token identifies one deployment workspace; it does not enable public multi-tenant registration. Internal session calls are always bearer-authenticated, even when local unauthenticated research access is explicitly enabled.
+
+Session endpoints: `POST /internal/auth/rate-limit`, `/internal/auth/sessions`, `/internal/auth/sessions/validate`, `/internal/auth/sessions/revoke`. Only SHA-256 token hashes and credential-version hashes persist. Web code owns password verification, CSRF checks and secure cookies. Sessions last at most eight hours. Logout revokes server-side state; credential rotation invalidates old sessions on validation.
+
+`POST /research/jobs` accepts `Idempotency-Key`; repeated identical workspace requests return the same job, different content returns 409. It remains asynchronous. The private API offers `/research/universe` as **previously researched eligibility records**, not a complete broker universe.
+
+`GET /health/live` is process liveness. `/health/ready` includes schema revision, version, Git SHA, environment, database/worker status, queue depth, queue age and job counts. Legacy `/health` stays compatible. `python -m money.worker --healthcheck` checks any compatible service heartbeat, not a particular worker process instance. Provider qualification is separately enforced by the root-owned live configuration.
+
+`GET /research/system` is always service-token authenticated, even with the explicit development unauthenticated exception. It adds workspace-scoped job failures/retries and creation-to-completion duration, published/rejected/insufficient counts, and reservation-based token/cost accounting. Report copies are not double-counted. Known cost totals are a subset, alongside explicit known/unknown sample counts; unknown token usage retains its pessimistic reserved charge. Public readiness does not expose these details. Shared compute provider circuits have a clearly labeled installation-wide scope, bounded rows and a fixed safe projection; unknown provider identifiers are pseudonymized and payloads/URLs never returned. Circuit success does not establish data qualification: qualification remains `UNKNOWN` in this metric. Two dedicated tests verify cross-workspace exclusion, honest unknown usage, redaction and authentication. The PostgreSQL integration also executes numeric JSON aggregates and duration calculations when its database is available.
+
+Worker leases and per-attempt absolute deadlines both fence storage writes. Claims retain immutable artifacts and sealed reports. Transient timeouts/network/429/5xx failures retry with bounded exponential jitter; permanent failures do not retry. The production CLI uses a fresh spawned process for every job, terminates then kills a hung process group, and responds to graceful shutdown. `run_once` is also available as an in-process test helper; it provides database fencing but does not independently kill an injected test runner. CIO audit/Red Team/runtime metadata seal in one transaction so a restart cannot split a coupled CIO result.
+
+Model registry operations are local administrator capabilities, never public API routes. Host/operator access must authenticate the person named by `--reviewer`; the CLI records that identity and checks it against independent approval. It does not claim that a string alone proves an independent human review.
+
+```sh
+uv run python scripts/model_registry.py register --model qualified.json --artifact-hash HASH --report REPORT_HASH=report.json
+uv run python scripts/model_registry.py promote --model-id baseline:v1 --reviewer reviewer-id --manual
+uv run python scripts/model_registry.py withdraw --model-id baseline:v1 --reviewer reviewer-id --reason 'Validation expired'
+uv run python scripts/model_registry.py replay --research-id JOB_UUID
+uv run python scripts/model_registry.py outcomes --research-id JOB_UUID --bars outcome-bars.json --as-of 2026-09-16T12:00:00+00:00 --dataset-version qualified-export-v1 --adjustment-basis UNADJUSTED_NO_ACTIONS
+```
+
+All commands require typed backend environment configuration. Artifact loading accepts bounded regular JSON files, never pickle or executable code. Validation report hashes are checked against the supplied bytes before registry insertion. Registration does not activate a model. Production lookup requires a latest eligible manual promotion and exact artifact hash at the inference cutoff. Withdrawal is an appended event.
+
+Web notifications are immediately readable from PostgreSQL and never trigger trades. External email/Telegram channels remain configuration-blocked without an explicitly supplied provider supporting idempotency. Delivery calls get a fixed timeout argument and stable idempotency key; provider implementations must enforce that timeout. An external transport cannot guarantee exactly-once effects unless that provider honors idempotency after ambiguous failures. No external alert has been sent during implementation.
+
+Replay covers deterministic consensus/independence only; it never refetches or replaces original evidence and never claims identical LLM output. Outcome ingestion currently handles explicitly asserted unadjusted/no-action series; adjusted data is rejected until a common historical reference basis is available. Numeric invalidation is read from the immutable signal-design artifact where available, otherwise it remains unknown. Operator-supplied observations remain `calibration_qualified=false`; provider/corporate-action qualification and automatic scheduled collection still require engineering.
+
+Signal policy `atr-research-scenarios-v1` states its assumptions explicitly: quarter-ATR entry interval, two-ATR price invalidation, six-ATR hypothetical target, minimum cost-adjusted reward/downside 1.5, assumed capital at most £200 and modelled downside at most the lesser of 2% capital and £4. These are configurable conservative research limits, not statistically calibrated optimal settings or forecasts. Real TA-Lib calculation uses at least 60 PIT-safe observations. Raw GBP/GBX and normalized GBP levels are retained separately; GBP/GBX scenarios produce identical allocations. Validity ends by the earliest mandate horizon, critical-evidence freshness or eligibility expiry. Generation recomputes consensus and current market quality and cannot produce a strong state or numeric confidence. It never constructs units, a broker instruction or an order.
+
+The final storage boundary reruns signal generation from sealed policy, quality, cost applicability and design timestamp inputs. Published signals must exactly equal the recomputed sealed design. A positive underlying consensus can only be downgraded to insufficient evidence with no signal and bounded allowlisted failure codes from that sealed design. A live candidate with no discovery evidence is rejected before firm or LLM invocation. Four additional flow/persistence tests verify these paths and reject forged targets.
+
+Signal generation additionally requires `LeanValidationReport.scenario_policy_hash` to equal the canonical hash of the exact displayed `SignalPolicy`. A generic LEAN PASS, different ATR parameters, missing hash or incompatible mandate horizon returns `LEAN_SCENARIO_POLICY_UNQUALIFIED` with no signal. Horizons are never silently clamped after validation. The optional field is omitted when absent to preserve hashes of existing no-signal packets. Unit fixtures explicitly bind test-only policies; these hashes do not assert real LEAN qualification.
+
+Storage and replay validate the cross-examination packet hash, snapshot identity, original report hashes, LEAN/audit hashes, timestamps and exact round count. Material disagreement is an independent consensus veto input; it does not rewrite the sealed audit. Nonzero rounds or a declared examination hash without the immutable artifact are rejected. Adversarial persistence checks reject forged examination hashes and round counts before accepting the original packet; replay preserves its deterministic state.
+
+`ResearchStore.invalidate_signal` is an internal/operator capability, not a public execution endpoint. It appends a bounded reason and full typed source evidence, requiring a scoped published signal and fresh, available, nonconflicting evidence. Original packet/signal rows remain immutable. Automatic discovery of material invalidators still depends on qualified provider collection; the platform does not invent an event because a timer fired.
+
+## Verification evidence
+
+Baseline integration suite: 15 passed, one PostgreSQL test skipped (no `TEST_DATABASE_URL`). After core backend implementation: 48 integration/security tests passed, one PostgreSQL skip, including concurrent token admission and persistent outcome checks. Additional signal suite: 11 passed using real TA-Lib. Additional production service suite: 10 passed including circuit races and later signal invalidation. The real PostgreSQL test now also verifies migration drift, concurrent enqueue deduplication, login counters, session revocation, recovery and stale-worker fencing when CI supplies `TEST_DATABASE_URL`. Dedicated mypy checks passed for all modified source modules; Ruff checks and formatting passed. CLI help was executed. Latest complete results are consolidated by the parent in `docs/VERIFICATION.md`.
+
+No actual PostgreSQL service, cloud deployment, production model qualification, provider credentials or external alert channel was fabricated as successful. Remaining operational work includes session/rate-history retention cleanup, exporter integration for JSON logs/metrics, and externally qualified email/Telegram delivery. Budget and provider-circuit services are owned by the parent integration workstream.

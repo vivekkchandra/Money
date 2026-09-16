@@ -10,7 +10,7 @@ export type Job = {
 };
 export type Reports = { locked: boolean; reports: Record<string, RecordData>; artifacts: Record<string, unknown>; packet?: RecordData | null };
 export type Evidence = { snapshot: RecordData | null; evidence: RecordData[] };
-export type Health = { status: string; database: string | RecordData; worker: string | RecordData; mode: string };
+export type Health = { status: string; database: string | RecordData; worker: string | RecordData; mode: string; version?: string; git_sha?: string; environment?: string; schema_revision?: string; queue_depth?: number | null; queue_age_seconds?: number | null };
 
 export const DEFAULT_MANDATE = {
   broker: "Trading212", account_type: "StocksAndSharesISA", maximum_capital_gbp: "200",

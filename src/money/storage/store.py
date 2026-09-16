@@ -4,28 +4,37 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import secrets
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
-from sqlalchemy import Connection, Engine, create_engine, event, func, select, text
+from sqlalchemy import Connection, Engine, case, create_engine, event, func, or_, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
+    CIOAuditReport,
     DecisionPacket,
+    EvidenceRecord,
     FirmReport,
     QlibQuantResearchReport,
+    RedTeamReport,
     ResearchMandate,
     ResearchSignal,
     ResearchSnapshot,
+    ResearchState,
     TradingAgentsResearchReport,
+    content_hash,
 )
 from money.storage import models as db
 
@@ -64,6 +73,10 @@ class QueueCapacityExceeded(StoreError):
 
 class EnqueueRateExceeded(StoreError):
     """The deployment-wide enqueue rate was exceeded."""
+
+
+class IdempotencyConflict(StoreError):
+    """An enqueue key was already used with different input."""
 
 
 @dataclass(frozen=True)
@@ -109,6 +122,10 @@ class ResearchStore:
         allow_sqlite: bool = False,
         engine: Engine | None = None,
         claim: Claim | None = None,
+        workspace_id: str | None = None,
+        pool_size: int = 5,
+        pool_timeout: int = 10,
+        statement_timeout_ms: int = 15000,
     ) -> None:
         if database_url.startswith("postgres://"):
             database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
@@ -124,10 +141,17 @@ class ResearchStore:
             options["connect_args"] = {"check_same_thread": False, "timeout": 30}
             if ":memory:" in database_url:
                 options["poolclass"] = StaticPool
+        else:
+            options.update(pool_size=pool_size, max_overflow=5, pool_timeout=pool_timeout)
+            options["connect_args"] = {
+                "connect_timeout": 10,
+                "options": f"{make_url(database_url).query.get('options', '')} -c statement_timeout={statement_timeout_ms}",
+            }
         self.engine = engine or create_engine(database_url, **options)
         self.database_url = database_url
         self.allow_sqlite = allow_sqlite
         self.claim = claim
+        self.workspace_id = workspace_id
         if sqlite and engine is None:
 
             @event.listens_for(self.engine, "connect")
@@ -140,7 +164,20 @@ class ResearchStore:
             allow_sqlite=self.allow_sqlite,
             engine=self.engine,
             claim=claim,
+            workspace_id=self.workspace_id,
         )
+
+    def for_workspace(self, workspace_id: str) -> ResearchStore:
+        """Scope every public resource read to the authenticated deployment workspace."""
+        return ResearchStore(
+            self.database_url,
+            allow_sqlite=self.allow_sqlite,
+            engine=self.engine,
+            workspace_id=workspace_id,
+        )
+
+    def _workspace_filter(self) -> Any:
+        return db.jobs.c.workspace_id == self.workspace_id if self.workspace_id else True
 
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
@@ -172,6 +209,7 @@ class ResearchStore:
             or row["worker_id"] != claim.worker_id
             or row["lease_until"] is None
             or aware(row["lease_until"]) <= now_utc()
+            or (row["deadline_at"] is not None and aware(row["deadline_at"]) <= now_utc())
             or row["status"] in TERMINAL
         ):
             raise LeaseLost("Worker lease is no longer valid")
@@ -195,14 +233,41 @@ class ResearchStore:
         )
 
     def create_job(
-        self, ticker: str, mandate: Any, *, capacity: int = 100, rate_per_minute: int = 20
+        self,
+        ticker: str,
+        mandate: Any,
+        *,
+        capacity: int = 100,
+        rate_per_minute: int = 20,
+        idempotency_key: str | None = None,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
         mandate_data = ResearchMandate.model_validate(payload(mandate)).model_dump(mode="json")
         stamp = now_utc()
         job_id, mandate_id = str(uuid4()), str(uuid4())
+        workspace_id = self.workspace_id or "private"
+        request_hash = digest({"ticker": ticker, "mandate": mandate_data})
         with self.transaction() as connection:
             # Singleton row serializes capacity and rate checks across API replicas.
             connection.execute(select(db.queue_control).with_for_update()).all()
+            if idempotency_key is not None:
+                existing = (
+                    connection.execute(
+                        select(db.jobs).where(
+                            db.jobs.c.workspace_id == workspace_id,
+                            db.jobs.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if existing:
+                    if existing["request_hash"] != request_hash:
+                        raise IdempotencyConflict("Idempotency key was used with different input")
+                    replay = serialize(existing)
+                    for private in ("lease_token", "worker_id", "lease_until", "request_hash"):
+                        replay.pop(private, None)
+                    return replay
             active = (
                 connection.scalar(
                     select(func.count())
@@ -218,6 +283,7 @@ class ResearchStore:
                     select(func.count())
                     .select_from(db.jobs)
                     .where(db.jobs.c.created_at >= stamp - timedelta(minutes=1))
+                    .where(db.jobs.c.workspace_id == workspace_id)
                 )
                 or 0
             )
@@ -235,6 +301,10 @@ class ResearchStore:
                     id=job_id,
                     ticker=ticker,
                     mandate_id=mandate_id,
+                    workspace_id=workspace_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    max_attempts=max_attempts,
                     status="QUEUED",
                     current_stage="QUEUED",
                     created_at=stamp,
@@ -253,12 +323,16 @@ class ResearchStore:
             self._expire_leases(connection, job_id)
         with self.engine.connect() as connection:
             row = (
-                connection.execute(select(db.jobs).where(db.jobs.c.id == job_id)).mappings().first()
+                connection.execute(
+                    select(db.jobs).where(db.jobs.c.id == job_id, self._workspace_filter())
+                )
+                .mappings()
+                .first()
             )
             if row is None:
                 return None
             result = serialize(row)
-            for private in ("lease_token", "worker_id", "lease_until"):
+            for private in ("lease_token", "worker_id", "lease_until", "request_hash"):
                 result.pop(private, None)
             packet = connection.scalar(
                 select(db.packets.c.payload).where(db.packets.c.job_id == job_id)
@@ -272,16 +346,51 @@ class ResearchStore:
                 result["final_state"] = (
                     ResearchSignal.model_validate(stored_signal).effective_state(now_utc()).value
                 )
+                invalidated_at = connection.scalar(
+                    select(func.min(db.audit_events.c.created_at)).where(
+                        db.audit_events.c.job_id == job_id,
+                        db.audit_events.c.event == "SIGNAL_INVALIDATED",
+                        db.audit_events.c.created_at <= now_utc(),
+                    )
+                )
+                if invalidated_at is not None:
+                    result["final_state"] = "EXPIRED"
+                    result["invalidated_at"] = aware(invalidated_at).isoformat()
             return result
 
     def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.transaction() as connection:
+            self._expire_leases(connection)
         with self.engine.connect() as connection:
-            ids = connection.scalars(
-                select(db.jobs.c.id)
+            invalidations = self._signal_invalidations()
+            rows = connection.execute(
+                select(
+                    db.jobs,
+                    db.packets.c.payload["final_state"].as_string().label("final_state"),
+                    db.signals.c.payload.label("signal_payload"),
+                    invalidations.c.invalidated_at,
+                )
+                .outerjoin(db.packets, db.packets.c.job_id == db.jobs.c.id)
+                .outerjoin(db.signals, db.signals.c.job_id == db.jobs.c.id)
+                .outerjoin(invalidations, invalidations.c.job_id == db.jobs.c.id)
+                .where(self._workspace_filter())
                 .order_by(db.jobs.c.created_at.desc())
                 .limit(min(max(limit, 1), 100))
-            ).all()
-        return [job for job_id in ids if (job := self.get_job(job_id)) is not None]
+            ).mappings()
+            results = []
+            for row in rows:
+                result = serialize(row)
+                signal = result.pop("signal_payload")
+                if signal:
+                    result["final_state"] = (
+                        ResearchSignal.model_validate(signal).effective_state(now_utc()).value
+                    )
+                    if result["invalidated_at"] is not None:
+                        result["final_state"] = "EXPIRED"
+                for private in ("lease_token", "worker_id", "lease_until", "request_hash"):
+                    result.pop(private, None)
+                results.append(result)
+            return results
 
     def get_mandate(self, job_id: str) -> dict[str, Any]:
         with self.engine.connect() as connection:
@@ -289,68 +398,99 @@ class ResearchStore:
                 select(db.mandates.c.payload)
                 .join(db.jobs, db.jobs.c.mandate_id == db.mandates.c.id)
                 .where(db.jobs.c.id == job_id)
+                .where(self._workspace_filter())
             )
             if result is None:
                 raise StoreError("Research mandate does not exist")
             return dict(result)
 
-    def claim_job(self, worker_id: str, lease_seconds: int = 120) -> Claim | None:
+    def claim_job(
+        self, worker_id: str, lease_seconds: int = 120, job_timeout_seconds: int = 1800
+    ) -> Claim | None:
         if lease_seconds < 10:
             raise ValueError("Worker leases must last at least ten seconds")
         with self.transaction() as connection:
             stamp = now_utc()
             self._expire_leases(connection)
-            job_id = connection.scalar(
-                select(db.jobs.c.id)
-                .where(db.jobs.c.status == "QUEUED")
-                .order_by(db.jobs.c.created_at)
-                .with_for_update(skip_locked=True)
-                .limit(1)
+            row = (
+                connection.execute(
+                    select(db.jobs)
+                    .where(db.jobs.c.status == "QUEUED")
+                    .where(or_(db.jobs.c.available_at.is_(None), db.jobs.c.available_at <= stamp))
+                    .order_by(db.jobs.c.created_at)
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                )
+                .mappings()
+                .first()
             )
-            if job_id is None:
+            if row is None:
                 return None
+            job_id = row["id"]
             token = str(uuid4())
+            stage = row["resume_stage"] or "ELIGIBILITY_CHECK"
             connection.execute(
                 db.jobs.update()
                 .where(db.jobs.c.id == job_id)
                 .values(
-                    status="ELIGIBILITY_CHECK",
-                    current_stage="ELIGIBILITY_CHECK",
-                    started_at=stamp,
+                    status=stage,
+                    current_stage=stage,
+                    started_at=row["started_at"] or stamp,
                     updated_at=stamp,
+                    attempt_count=row["attempt_count"] + 1,
+                    error_code=None,
+                    error_message=None,
+                    deadline_at=stamp + timedelta(seconds=job_timeout_seconds),
                     worker_id=worker_id,
                     lease_token=token,
                     lease_until=stamp + timedelta(seconds=lease_seconds),
                 )
             )
-            self._audit(connection, job_id, "WORKER_CLAIMED")
+            self._audit(
+                connection,
+                job_id,
+                "WORKER_CLAIMED",
+                {
+                    "attempt": row["attempt_count"] + 1,
+                    "stage": stage,
+                },
+            )
             return Claim(job_id=job_id, token=token, worker_id=worker_id)
 
     def _expire_leases(self, connection: Connection, job_id: str | None = None) -> None:
         stamp = now_utc()
-        query = select(db.jobs.c.id).where(
+        query = select(db.jobs).where(
             db.jobs.c.status.not_in(TERMINAL),
-            db.jobs.c.lease_until <= stamp,
+            or_(db.jobs.c.lease_until <= stamp, db.jobs.c.deadline_at <= stamp),
+            self._workspace_filter(),
         )
         if job_id is not None:
             query = query.where(db.jobs.c.id == job_id)
-        expired = connection.scalars(query.with_for_update(skip_locked=True)).all()
-        for expired_id in expired:
+        expired = connection.execute(query.with_for_update(skip_locked=True)).mappings().all()
+        for row in expired:
+            timed_out = row["deadline_at"] and aware(row["deadline_at"]) <= stamp
+            code = "JOB_TIMEOUT" if timed_out else "WORKER_LEASE_EXPIRED"
+            retry = row["attempt_count"] < row["max_attempts"] and not timed_out
             connection.execute(
                 db.jobs.update()
-                .where(db.jobs.c.id == expired_id)
+                .where(db.jobs.c.id == row["id"])
                 .values(
-                    status="FAILED",
-                    current_stage="FAILED",
-                    completed_at=stamp,
+                    status="QUEUED" if retry else "FAILED",
+                    current_stage="QUEUED" if retry else "FAILED",
+                    resume_stage=row["status"],
+                    completed_at=None if retry else stamp,
                     updated_at=stamp,
                     lease_token=None,
                     lease_until=None,
-                    error_code="WORKER_LEASE_EXPIRED",
-                    error_message="The research worker stopped responding; submit a new research job.",
+                    deadline_at=None,
+                    available_at=stamp + timedelta(seconds=self._retry_delay(row["attempt_count"])),
+                    error_code=code if retry or timed_out else "JOB_RETRY_EXHAUSTED",
+                    error_message="Research compute was interrupted; retry is pending."
+                    if retry
+                    else "Research compute failed; no research signal was issued.",
                 )
             )
-            self._audit(connection, expired_id, "WORKER_LEASE_EXPIRED")
+            self._audit(connection, row["id"], code, {"retry": retry})
 
     def renew_lease(self, job_id: str, lease_seconds: int = 120) -> None:
         with self.transaction() as connection:
@@ -362,6 +502,67 @@ class ResearchStore:
                     lease_until=now_utc() + timedelta(seconds=lease_seconds),
                 )
             )
+
+    def get_checkpoint(self, job_id: str) -> dict[str, Any]:
+        """Orchestrator-only recovery metadata; never supplied to a first-pass firm."""
+        with self.transaction() as connection:
+            row = self._owned_job(connection, job_id)
+            return {
+                "stage": row["status"],
+                "snapshot": connection.scalar(
+                    select(db.snapshots.c.payload).where(db.snapshots.c.job_id == job_id)
+                ),
+                "artifacts": {
+                    item.kind: item.payload
+                    for item in connection.execute(
+                        select(db.artifacts.c.kind, db.artifacts.c.payload).where(
+                            db.artifacts.c.job_id == job_id
+                        )
+                    )
+                },
+                "sealed_firms": list(
+                    connection.scalars(
+                        select(db.firm_reports.c.firm).where(db.firm_reports.c.job_id == job_id)
+                    )
+                ),
+            }
+
+    @staticmethod
+    def _retry_delay(attempt: int) -> float:
+        return float(min(300, 2 ** min(attempt, 8)) + secrets.randbelow(1000) / 1000)
+
+    def retry_job(self, job_id: str, code: str) -> bool:
+        """Retry an explicitly classified transient failure, preserving immutable checkpoints."""
+        with self.transaction() as connection:
+            row = self._owned_job(connection, job_id)
+            retry = row["attempt_count"] < row["max_attempts"]
+            stamp = now_utc()
+            connection.execute(
+                db.jobs.update()
+                .where(db.jobs.c.id == job_id)
+                .values(
+                    status="QUEUED" if retry else "FAILED",
+                    current_stage="QUEUED" if retry else "FAILED",
+                    resume_stage=row["status"],
+                    updated_at=stamp,
+                    available_at=stamp + timedelta(seconds=self._retry_delay(row["attempt_count"])),
+                    completed_at=None if retry else stamp,
+                    deadline_at=None,
+                    lease_token=None,
+                    lease_until=None,
+                    error_code=code if retry else "JOB_RETRY_EXHAUSTED",
+                    error_message="A transient service failure delayed research."
+                    if retry
+                    else "Research retry limit reached; no signal was issued.",
+                )
+            )
+            self._audit(
+                connection,
+                job_id,
+                "JOB_RETRY_SCHEDULED" if retry else "JOB_RETRY_EXHAUSTED",
+                {"failure_code": code, "attempt": row["attempt_count"]},
+            )
+            return retry
 
     def update_stage(self, job_id: str, status: str | Enum, **fields: Any) -> None:
         stage = str(status.value) if isinstance(status, Enum) else status
@@ -494,6 +695,8 @@ class ResearchStore:
             self._audit(connection, job_id, "FIRST_PASS_LOCKED")
 
     def get_reports(self, job_id: str) -> dict[str, Any]:
+        if self.get_job(job_id) is None:
+            raise StoreError("Research job does not exist")
         with self.engine.connect() as connection:
             locked = connection.scalar(select(db.jobs.c.locked_at).where(db.jobs.c.id == job_id))
             if locked is None:
@@ -509,6 +712,8 @@ class ResearchStore:
             }
 
     def public_reports(self, job_id: str) -> dict[str, Any]:
+        if self.get_job(job_id) is None:
+            raise StoreError("Research job does not exist")
         with self.engine.connect() as connection:
             locked = (
                 connection.scalar(select(db.jobs.c.locked_at).where(db.jobs.c.id == job_id))
@@ -538,6 +743,8 @@ class ResearchStore:
         }
 
     def get_evidence(self, job_id: str) -> dict[str, Any]:
+        if self.get_job(job_id) is None:
+            raise StoreError("Research job does not exist")
         with self.engine.connect() as connection:
             snapshot = connection.scalar(
                 select(db.snapshots.c.payload).where(db.snapshots.c.job_id == job_id)
@@ -560,13 +767,54 @@ class ResearchStore:
             "cross_examination",
             "consensus",
             "token_usage",
+            "market_quality",
+            "compute_budget",
+            "source_manifest",
+            "cio_runtime",
+            "signal_design",
         }:
             raise StoreError("Unknown research artifact")
         data = payload(value)
         with self.transaction() as connection:
             row = self._owned_job(connection, job_id)
-            if kind not in {"eligibility", "discovery", "token_usage"} and row["locked_at"] is None:
+            if (
+                kind
+                not in {
+                    "eligibility",
+                    "discovery",
+                    "token_usage",
+                    "market_quality",
+                    "compute_budget",
+                    "source_manifest",
+                }
+                and row["locked_at"] is None
+            ):
                 raise BarrierNotLocked("Downstream artifacts require locked first-pass reports")
+            if kind == "cross_examination":
+                from money.crews.cross_examination import CrossExaminationPacket
+
+                checked_cross = CrossExaminationPacket.model_validate(data)
+                prior = {
+                    item.kind: item.payload
+                    for item in connection.execute(
+                        select(
+                            db.artifacts.c.kind,
+                            db.artifacts.c.payload,
+                        ).where(
+                            db.artifacts.c.job_id == job_id,
+                            db.artifacts.c.kind.in_(["audit", "lean"]),
+                        )
+                    )
+                }
+                if (
+                    row["status"] != "CROSS_EXAMINATION"
+                    or "lean" not in prior
+                    or not prior.get("audit", {}).get("completed")
+                    or checked_cross.snapshot_id != row["snapshot_id"]
+                ):
+                    raise StoreError(
+                        "Cross-examination requires completed validation and initial CIO audit"
+                    )
             connection.execute(
                 db.artifacts.insert().values(
                     id=str(uuid4()),
@@ -590,6 +838,35 @@ class ResearchStore:
                         created_at=now_utc(),
                     )
                 )
+
+    def save_cio_artifacts(
+        self, job_id: str, audit: Any, red_team: Any, runtime: Any = None
+    ) -> None:
+        """Seal one coupled CIO run atomically so recovery never loses its Red Team."""
+        checked_audit = CIOAuditReport.model_validate(payload(audit))
+        checked_red_team = RedTeamReport.model_validate(payload(red_team))
+        with self.transaction() as connection:
+            row = self._owned_job(connection, job_id)
+            if row["locked_at"] is None or row["status"] != "CREWAI_AUDIT":
+                raise BarrierNotLocked(
+                    "CIO artifacts require the audit stage after first-pass lock"
+                )
+            if checked_audit.snapshot_id != row["snapshot_id"]:
+                raise StoreError("CIO audit differs from the frozen snapshot")
+            values = [("audit", payload(checked_audit)), ("red_team", payload(checked_red_team))]
+            if runtime is not None:
+                values.append(("cio_runtime", payload(runtime)))
+            for kind, value in values:
+                connection.execute(
+                    db.artifacts.insert().values(
+                        id=str(uuid4()),
+                        job_id=job_id,
+                        kind=kind,
+                        payload=value,
+                        created_at=now_utc(),
+                    )
+                )
+            self._audit(connection, job_id, "CIO_ARTIFACTS_SEALED")
 
     def complete_job(self, job_id: str, packet: Any, state: str | Enum = "COMPLETE") -> None:
         status = str(state.value) if isinstance(state, Enum) else state
@@ -668,6 +945,36 @@ class ResearchStore:
                     raise StoreError(
                         "Decision packet evidence independence was not derived from its sources"
                     )
+                cross_disagreement = False
+                cross_data = stored_artifacts.get("cross_examination")
+                if cross_data is not None:
+                    from money.crews.cross_examination import CrossExaminationPacket
+
+                    cross = CrossExaminationPacket.model_validate(cross_data)
+                    if (
+                        cross.snapshot_id != authoritative_snapshot.snapshot_id
+                        or cross.snapshot_hash != authoritative_snapshot.hash
+                        or len(cross.report_hashes) != 3
+                        or dict(cross.report_hashes)
+                        != {
+                            report.firm: content_hash(report) for report in validated_packet.reports
+                        }
+                        or cross.lean_hash != content_hash(validated_packet.lean)
+                        or cross.initial_audit_hash != content_hash(validated_packet.audit)
+                        or len(cross.rounds) != validated_packet.cross_examination_rounds
+                        or cross.hash != data.get("cross_examination_hash")
+                        or not authoritative_snapshot.created_at
+                        <= cross.issued_at
+                        <= validated_packet.issued_at
+                    ):
+                        raise StoreError("Cross-examination differs from sealed research evidence")
+                    cross_disagreement = cross.material_disagreement
+                elif validated_packet.cross_examination_rounds or data.get(
+                    "cross_examination_hash"
+                ):
+                    raise StoreError(
+                        "Cross-examination rounds require a persisted immutable artifact"
+                    )
                 calculated_state, calculated_reasons = consensus(
                     validated_packet.mandate,
                     authoritative_snapshot,
@@ -678,7 +985,62 @@ class ResearchStore:
                     calculated_independence,
                     now_utc(),
                     rounds=validated_packet.cross_examination_rounds,
+                    cross_examination_disagreement=cross_disagreement,
                 )
+                from money.signals.generation import (
+                    DOWNGRADE_REASONS,
+                    SignalDesign,
+                    generate_signal,
+                )
+
+                design_data = stored_artifacts.get("signal_design")
+                if design_data is not None:
+                    design = SignalDesign.model_validate(design_data)
+                    if design.signal is not None:
+                        if (
+                            design.policy is None
+                            or design.market_quality is None
+                            or design.cost_applicability is None
+                            or design.designed_at is None
+                            or design.designed_at > validated_packet.issued_at
+                            or design.signal.valid_until <= now_utc()
+                        ):
+                            raise StoreError("Signal design lacks reproducible current inputs")
+                        recalculated_design = generate_signal(
+                            job_id,
+                            validated_packet.mandate,
+                            authoritative_snapshot,
+                            validated_packet.reports,
+                            validated_packet.lean,
+                            validated_packet.audit,
+                            validated_packet.red_team,
+                            state=calculated_state,
+                            issued_at=design.designed_at,
+                            market_quality=design.market_quality,
+                            cost_applicability=design.cost_applicability,
+                            policy=design.policy,
+                            rounds=validated_packet.cross_examination_rounds,
+                        )
+                        if (
+                            recalculated_design != design
+                            or validated_packet.signal != design.signal
+                        ):
+                            raise StoreError(
+                                "Published signal differs from its deterministic sealed design"
+                            )
+                    else:
+                        if validated_packet.signal is not None:
+                            raise StoreError("Signal cannot bypass the sealed unavailable design")
+                        if calculated_state in {
+                            ResearchState.RESEARCH_CANDIDATE,
+                            ResearchState.WATCH,
+                        }:
+                            if not design.reasons or not set(design.reasons) <= DOWNGRADE_REASONS:
+                                raise StoreError("Signal design downgrade reasons are invalid")
+                            calculated_state = ResearchState.INSUFFICIENT_EVIDENCE
+                            calculated_reasons = design.reasons
+                elif validated_packet.signal is not None:
+                    raise StoreError("Published signal requires a sealed deterministic design")
                 if (validated_packet.final_state, validated_packet.reasons) != (
                     calculated_state,
                     calculated_reasons,
@@ -721,6 +1083,35 @@ class ResearchStore:
             )
             self._audit(
                 connection, job_id, "DECISION_PERSISTED", {"final_state": data.get("final_state")}
+            )
+            # The web channel is the database itself: publish informational completion
+            # atomically with the immutable packet, never send anything externally here.
+            from money.storage.production_models import alert_outbox
+
+            connection.execute(
+                alert_outbox.insert().values(
+                    id=digest(
+                        {
+                            "job": job_id,
+                            "event": "RESEARCH_COMPLETED",
+                            "key": "decision",
+                            "channel": "web",
+                        }
+                    ),
+                    job_id=job_id,
+                    workspace_id=row["workspace_id"],
+                    channel="web",
+                    state="DELIVERED",
+                    attempts=0,
+                    created_at=now_utc(),
+                    delivered_at=now_utc(),
+                    payload={
+                        "event": "RESEARCH_COMPLETED",
+                        "research_id": job_id,
+                        "message": "Research is complete and available for human review.",
+                        "informational_only": True,
+                    },
+                )
             )
 
     def fail_job(self, job_id: str, code: str, message: str) -> None:
@@ -782,26 +1173,130 @@ class ResearchStore:
 
     def list_signals(self, *, expired: bool = False) -> list[dict[str, Any]]:
         with self.engine.connect() as connection:
+            invalidations = self._signal_invalidations()
             rows = connection.execute(
-                select(db.signals).order_by(db.signals.c.created_at.desc())
+                select(db.signals, invalidations.c.invalidated_at)
+                .join(db.jobs, db.jobs.c.id == db.signals.c.job_id)
+                .outerjoin(invalidations, invalidations.c.job_id == db.jobs.c.id)
+                .where(self._workspace_filter())
+                .order_by(db.signals.c.created_at.desc())
             ).mappings()
             result = []
             for row in rows:
                 state = (
                     ResearchSignal.model_validate(row["payload"]).effective_state(now_utc()).value
                 )
+                if row["invalidated_at"] is not None:
+                    state = "EXPIRED"
                 if (state == "EXPIRED") == expired:
                     result.append({**serialize(row), "final_state": state})
                 if len(result) >= 100:
                     break
             return result
 
+    @staticmethod
+    def _signal_invalidations() -> Any:
+        return (
+            select(
+                db.audit_events.c.job_id,
+                func.min(db.audit_events.c.created_at).label("invalidated_at"),
+            )
+            .where(
+                db.audit_events.c.event == "SIGNAL_INVALIDATED",
+                db.audit_events.c.created_at <= now_utc(),
+            )
+            .group_by(db.audit_events.c.job_id)
+            .subquery()
+        )
+
+    def invalidate_signal(self, job_id: str, *, reason: str, evidence: EvidenceRecord) -> None:
+        """Append verified event evidence; never update the immutable issued signal."""
+        if reason not in {
+            "PRICE",
+            "FUNDAMENTAL",
+            "EVENT",
+            "ELIGIBILITY",
+            "ETHICAL",
+            "DATA_QUALITY",
+        }:
+            raise StoreError("Unknown signal invalidation reason")
+        proof = EvidenceRecord.model_validate_json(evidence.model_dump_json())
+        stamp = now_utc()
+        if not proof.available_at(stamp) or proof.fresh_until <= stamp or proof.conflicting:
+            raise StoreError("Signal invalidation requires fresh verified evidence")
+        with self.transaction() as connection:
+            job = (
+                connection.execute(
+                    select(db.jobs)
+                    .where(db.jobs.c.id == job_id, self._workspace_filter())
+                    .with_for_update()
+                )
+                .mappings()
+                .first()
+            )
+            signal = connection.scalar(
+                select(db.signals.c.payload).where(db.signals.c.job_id == job_id)
+            )
+            if job is None or signal is None:
+                raise StoreError("An accessible published signal is required")
+            existing = connection.scalar(
+                select(db.audit_events.c.id).where(
+                    db.audit_events.c.job_id == job_id,
+                    db.audit_events.c.event == "SIGNAL_INVALIDATED",
+                    db.audit_events.c.payload["evidence_hash"].as_string() == proof.hash,
+                )
+            )
+            if existing is not None:
+                return
+            self._audit(
+                connection,
+                job_id,
+                "SIGNAL_INVALIDATED",
+                {
+                    "reason": reason,
+                    "evidence_hash": proof.hash,
+                    "evidence": proof.model_dump(mode="json"),
+                    "invalidated_at": stamp.isoformat(),
+                },
+            )
+            from money.storage.production_models import alert_outbox
+
+            connection.execute(
+                alert_outbox.insert().values(
+                    id=digest(
+                        {
+                            "job": job_id,
+                            "event": "MATERIAL_INVALIDATION",
+                            "key": proof.hash,
+                            "channel": "web",
+                        }
+                    ),
+                    job_id=job_id,
+                    workspace_id=job["workspace_id"],
+                    channel="web",
+                    state="DELIVERED",
+                    attempts=0,
+                    created_at=stamp,
+                    delivered_at=stamp,
+                    payload={
+                        "event": "MATERIAL_INVALIDATION",
+                        "research_id": job_id,
+                        "message": "New evidence has invalidated a research assumption.",
+                        "informational_only": True,
+                    },
+                )
+            )
+
     def list_outcomes(self) -> list[dict[str, Any]]:
         with self.engine.connect() as connection:
             return [
                 serialize(row)
                 for row in connection.execute(
-                    select(db.outcomes).order_by(db.outcomes.c.created_at.desc()).limit(100)
+                    select(db.outcomes)
+                    .join(db.jobs, db.jobs.c.id == db.outcomes.c.job_id)
+                    .where(self._workspace_filter())
+                    .order_by(db.outcomes.c.created_at.desc())
+                    .limit(100)
                 ).mappings()
             ]
 
@@ -810,6 +1305,334 @@ class ResearchStore:
             return [
                 serialize(row)
                 for row in connection.execute(
-                    select(db.discoveries).order_by(db.discoveries.c.created_at.desc()).limit(100)
+                    select(db.discoveries)
+                    .join(db.jobs, db.jobs.c.id == db.discoveries.c.job_id)
+                    .where(self._workspace_filter())
+                    .order_by(db.discoveries.c.created_at.desc())
+                    .limit(100)
                 ).mappings()
             ]
+
+    def list_universe(self) -> list[dict[str, Any]]:
+        """Previously researched eligibility records, not a claimed complete broker universe."""
+        with self.engine.connect() as connection:
+            return [
+                serialize(row)
+                for row in connection.execute(
+                    select(db.eligibility)
+                    .join(db.jobs, db.jobs.c.id == db.eligibility.c.job_id)
+                    .where(self._workspace_filter())
+                    .order_by(db.eligibility.c.created_at.desc())
+                    .limit(100)
+                ).mappings()
+            ]
+
+    def consume_rate_limit(self, key: str, limit: int, window_seconds: int) -> dict[str, Any]:
+        """Database-serialized fixed windows shared by all web/API replicas."""
+        bucket = f"{self.workspace_id or 'private'}:{key}"
+        stamp = now_utc()
+        with self.transaction() as connection:
+            connection.execute(select(db.queue_control).with_for_update()).all()
+            row = (
+                connection.execute(select(db.rate_limits).where(db.rate_limits.c.bucket == bucket))
+                .mappings()
+                .first()
+            )
+            if row is None:
+                connection.execute(
+                    db.rate_limits.insert().values(
+                        bucket=bucket,
+                        window_started_at=stamp,
+                        count=1,
+                    )
+                )
+                return {"allowed": True, "retry_after": 0}
+            elapsed = (stamp - aware(row["window_started_at"])).total_seconds()
+            if elapsed >= window_seconds:
+                connection.execute(
+                    db.rate_limits.update()
+                    .where(db.rate_limits.c.bucket == bucket)
+                    .values(window_started_at=stamp, count=1)
+                )
+                return {"allowed": True, "retry_after": 0}
+            allowed = row["count"] < limit
+            if allowed:
+                connection.execute(
+                    db.rate_limits.update()
+                    .where(db.rate_limits.c.bucket == bucket)
+                    .values(count=row["count"] + 1)
+                )
+            return {
+                "allowed": allowed,
+                "retry_after": 0 if allowed else max(1, int(window_seconds - elapsed) + 1),
+            }
+
+    def create_session(
+        self, token_hash: str, credential_version: str, expires_at: datetime
+    ) -> None:
+        stamp = now_utc()
+        expiry = aware(expires_at)
+        if not stamp < expiry <= stamp + timedelta(hours=8, seconds=5):
+            raise StoreError("Session expiry exceeds policy")
+        with self.transaction() as connection:
+            connection.execute(
+                db.sessions.insert().values(
+                    token_hash=token_hash,
+                    workspace_id=self.workspace_id or "private",
+                    credential_version=credential_version,
+                    expires_at=expiry,
+                    created_at=stamp,
+                )
+            )
+            self._audit(
+                connection, None, "SESSION_CREATED", {"workspace": self.workspace_id or "private"}
+            )
+
+    def session_valid(self, token_hash: str, credential_version: str) -> bool:
+        with self.engine.connect() as connection:
+            return (
+                connection.scalar(
+                    select(db.sessions.c.token_hash).where(
+                        db.sessions.c.token_hash == token_hash,
+                        db.sessions.c.workspace_id == (self.workspace_id or "private"),
+                        db.sessions.c.credential_version == credential_version,
+                        db.sessions.c.revoked_at.is_(None),
+                        db.sessions.c.expires_at > now_utc(),
+                    )
+                )
+                is not None
+            )
+
+    def revoke_session(self, token_hash: str, credential_version: str) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                db.sessions.update()
+                .where(
+                    db.sessions.c.token_hash == token_hash,
+                    db.sessions.c.workspace_id == (self.workspace_id or "private"),
+                    db.sessions.c.credential_version == credential_version,
+                    db.sessions.c.revoked_at.is_(None),
+                )
+                .values(revoked_at=now_utc())
+            )
+            self._audit(
+                connection, None, "SESSION_REVOKED", {"workspace": self.workspace_id or "private"}
+            )
+
+    def operational_metrics(self, *, include_details: bool = False) -> dict[str, Any]:
+        """Workspace aggregates; detailed provider telemetry is shared and explicit.
+
+        Public readiness uses the small default projection. Token accounting uses
+        reservations only, avoiding double-counting copies in reports/artifacts.
+        """
+        workspace = db.jobs.c.workspace_id == (self.workspace_id or "private")
+        stamp = now_utc()
+        with self.engine.connect() as connection:
+            counts = {
+                status: count
+                for status, count in connection.execute(
+                    select(db.jobs.c.status, func.count())
+                    .where(workspace)
+                    .group_by(db.jobs.c.status)
+                ).all()
+            }
+            oldest = connection.scalar(
+                select(func.min(db.jobs.c.created_at)).where(
+                    workspace, db.jobs.c.status == "QUEUED"
+                )
+            )
+            schema = connection.scalar(text("SELECT version_num FROM alembic_version"))
+            result = {
+                "schema_revision": schema,
+                "queue_depth": counts.get("QUEUED", 0),
+                "queue_age_seconds": max(0, (stamp - aware(oldest)).total_seconds())
+                if oldest
+                else 0,
+                "job_counts": counts,
+            }
+            if not include_details:
+                return result
+            from money.storage.production_models import budget_reservations, provider_state
+
+            reservations = budget_reservations
+            scoped_reservations = reservations.join(db.jobs, reservations.c.job_id == db.jobs.c.id)
+            cost = reservations.c.payload["usage"]["cost_gbp"].as_numeric(28, 10)
+            totals = (
+                connection.execute(
+                    select(
+                        func.count().label("reservations"),
+                        func.coalesce(func.sum(reservations.c.actual_tokens), 0).label(
+                            "known_tokens"
+                        ),
+                        (func.count() - func.count(reservations.c.actual_tokens)).label(
+                            "unknown_usage_count"
+                        ),
+                        func.coalesce(func.sum(reservations.c.reserved_tokens), 0).label(
+                            "reserved_tokens"
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        reservations.c.actual_tokens.is_(None),
+                                        reservations.c.reserved_tokens,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ).label("unsettled_reserved_tokens"),
+                        func.coalesce(
+                            func.sum(
+                                func.coalesce(
+                                    reservations.c.actual_tokens, reservations.c.reserved_tokens
+                                )
+                            ),
+                            0,
+                        ).label("budget_charged_tokens"),
+                        func.coalesce(func.sum(cost), 0).label("cost_known_total"),
+                        func.count(cost).label("cost_known_count"),
+                    )
+                    .select_from(scoped_reservations)
+                    .where(workspace)
+                )
+                .mappings()
+                .one()
+            )
+            retries = connection.scalar(
+                select(
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (db.jobs.c.attempt_count > 1, db.jobs.c.attempt_count - 1), else_=0
+                            )
+                        ),
+                        0,
+                    )
+                ).where(workspace)
+            )
+            duration = (
+                (func.julianday(db.jobs.c.completed_at) - func.julianday(db.jobs.c.created_at))
+                * 86400
+                if self.engine.dialect.name == "sqlite"
+                else func.extract("epoch", db.jobs.c.completed_at - db.jobs.c.created_at)
+            )
+            durations = connection.execute(
+                select(func.count(), func.avg(duration), func.max(duration)).where(
+                    workspace, db.jobs.c.completed_at.is_not(None)
+                )
+            ).one()
+            terminal = sum(counts.get(status, 0) for status in TERMINAL)
+            produced = connection.scalar(
+                select(func.count()).select_from(db.signals.join(db.jobs)).where(workspace)
+            )
+            states = {
+                state: count
+                for state, count in connection.execute(
+                    select(db.packets.c.payload["final_state"].as_string(), func.count())
+                    .select_from(db.packets.join(db.jobs))
+                    .where(workspace)
+                    .group_by(db.packets.c.payload["final_state"].as_string())
+                ).all()
+            }
+            provider_rows = (
+                connection.execute(select(provider_state).order_by(provider_state.c.id).limit(101))
+                .mappings()
+                .all()
+            )
+            providers = []
+            known_labels = {
+                "eodhd:ohlcv",
+                "eodhd:corporate_action",
+                "eodhd:news",
+                "companies-house:filing",
+            }
+            for row in provider_rows[:100]:
+                metadata = row["payload"]
+                latency = metadata.get("last_duration_seconds")
+                last_latency = (
+                    float(latency)
+                    if isinstance(latency, (float, int))
+                    and not isinstance(latency, bool)
+                    and math.isfinite(latency)
+                    and latency >= 0
+                    else None
+                )
+                providers.append(
+                    {
+                        "provider": row["id"]
+                        if row["id"] in known_labels
+                        else "provider-" + hashlib.sha256(row["id"].encode()).hexdigest()[:12],
+                        "circuit": "CLOSED"
+                        if row["open_until"] is None
+                        else "OPEN"
+                        if aware(row["open_until"]) > stamp
+                        else "PROBE_DUE",
+                        "calls": max(0, metadata.get("calls", 0))
+                        if type(metadata.get("calls", 0)) is int
+                        else 0,
+                        "failures": max(0, metadata.get("failures", 0))
+                        if type(metadata.get("failures", 0)) is int
+                        else 0,
+                        "consecutive_failures": max(0, row["failures"]),
+                        "last_latency_seconds": last_latency,
+                        "last_success": metadata.get("last_success")
+                        if type(metadata.get("last_success")) is bool
+                        else None,
+                        "updated_at": aware(row["updated_at"]).isoformat(),
+                        "qualification": "UNKNOWN",
+                    }
+                )
+            result.update(
+                {
+                    "scope": "workspace",
+                    "observed_at": stamp.isoformat(),
+                    "jobs": {
+                        "total": sum(counts.values()),
+                        "failed": counts.get("FAILED", 0),
+                        "terminal": terminal,
+                        "failure_rate": counts.get("FAILED", 0) / terminal if terminal else None,
+                        "retry_attempts": int(retries or 0),
+                        "duration": {
+                            "samples": durations[0],
+                            "mean_seconds": max(0, float(durations[1]))
+                            if durations[1] is not None
+                            else None,
+                            "max_seconds": max(0, float(durations[2]))
+                            if durations[2] is not None
+                            else None,
+                        },
+                    },
+                    "tokens": {
+                        "source": "budget_reservations",
+                        **{
+                            key: int(totals[key])
+                            for key in (
+                                "reservations",
+                                "known_tokens",
+                                "unknown_usage_count",
+                                "reserved_tokens",
+                                "unsettled_reserved_tokens",
+                                "budget_charged_tokens",
+                            )
+                        },
+                    },
+                    "costs": {
+                        "currency": "GBP",
+                        "known_total": str(Decimal(totals["cost_known_total"])),
+                        "known_count": totals["cost_known_count"],
+                        "unknown_count": totals["reservations"] - totals["cost_known_count"],
+                    },
+                    "signals": {
+                        "produced": int(produced or 0),
+                        "rejected": states.get("REJECT", 0),
+                        "insufficient_evidence": states.get("INSUFFICIENT_EVIDENCE", 0),
+                    },
+                    "providers": {
+                        "scope": "shared_compute_plane",
+                        "records": providers,
+                        "truncated": len(provider_rows) > 100,
+                    },
+                }
+            )
+            return result
