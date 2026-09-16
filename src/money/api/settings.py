@@ -33,7 +33,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, hide_input_in_errors=True)
 
     money_env: Literal["development", "test", "preview", "production"] = "production"
-    money_research_mode: Literal["unconfigured", "demo", "live"] = "unconfigured"
+    money_research_mode: Literal["unconfigured", "demo", "live", "live_rnd"] = "unconfigured"
+    money_deployment_env: Literal["local", "hosted"] = "local"
+    money_sec_user_agent: str | None = Field(default=None, min_length=10, max_length=200)
+    money_rnd_provider_timeout_seconds: float = Field(default=30, ge=5, le=60)
+    companies_house_api_key: SecretStr | None = None
+    money_rnd_company_numbers: dict[str, str] = Field(default_factory=dict)
+    fred_api_key: SecretStr | None = None
     money_live_manifest: Path | None = None
     money_live_manifest_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     database_url: SecretStr
@@ -63,7 +69,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def secure_configuration(self) -> Self:
-        local = self.money_env in {"development", "test"}
+        local = self.money_env in {"development", "test"} and self.money_deployment_env == "local"
+        if self.money_research_mode == "live_rnd" and self.money_env not in {"development", "test"}:
+            raise ValueError("Personal R&D data is forbidden in commercial production/preview")
+        if self.money_research_mode == "live_rnd" and self.money_enable_synthetic_demo:
+            raise ValueError("Personal R&D cannot enable synthetic fallback")
         if self.money_research_mode == "live" and (
             self.money_live_manifest is None
             or self.money_live_manifest_sha256 is None

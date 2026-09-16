@@ -4,13 +4,19 @@ export function productionEnvironment(): boolean {
   return process.env.MONEY_ENV === "production";
 }
 
+/** Hosted personal R&D retains transport/session security, not production qualification. */
+export function secureDeployment(): boolean {
+  return productionEnvironment() || process.env.MONEY_DEPLOYMENT_ENV === "hosted";
+}
+
 export function serviceEndpoint(path: string): URL {
   const base = process.env.RESEARCH_API_URL;
   const token = process.env.RESEARCH_API_TOKEN;
+  if (process.env.MONEY_DEPLOYMENT_ENV && !["local", "hosted"].includes(process.env.MONEY_DEPLOYMENT_ENV)) throw new Error("Research service configuration is invalid");
   if (!base || !token || token.length < 32) throw new Error("Research service configuration is invalid");
   const endpoint = new URL(base);
   const local = endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "research-api"].includes(endpoint.hostname);
-  if (endpoint.protocol !== "https:" && (!local || productionEnvironment())) throw new Error("Research service configuration is invalid");
+  if (endpoint.protocol !== "https:" && (!local || secureDeployment())) throw new Error("Research service configuration is invalid");
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") throw new Error("Research service configuration is invalid");
   endpoint.pathname = path;
   return endpoint;

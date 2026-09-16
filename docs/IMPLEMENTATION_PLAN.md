@@ -1,10 +1,38 @@
 # Commercial implementation plan — 2026-09-16
 
-Status: **PRODUCTION BLOCKED**. The commercial work begins from `fc5ddeb` on
-`main`. Older production-only notes below are historical, not current acceptance.
+## Current scope: explicit personal live R&D
+
+- DONE locally: yfinance adapter, official SEC/BoE/ONS/FRED/Companies House wrappers,
+  source provenance, currency-preserving sealed R&D snapshots, durable cache/rates,
+  isolated personal queue/migration0008, fenced insert-only results, API/search/UI,
+  hosted security distinction, honest insufficient-native-research state.
+- VERIFIED externally once: BoE returned21 actual recent Bank Rate observations;
+  later repeated probes failed. Current availability is UNAVAILABLE, not READY.
+- EXTERNAL INFRASTRUCTURE BLOCKED: Railway connector administrator-disabled;
+  Yahoo/Netlify DNS failures; Docker socket/listener/Git metadata restrictions.
+- CREDENTIAL/CONFIGURATION BLOCKED: Companies House API key and reviewed company
+  numbers; SEC real contact User-Agent. No commercial data licence required here.
+- NOT STARTED: currency-preserving R&D native-organisation evidence/citation bridge
+  and report barrier integration. Existing commercial adapters cannot safely accept
+  USD/public unverified-PIT snapshots. Qlib model/LEAN runtime/inference must be
+  available and exercised; collecting evidence is not running these systems.
+- IN PROGRESS: end-to-end hosted personal acceptance; not declared complete from
+  fixture tests or a provider-only probe. Existing SaaS/email architecture remains.
+
+Status: **PRODUCTION BLOCKED**. GitHub and local `main` now contain the commercial
+release at `6846bdc`. Older production-only notes below are historical.
 
 ## DONE — commercial implementation, locally exercised
 
+- Reviewed instrument catalogue/search and pre-enqueue live admission: current
+  identifiers, eligibility, ethics, provider and licence gates; bounded pagination
+  and durable rate limits. No fabricated company universe or paid provider calls
+  on keystrokes. A real qualified catalogue remains unavailable.
+- Secret-safe worker error types/Money source locations and bounded CI failure
+  locations; exception values, source text and local variables are excluded.
+- Accessible company selection for research/watchlist, debounced cancellable
+  lookup, unavailable/synthetic states; expanded HTTP/browser scenarios and
+  build-baked public SHA with release-specific deployment verification.
 - Release follow-up: production/preview reject all synthetic flags; API/worker/read
   barriers defend against stale configuration. Plans alias and public commercial
   routes are included in read-only deployment acceptance.
@@ -38,11 +66,17 @@ Status: **PRODUCTION BLOCKED**. The commercial work begins from `fc5ddeb` on
 
 ## IN PROGRESS — release acceptance
 
-No live customer onboarding or research completion has been demonstrated. Local
-SQLite TestClient + separate-worker acceptance passes; actual PostgreSQL and real
-browser tests remain blocked by this shell's process/network permissions. Netlify
-status/build/public HTTP remain unreachable. Current totals and failures are in
+No live customer onboarding or research completion has been demonstrated. GitHub
+live-web run 35146196319 recorded root HTTP 200 and successful public route/asset/
+security checks, not a deployed SHA or authenticated customer journey. Current CI
+35146196196 fails PostgreSQL migration/worker acceptance, backend drill, legacy
+HTTP smoke and research dependency audit. Full failure logs are unavailable;
+these failures have not been diagnosed or claimed repaired. Local PostgreSQL/
+browser execution and direct Netlify access remain permission/DNS-blocked.
+Current totals and failures are in
 VERIFICATION.md; neither generated documentation nor mocks qualify a deployment.
+This follow-up cannot be staged: `.git/index.lock` creation is again permission
+denied, not a stale lock. The verified changes remain intact and unpublished.
 
 ## CREDENTIAL / LICENCE BLOCKED
 
@@ -55,15 +89,21 @@ VERIFICATION.md; neither generated documentation nor mocks qualify a deployment.
 
 ## EXTERNAL INFRASTRUCTURE BLOCKED
 
-- Authorized OCI API/worker host and TLS PostgreSQL; no guessed account provisioning.
+- Owner selected Railway for API/workers/PostgreSQL. Connection discovery is
+  DISABLED_BY_ADMIN / NOT_AVAILABLE; Railway CLI 5.57.5 status/whoami fail API DNS.
+  Approved session access is required before verifying the Money project, TLS
+  database or services. No guessed account provisioning or access workaround.
 - Allowed Docker, PostgreSQL shared memory/listeners and browser execution for CI
   migration/concurrency/restart/restore/E2E acceptance.
-- Network-enabled GitHub/Netlify publication and actual root/auth/assets/header checks.
+- Publication of this follow-up and direct Netlify deploy-log/SHA verification;
+  the commercial baseline is already published and publicly reachable.
 - Configured production monitoring/alert destination, automated backup retention/PITR
   and a successful isolated restore drill.
 
 ## REMAINING ENGINEERING / REVIEW
 
+- Diagnose and repair the observed PostgreSQL/backend-drill/HTTP-smoke CI failures
+  with actual failure evidence; passing SQLite tests are not a substitute.
 - Resolve four distinct locked ChromaDB advisories through CrewAI with a reviewed
   runtime/dependency change; no fixed version established and no audit suppression.
 - Complete native/data/model commercial qualification; broader corporate-action and

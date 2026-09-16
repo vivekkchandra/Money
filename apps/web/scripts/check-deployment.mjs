@@ -3,9 +3,13 @@ import { pathToFileURL } from "node:url";
 
 export const ROUTES = [
   ["/", "marketing", "See the evidence."],
+  ["/product", "product", "One question. Independent perspectives."],
+  ["/pricing", "pricing", "Start with understanding."],
   ["/dashboard", "dashboard", "Your research workspace"],
   ["/research", "jobs", "Research jobs"],
+  ["/jobs", "jobs", "Research jobs"],
   ["/system", "health", "System health"],
+  ["/health", "health", "System health"],
   ["/account", "account", "YOUR ACCOUNT"],
   ["/plans", "billing", "A plan for your research."],
   ["/history", "history", "Research history"],
@@ -83,8 +87,13 @@ function generic404(html) {
   return /looks like you(?:'|’|&#39;)ve followed a broken link|<title>\s*(?:page not found|site not found)\s*<\/title>|netlify[^<]*404/i.test(html);
 }
 
-export async function checkDeployment(value, { fetchImpl = fetch, production = false, timeoutMs = 10000 } = {}) {
+/**
+ * @param {string} value
+ * @param {{fetchImpl?: typeof fetch, production?: boolean, timeoutMs?: number, expectedSha?: string}} [options]
+ */
+export async function checkDeployment(value, { fetchImpl = fetch, production = false, timeoutMs = 10000, expectedSha = undefined } = {}) {
   const origin = deploymentOrigin(value);
+  requireCheck(expectedSha === undefined || /^[a-f0-9]{40}$/i.test(expectedSha), "INVALID_EXPECTED_GIT_SHA");
   requireCheck(Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 15000, "INVALID_REQUEST_TIMEOUT");
   const deadline = Date.now() + 60000;
   async function read(path, maximumBytes) {
@@ -123,29 +132,55 @@ export async function checkDeployment(value, { fetchImpl = fetch, production = f
   const session = JSON.parse(sessionResponse.text);
   requireCheck(sessionResponse.response.status === 503 ? typeof session.error === "string" : typeof session.configured === "boolean" && session.authenticated === false, "INVALID_SIGNED_OUT_SESSION_STATE");
   const controls = [];
-  for (const path of ["/api/health", "/api/research", "/api/research/system"]) {
+  let deployedSha = "unknown";
+  for (const path of ["/api/health", "/api/research", "/api/research/system", "/api/research/instruments?query=DEMO.L"]) {
     const { response, text } = await read(path, 8192);
     requireCheck([401, 503].includes(response.status), `UNAUTHENTICATED_CONTROL_NOT_CLOSED:${path}`);
     requireCheck((response.headers.get("content-type") ?? "").includes("application/json"), `CONTROL_RETURNED_HTML:${path}`);
-    requireCheck(typeof JSON.parse(text).error === "string", `CONTROL_ERROR_CONTRACT_MISSING:${path}`);
+    const body = JSON.parse(text);
+    requireCheck(typeof body.error === "string", `CONTROL_ERROR_CONTRACT_MISSING:${path}`);
+    if (path === "/api/health") {
+      deployedSha = typeof body.web?.git_sha === "string" && /^[a-f0-9]{40}$/i.test(body.web.git_sha) ? body.web.git_sha.toLowerCase() : "unknown";
+      if (expectedSha !== undefined) requireCheck(deployedSha === expectedSha.toLowerCase(), "DEPLOYED_GIT_SHA_MISMATCH");
+    }
     controls.push({ path, status: response.status });
   }
   return {
-    origin, observed_at: new Date().toISOString(), web_status: "VERIFIED", pages,
+    origin, observed_at: new Date().toISOString(), web_status: "VERIFIED", deployed_sha: deployedSha, pages,
     assets: { javascript: entries.filter(([, kind]) => kind === "javascript").length, stylesheets: entries.filter(([, kind]) => kind === "stylesheet").length },
     authentication: sessionResponse.response.status === 503 ? "UNAVAILABLE" : session.configured ? "CONFIGURED_SIGNED_OUT" : "UNCONFIGURED", controls,
     research_readiness: "NOT_QUALIFIED_BY_WEB_CHECK", backend_status: "NOT_PROBED_WITHOUT_AUTHENTICATION",
   };
 }
 
+/** @param {string[]} args @param {Record<string, string | undefined>} [environment] */
+export function deploymentArguments(args, environment = process.env) {
+  let value;
+  let expectedSha;
+  let production = false;
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    if (argument === "--production" && !production) production = true;
+    else if (argument === "--expected-sha" && expectedSha === undefined) {
+      expectedSha = args[++index];
+      requireCheck(typeof expectedSha === "string" && /^[a-f0-9]{40}$/i.test(expectedSha), "INVALID_EXPECTED_GIT_SHA");
+    } else if (!argument.startsWith("--") && value === undefined) value = argument;
+    else throw new Error("INVALID_DEPLOYMENT_ARGUMENTS");
+  }
+  value ??= environment.MONEY_WEB_URL;
+  requireCheck(value, "DEPLOYMENT_URL_REQUIRED");
+  deploymentOrigin(value);
+  return { value, expectedSha, production };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const args = process.argv.slice(2);
-  const value = args.find((arg) => !arg.startsWith("--")) ?? process.env.MONEY_WEB_URL;
-  if (!value || args.some((arg) => arg.startsWith("--") && arg !== "--production")) {
-    console.error("Usage: npm run check:deployment -- https://existing-site.netlify.app [--production]");
+  let options;
+  try { options = deploymentArguments(process.argv.slice(2)); } catch {
+    console.error("Usage: npm run check:deployment -- https://existing-site.netlify.app [--production] [--expected-sha <40-hex-commit>]");
     process.exitCode = 2;
-  } else {
-    checkDeployment(value, { production: args.includes("--production") }).then(
+  }
+  if (options) {
+    checkDeployment(options.value, options).then(
       (result) => console.log(JSON.stringify(result, null, 2)),
       (error) => { console.error(`Deployment acceptance failed: ${error instanceof Error ? error.message : "unknown error"}`); process.exitCode = 1; },
     );

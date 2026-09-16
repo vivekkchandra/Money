@@ -14,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from money.api.errors import classify_failure
-from money.api.observability import configure_logging
+from money.api.observability import configure_logging, failure_context
 from money.api.settings import Settings
 from money.storage import Claim, LeaseLost, ResearchStore
 
@@ -34,12 +34,18 @@ def run_once(
 ) -> bool:
     """Execute at most one job; the API never calls this operation."""
     if runner is None:
-        from money.flows.research import run_research
+        if mode == "live_rnd":
+            from money.research.rnd import run_rnd
 
-        runner = run_research
+            runner = run_rnd
+        else:
+            from money.flows.research import run_research
+
+            runner = run_research
     store.heartbeat(worker_id, mode)
     claim = claimed or store.claim_job(
-        worker_id, lease_seconds=lease_seconds, job_timeout_seconds=job_timeout_seconds
+        worker_id, lease_seconds=lease_seconds, job_timeout_seconds=job_timeout_seconds,
+        research_kind="live_rnd" if mode == "live_rnd" else "standard",
     )
     if claim is None:
         return False
@@ -69,6 +75,7 @@ def run_once(
                 "research_id": claim.job_id,
                 "failure_class": failure.code,
                 "retryable": failure.retryable,
+                **failure_context(error),
             },
         )
         try:
@@ -110,6 +117,7 @@ def _compute_process(settings: Settings, claim: Claim) -> None:
 
         try:
             job = store.get_job(claim.job_id)
+            runtime: Any
             selected_mode = settings.money_research_mode
             if settings.money_auth_mode == "saas" and job and job["ticker"] == "DEMO.L":
                 if (
@@ -118,13 +126,22 @@ def _compute_process(settings: Settings, claim: Claim) -> None:
                 ):
                     raise ValueError("SYNTHETIC_DEMO_DISABLED")
                 selected_mode = "demo"
-            runtime = build_runtime(
-                selected_mode,
-                store=store.for_claim(claim),
-                live_manifest=settings.money_live_manifest,
-                manifest_hash=settings.money_live_manifest_sha256,
+            if selected_mode == "live_rnd":
+                from money.research.rnd import build_rnd_runtime
+
+                runtime = build_rnd_runtime(settings, store.for_claim(claim))
+            else:
+                runtime = build_runtime(
+                    selected_mode,
+                    store=store.for_claim(claim),
+                    live_manifest=settings.money_live_manifest,
+                    manifest_hash=settings.money_live_manifest_sha256,
+                )
+        except Exception as error:
+            logger.error(
+                "research_configuration_failed",
+                extra={"research_id": claim.job_id, **failure_context(error)},
             )
-        except Exception:
             store.for_claim(claim).fail_job(
                 claim.job_id,
                 "LIVE_CONFIGURATION_UNAVAILABLE",
@@ -237,6 +254,9 @@ def main() -> None:
                     worker_id,
                     lease_seconds=settings.money_worker_lease_seconds,
                     job_timeout_seconds=settings.money_job_timeout_seconds,
+                    research_kind=(
+                        "live_rnd" if settings.money_research_mode == "live_rnd" else "standard"
+                    ),
                 )
                 handled = claim is not None
                 if claim is not None:

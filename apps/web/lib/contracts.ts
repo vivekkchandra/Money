@@ -4,6 +4,7 @@ export type ResearchState = "STRONG_RESEARCH_CANDIDATE" | "RESEARCH_CANDIDATE" |
 export type RecordData = Record<string, unknown>;
 export type Job = {
   id: string; ticker: string; status: JobStatus; current_stage: string;
+  research_kind?: "standard" | "live_rnd";
   created_at: string; updated_at: string; snapshot_id?: string | null;
   error_code?: string | null; error_message?: string | null;
   final_state?: ResearchState | null; packet?: RecordData | null;
@@ -48,7 +49,7 @@ export function validateJobInput(input: unknown): { ticker: string; mandate?: Ma
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const data = input as RecordData;
   if (Object.keys(data).some((key) => !["ticker", "mandate"].includes(key))) return null;
-  if (typeof data.ticker !== "string" || !/^[A-Z0-9][A-Z0-9._-]{0,23}$/i.test(data.ticker)) return null;
+  if (typeof data.ticker !== "string" || !/^[A-Z0-9][A-Z0-9._-]{0,31}$/i.test(data.ticker)) return null;
   if (data.mandate === undefined) return { ticker: data.ticker.toUpperCase() };
   if (!data.mandate || typeof data.mandate !== "object" || Array.isArray(data.mandate)) return null;
   const mandate = data.mandate as Mandate;

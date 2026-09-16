@@ -24,6 +24,13 @@ from money.accounts.security import PasswordCapacityExceeded
 from money.accounts.service import AccountError, AccountService
 from money.api.observability import configure_logging
 from money.api.settings import Settings
+from money.data.instruments import (
+    InstrumentCatalogue,
+    InstrumentSearchPage,
+    InstrumentSearchQuery,
+    InstrumentSearchResult,
+)
+from money.data.security import ProviderFailure
 from money.product.api import router as product_router
 from money.product.api import safe_product_error
 from money.product.billing import BillingUnavailable
@@ -34,7 +41,7 @@ from money.reference import (
     require_manifest_commercial_rights,
     require_snapshot_commercial_rights,
 )
-from money.schemas.contracts import ResearchMandate, ResearchSnapshot, Ticker
+from money.schemas.contracts import ResearchMandate, ResearchSnapshot, Ticker, utc_now
 from money.storage import models as stored
 from money.storage.store import (
     EnqueueRateExceeded,
@@ -216,17 +223,31 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
             and not application.state.product_settings.money_stripe_live
         ):
             raise ValueError("Production billing requires explicitly configured Stripe live mode")
-        if configured.money_auth_mode == "saas" and configured.money_research_mode == "live":
+        application.state.live_manifest = None
+        application.state.instrument_catalogue = None
+        application.state.rnd_provider = None
+        if configured.money_research_mode == "live_rnd":
+            from money.data.rnd_market import YFinanceProvider
+
+            application.state.rnd_provider = YFinanceProvider(
+                timeout_seconds=configured.money_rnd_provider_timeout_seconds,
+            )
+        if configured.money_research_mode == "live":
             from money.research.live import load_manifest
 
             assert configured.money_live_manifest is not None
             assert configured.money_live_manifest_sha256 is not None
-            require_manifest_commercial_rights(
-                application.state.reference_catalog,
-                load_manifest(
-                    configured.money_live_manifest, configured.money_live_manifest_sha256
-                ),
+            manifest = load_manifest(
+                configured.money_live_manifest, configured.money_live_manifest_sha256
             )
+            if configured.money_auth_mode == "saas":
+                require_manifest_commercial_rights(application.state.reference_catalog, manifest)
+            application.state.live_manifest = manifest
+            application.state.instrument_catalogue = InstrumentCatalogue.from_manifest(manifest)
+        elif configured.money_env in {"development", "test"} and (
+            configured.money_research_mode == "demo" or configured.money_enable_synthetic_demo
+        ):
+            application.state.instrument_catalogue = InstrumentCatalogue.demonstration(utc_now())
         application.state.settings = configured
         application.state.store = store or ResearchStore(
             configured.database_url.get_secret_value(),
@@ -292,7 +313,21 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
     def require_result_rights(
         request: Request, db: ResearchStore, job_ids: list[str], *, require_snapshot: bool = True
     ) -> None:
-        if request.app.state.settings.money_auth_mode != "saas" or not job_ids:
+        if not job_ids:
+            return
+        config: Settings = request.app.state.settings
+        with db.engine.connect() as connection:
+            personal_ids = set(connection.scalars(select(stored.jobs.c.id).where(
+                stored.jobs.c.workspace_id == db.workspace_id,
+                stored.jobs.c.id.in_(job_ids), stored.jobs.c.research_kind == "live_rnd",
+            )))
+        if personal_ids:
+            if config.money_research_mode != "live_rnd" or config.money_env not in {
+                "development", "test",
+            }:
+                raise CommercialLicenceError("PERSONAL_RND_NOT_FOR_COMMERCIAL_DISPLAY")
+            job_ids = [job_id for job_id in job_ids if job_id not in personal_ids]
+        if config.money_auth_mode != "saas" or not job_ids:
             return
         # One bounded batch query, scoped by BOTH membership workspace and returned job IDs.
         if len(job_ids) > 100:
@@ -405,11 +440,121 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
         db.revoke_session(body.token_hash, body.credential_version)
         return {"revoked": True}
 
+    def current_catalogue(request: Request) -> InstrumentCatalogue:
+        config: Settings = request.app.state.settings
+        catalogue: InstrumentCatalogue | None = request.app.state.instrument_catalogue
+        if catalogue is None or (
+            catalogue.mode == "demo"
+            and (
+                config.money_env not in {"development", "test"}
+                or config.money_research_mode == "live"
+                or not (config.money_research_mode == "demo" or config.money_enable_synthetic_demo)
+            )
+        ):
+            raise AccountError(
+                "INSTRUMENT_SEARCH_UNAVAILABLE", "Company search is temporarily unavailable", 503
+            )
+        if catalogue.mode == "live" and config.money_auth_mode == "saas":
+            require_manifest_commercial_rights(
+                request.app.state.reference_catalog, request.app.state.live_manifest
+            )
+        try:
+            catalogue.require_current(utc_now())
+        except ValueError as error:
+            raise AccountError(
+                "INSTRUMENT_SEARCH_UNAVAILABLE", "Company search is temporarily unavailable", 503
+            ) from error
+        return catalogue
+
+    def rnd_search(
+        request: Request, db: ResearchStore, query: InstrumentSearchQuery,
+    ) -> InstrumentSearchPage:
+        from money.data.rnd_cache import RndProviderCache
+
+        provider = request.app.state.rnd_provider
+        if provider is None:
+            raise AccountError("RND_UNAVAILABLE", "Personal R&D is not configured", 503)
+        try:
+            data = RndProviderCache(db).get(
+                "yfinance-search", query.query.casefold(),
+                lambda: provider.search(query.query, limit=20).model_dump(mode="json"),
+                ttl_seconds=300, lease_seconds=10,
+            )
+        except ProviderFailure as error:
+            raise AccountError(
+                error.code if error.code in {"PROVIDER_RATE_LIMITED", "INSTRUMENT_NOT_FOUND"}
+                else "MARKET_DATA_UNAVAILABLE",
+                "Public market-data search is unavailable. Please try again later.",
+                429 if error.code == "PROVIDER_RATE_LIMITED" else 503,
+            ) from error
+        items = data["instruments"]
+        return InstrumentSearchPage(
+            instruments=tuple(InstrumentSearchResult(
+                instrument_id=item["instrument_id"], ticker=item["ticker"],
+                company=item["company"], exchange=item["exchange"],
+                currency=item.get("currency") or "UNKNOWN", eligibility="UNKNOWN",
+                research_allowed=True, verified_at=data["retrieved_at"], synthetic=False,
+                canonical_symbol=item.get("canonical_symbol"),
+                provider_symbol=item.get("provider_symbol"), country=item.get("listing_country"),
+                instrument_type=item.get("instrument_type"),
+            ) for item in items[query.offset:query.offset + query.limit]),
+            total=len(items), limit=query.limit, offset=query.offset,
+            coverage="public_provider", mode="live_rnd",
+        )
+
+    @application.get("/research/instruments", response_model=InstrumentSearchPage)
+    def search_instruments(
+        request: Request,
+        db: Annotated[ResearchStore, Depends(repository)],
+        query: Annotated[InstrumentSearchQuery, Query()],
+    ) -> InstrumentSearchPage:
+        if len(request.query_params.multi_items()) != len(request.query_params):
+            raise AccountError("INVALID_REQUEST", "Use each search parameter once", 422)
+        # Persisted limits span API replicas; the user bucket also spans workspaces.
+        buckets = [(db, "instrument-search", 120)]
+        if request.app.state.settings.money_auth_mode == "saas":
+            principal = request.state.principal
+            buckets.append(
+                (
+                    request.app.state.store.for_workspace("instrument-search-users"),
+                    principal.user_id,
+                    60,
+                )
+            )
+        for scoped, key, limit in buckets:
+            result = scoped.consume_rate_limit(key, limit, 60)
+            if not result["allowed"]:
+                raise HTTPException(
+                    429,
+                    "Company search rate exceeded",
+                    headers={"Retry-After": str(result["retry_after"])},
+                )
+        if request.app.state.settings.money_research_mode == "live_rnd":
+            return rnd_search(request, db, query)
+        return current_catalogue(request).search(query, utc_now())
+
     @application.post("/research/jobs", status_code=202)
     def create_job(
         body: CreateResearchJob, request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
         config: Settings = request.app.state.settings
+        if config.money_research_mode == "live_rnd":
+            if body.ticker == "DEMO.L":
+                raise AccountError("SYNTHETIC_DATA_FORBIDDEN", "R&D requires genuine data", 422)
+            matches = rnd_search(request, db, InstrumentSearchQuery(query=body.ticker, limit=20))
+            if not any(item.ticker == body.ticker for item in matches.instruments):
+                raise AccountError("INSTRUMENT_NOT_FOUND", "Select a matching listed company", 422)
+        if config.money_research_mode == "live":
+            failures = current_catalogue(request).admission_failures(
+                body.ticker, body.mandate, utc_now()
+            )
+            if failures:
+                raise AccountError(
+                    "INSTRUMENT_NOT_RESEARCHABLE",
+                    "This company does not currently meet the research requirements. "
+                    "Please select an eligible company. No research allowance was used.",
+                    422,
+                )
         if config.money_auth_mode == "saas":
             if body.ticker == "DEMO.L" and (
                 config.money_env not in {"development", "test"}
@@ -418,12 +563,12 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
                 raise AccountError(
                     "DEMO_UNAVAILABLE", "The synthetic demonstration is unavailable", 503
                 )
-            if body.ticker != "DEMO.L" and config.money_research_mode != "live":
+            if body.ticker != "DEMO.L" and config.money_research_mode not in {"live", "live_rnd"}:
                 raise AccountError(
                     "RESEARCH_UNAVAILABLE", "Live research qualification is unavailable", 503
                 )
         if (
-            config.money_env == "production"
+            (config.money_env == "production" or config.money_deployment_env == "hosted")
             and db.health(config.money_research_mode)["worker"] != "ready"
         ):
             raise HTTPException(
@@ -444,10 +589,14 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
                 rate_per_minute=config.money_enqueue_per_minute,
                 idempotency_key=key,
                 max_attempts=config.money_job_max_attempts,
+                research_kind="live_rnd" if config.money_research_mode == "live_rnd" else "standard",
                 admission=(
                     lambda connection, job_id: ProductService(
                         db, request.app.state.product_settings
-                    ).reserve_research(connection, job_id, current_principal(request), body.ticker)
+                    ).reserve_research(
+                        connection, job_id, current_principal(request), body.ticker,
+                        personal_rnd=config.money_research_mode == "live_rnd",
+                    )
                 )
                 if config.money_auth_mode == "saas"
                 else None,
@@ -487,8 +636,14 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
     def get_reports(
         job_id: UUID, request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
-        require_job(request, db, job_id)
+        job = require_job(request, db, job_id)
         require_result_rights(request, db, [str(job_id)])
+        if job["research_kind"] == "live_rnd":
+            return {
+                "runtime": "live_rnd", "locked": False, "reports": {},
+                "components": (job.get("packet") or {}).get("components", []),
+                "reason": "NATIVE_RESEARCH_INCOMPLETE",
+            }
         return db.public_reports(str(job_id))
 
     @application.get("/research/jobs/{job_id}/evidence")
@@ -542,6 +697,11 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
         request: Request, db: Annotated[ResearchStore, Depends(repository)]
     ) -> dict[str, Any]:
         config = request.app.state.settings
+        rnd_status: dict[str, Any] = {}
+        if config.money_research_mode == "live_rnd":
+            from money.data.rnd_cache import provider_diagnostics
+
+            rnd_status = {"rnd_providers": provider_diagnostics(db)}
         if config.money_auth_mode == "saas":
             principal = current_principal(request)
             principal.require_admin()
@@ -550,6 +710,7 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
                 "version": config.money_version,
                 "environment": config.money_env,
                 "auth_mode": config.money_auth_mode,
+                **rnd_status,
             }
         return {
             **db.health(config.money_research_mode),
@@ -558,6 +719,7 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
             "git_sha": config.money_git_sha,
             "environment": config.money_env,
             "auth_mode": config.money_auth_mode,
+            **rnd_status,
         }
 
     @application.get("/health")

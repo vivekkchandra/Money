@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { PersonalRndNotice } from "@/components/personal-rnd";
 
 export const metadata: Metadata = {
   title: "Money · Independent investment research",
@@ -8,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en-GB"><body>{children}</body></html>;
+  return <html lang="en-GB"><body>{process.env.MONEY_RESEARCH_MODE === "live_rnd" && <PersonalRndNotice className="deployment-notice" />}{children}</body></html>;
 }

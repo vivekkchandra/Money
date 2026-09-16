@@ -222,8 +222,15 @@ try {
 
   assert.equal(summary.plan, "FREE");
 
+  stage = "authenticated company selection";
+  const search = await fetch(`${origin}/api/research/instruments?query=DEMO.L&limit=10&offset=0`, { headers: { Cookie: cookie } });
+  assert.equal(search.status, 200);
+  const catalogue = await search.json();
+  assert.equal(catalogue.mode, "demo");
+  const instrument = catalogue.instruments.find(item => item.ticker === "DEMO.L");
+  assert.ok(instrument?.research_allowed && instrument.synthetic, "Demo enqueue requires explicit synthetic catalogue selection");
   const queued = await post("/api/research", {
-    ticker: "DEMO.L"
+    ticker: instrument.ticker
   }, cookie);
 
   assert.equal(queued.status, 202);
@@ -342,7 +349,12 @@ try {
       }).waitFor();
 
       await page.goto(`${origin}/jobs`);
-      await page.getByLabel("Stock ticker").fill("DEMO.L");
+      const companyInput = page.getByRole("combobox", { name: "Company or stock ticker" });
+      await companyInput.fill("DEMO.L");
+      await page.getByRole("option").filter({ hasText: "DEMO.L" }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Request research", exact: true }).isDisabled(), true);
+      await companyInput.press("ArrowDown");
+      await companyInput.press("Enter");
       const pending = page.waitForResponse(response => response.url() === `${origin}/api/research` && response.request().method() === "POST");
 
       await page.getByRole("button", {

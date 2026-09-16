@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,6 +20,7 @@ from money.adapters.eligibility import (
     eligibility_failures,
 )
 from money.api.errors import classify_failure
+from money.api.observability import failure_context
 from money.crews.cross_examination import CrossExaminationPacket, run_cross_examination
 from money.policy.governance import consensus, evidence_independence, snapshot_failures
 from money.product.metering import CallMeter
@@ -298,6 +300,10 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
                 reservations=reservations,
             )
         except Exception as error:
+            logging.getLogger(__name__).error(
+                "first_pass_failed",
+                extra={"research_id": job_id, **failure_context(error)},
+            )
             if classify_failure(error).retryable:
                 raise
             # A missing report cannot be converted into agreement or substituted.

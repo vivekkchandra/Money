@@ -16,9 +16,23 @@ class Failure:
 
 def classify_failure(error: BaseException) -> Failure:
     if isinstance(error, ProviderFailure):
+        source_code = {
+            "RND_PROVIDER_TIMEOUT": "PROVIDER_TIMEOUT",
+            "RND_PROVIDER_RATE_LIMIT": "PROVIDER_RATE_LIMITED",
+            "RND_PROVIDER_UNAVAILABLE": "MARKET_DATA_UNAVAILABLE",
+            "RND_PROVIDER_CAPACITY": "PROVIDER_BUSY",
+            "RND_PROVIDER_CIRCUIT_OPEN": "PROVIDER_BUSY",
+            "RND_STALE_DATA": "STALE_DATA",
+            "RND_SYMBOL_INVALID": "INSTRUMENT_NOT_FOUND",
+            "RND_HISTORY_MISSING": "CRITICAL_DATA_MISSING",
+            "RND_MARKET_DATA_MISSING": "CRITICAL_DATA_MISSING",
+            "RND_PROVIDER_CONFLICT": "CRITICAL_DATA_CONFLICT",
+            "RND_RUNTIME_UNAVAILABLE": "PROVIDER_COVERAGE_MISSING",
+            "RND_CACHE_CORRUPT": "CRITICAL_DATA_CONFLICT",
+        }.get(error.code, error.code)
         code = (
-            error.code
-            if error.code
+            source_code
+            if source_code
             in {
                 "PROVIDER_UNAVAILABLE",
                 "PROVIDER_TIMEOUT",
@@ -29,12 +43,20 @@ def classify_failure(error: BaseException) -> Failure:
                 "PIT_VIOLATION",
                 "ELIGIBILITY_UNKNOWN",
                 "ELIGIBILITY_STALE",
+                "MARKET_DATA_UNAVAILABLE",
+                "PROVIDER_RATE_LIMITED",
+                "PROVIDER_BUSY",
+                "INSTRUMENT_NOT_FOUND",
+                "STALE_DATA",
             }
             else "PROVIDER_UNAVAILABLE"
         )
         return Failure(
             code,
-            error.retryable and code in {"PROVIDER_UNAVAILABLE", "PROVIDER_TIMEOUT"},
+            error.retryable and code in {
+                "PROVIDER_UNAVAILABLE", "PROVIDER_TIMEOUT", "PROVIDER_RATE_LIMITED",
+                "PROVIDER_BUSY", "MARKET_DATA_UNAVAILABLE",
+            },
             "A research provider could not supply qualified evidence.",
         )
     if isinstance(error, (TimeoutError, httpx.TimeoutException)):

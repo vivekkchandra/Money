@@ -1,3 +1,153 @@
+# Personal live R&D verification — 2026-09-16
+
+**R&D HOSTED ACCEPTANCE BLOCKED.** This is the current task; commercial licensing
+is not a blocker to personal use. Commercial production gates remain unchanged.
+The implementation now supports real public-data evidence studies on the durable
+queue, not a complete native multi-firm R&D workflow. No synthetic live result,
+new deployment, new project, production migration, commit or push is claimed.
+
+| Requirement | Status | Actual command/evidence | Environment | Blocker |
+| --- | --- | --- | --- | --- |
+| Locked Python install | VERIFIED | `uv sync --locked`:191 resolved/188 checked | Local Python3.12 | None |
+| Ruff / types | VERIFIED | `uv run ruff check .`; mypy src/money + acceptance script:108 source files | Local | None |
+| Complete Python suite | VERIFIED | `uv run pytest -q --junitxml=/private/tmp/money-rnd-final.xml`: **978 passed, 0 failed, 150 skipped** | Local | Skips explicitly excluded from acceptance |
+| Suite breakdown | VERIFIED | Unit741/0/0; integration237/0/139; production0/0/11 (passed/failed/skipped) | JUnit |137 missing TEST_DATABASE_URL;2 PG-only variants;11 live opt-in skips |
+| R&D durable workflow | VERIFIED | New R&D tests:27 passed/17 PG skips; AAPL/USD and BARC/GBp fixture search →202 →worker →sealed snapshot/result →fresh connection; stale-worker fencing; tenant HTTP isolation; cached provenance and free-plan quotas | Test fixtures, SQLite/TestClient | Not actual public equity data or PostgreSQL |
+| Web | VERIFIED | lint/typecheck; **256 passed, 0 failed, 0 skipped**; production build | Local Next16.3.5 | Not deployed R&D code |
+| Git reference tables | VERIFIED | `scripts/validate_data_tables.py`: four schema1/data1.0.0 tables, unchanged hashes; no upstream/reference changes | Git-owned assets | None |
+| Deployment boundary | VERIFIED | `scripts/check_deployment.py`, new per-service Railway config tests, migration0008 dialect/schema tests | Offline | Remote target/config not verified |
+| BARC.L / AAPL actual public calls | BLOCKED_EXTERNAL_INFRA | Genuine `check_live_rnd.py --providers-only`,2026-09-16T21:25:45Z: both FAILED/RND_PROVIDER_UNAVAILABLE, exit2; direct Yahoo hostname resolution fails | Actual provider attempts | Yahoo network/DNS access |
+| Official macro live probe | FAILED | BoE returned21 real IUDBEDR observations at21:11:19Z; repeated actual probe at21:25:45Z and root follow-up returned PROVIDER_UNAVAILABLE/0 records | Actual BoE attempts | Latest availability is UNAVAILABLE, not persistently READY |
+| UK/US official filings | BLOCKED_CREDENTIAL | CH/SEC contracts tested; actual equity workflow did not reach filing collection | Local/source configuration | CH API key + reviewed company numbers; real SEC contact User-Agent |
+| ONS/FRED | BLOCKED_CREDENTIAL | Bounded adapters/contract tests present, not live-qualified or default snapshot macro | Local | Pinned ONS series dimensions; optional FRED API key |
+| Native multi-firm R&D | NOT_IMPLEMENTED | Existing adapters require commercial GBP/PIT contracts; personal packet marks all five systems NOT_CONFIGURED and INSUFFICIENT_EVIDENCE, no signal | Current R&D path | Safe R&D native evidence/citation/barrier bridge plus actual model/runtime/inference qualification |
+| Railway services | BLOCKED_EXTERNAL_INFRA | Owner target incredible-flexibility/production, Money/Postgres; Railway connector unavailable/administrator-disabled, no remote mutation | Restricted session | Enabled approved Railway access; actual IDs, DB/migrations/worker/API health then need verification |
+| Netlify current acceptance | BLOCKED_EXTERNAL_INFRA | Final curl root: DNS failure, HTTP000 (no response); no Railway URL configured | Restricted shell | Enabled network/deployment access; previous public web evidence below is older baseline only |
+| Docker | BLOCKED_EXTERNAL_INFRA | `docker build -t money-production-check .`: Docker socket permission denied; Compose config passes with disposable validation-only env | Local | Docker runtime access; config validation is not image/run acceptance |
+| HTTP/browser E2E | BLOCKED_EXTERNAL_INFRA | Both `test:commercial` and `test:commercial:browser` exit1 before journey: localhost listen EPERM | Local | Listener/browser-capable environment; no journey steps passed |
+| Publication | BLOCKED_EXTERNAL_INFRA | main6846bdc preserved; no index.lock exists; .git is read-only in this session; all modified/untracked work retained | Restricted filesystem | Repository metadata write + push access |
+| Money Graphify update | VERIFIED | `graphify update .`: AST-only,2904 nodes/8763 edges/154 communities; no upstream rebuild | Local | None |
+
+Actual R&D acceptance outcome:
+
+| Instrument | Price/history | Official filings | Snapshot | Native research |
+| --- | --- | --- | --- | --- |
+| BARC.L | FAILED: provider unavailable | NOT_RUN; CH configuration missing | NOT_RUN | NOT_RUN |
+| AAPL | FAILED: provider unavailable | NOT_RUN; SEC contact missing | NOT_RUN | NOT_RUN |
+
+Remaining engineering is not disguised as a credential issue: the R&D native
+organisation bridge and three-firm barrier are still unimplemented. Research-only
+CrewAI dependency advisories also remain unresolved; the default personal data
+image does not install that extra. SaaS email verification remains intact; an
+explicit private personal workspace login is available but not hosted-verified.
+
+## Earlier commercial follow-up (historical, not current R&D acceptance)
+
+# Live-customer release verification — 2026-09-16
+
+**PRODUCTION BLOCKED.** This section supersedes the historical records below.
+Local and GitHub `main` were clean/aligned at
+`6846bdc8de34bd68fabac616008d0847f390a139` when this follow-up started. The commercial
+implementation is published; no stale index lock exists. This follow-up adds
+reviewed company search/selection and live admission, plus safe diagnostics and
+release-SHA acceptance. No upstream or reference table was replaced.
+
+## Actual remote evidence
+
+| Requirement | Status | Actual evidence | Environment | Blocker |
+| --- | --- | --- | --- | --- |
+| Published commercial baseline | VERIFIED | GitHub branch API and local log: 6846bdc | GitHub main | Follow-up changes need separate publication |
+| Public Money site, routes, assets and security headers | VERIFIED | [Live web run 35146196319](https://github.com/vivekkchandra/Money/actions/runs/35146196319): root HTTP 200; route/asset/auth-closure/security step passed at 20:23:49 UTC | Actual existing production URL, workflow triggered by 6846bdc | Does not prove served SHA or authenticated customer journey |
+| Netlify deploy SHA / build logs | BLOCKED_EXTERNAL_INFRA | Correct local site ID; npx status/build/logs fail registry DNS; direct curl has no HTTP response; Netlify connector unavailable | Restricted shell | Approved remote Netlify/network access |
+| Python CI | FAILED | [CI 35146196196](https://github.com/vivekkchandra/Money/actions/runs/35146196196): 860 cases, one failure named test_postgres_migration_worker_claims_and_immutability | GitHub real PostgreSQL | Full failure trace unavailable; no guessed repair |
+| Backend recovery/restore CI | FAILED | Same run: isolated backend drill failed | GitHub Linux/PostgreSQL | Failure phase not available in accessible job metadata; safe phase summary added for next run |
+| Web HTTP/browser CI | FAILED | lint/types/unit/build pass; legacy HTTP smoke fails; later browser/commercial steps skipped | GitHub Linux | Actual HTTP failure diagnosis and green rerun required |
+| OCI images | VERIFIED | Same run: default and research image builds, default dependency exclusion and Compose checks pass | GitHub Docker | Not a deployed API/worker/database |
+| Dependency audits | FAILED | Control-plane: 75 dependency records, zero findings. Node production high-threshold check passes. Research: five entries/four distinct ChromaDB advisories | GitHub locked release | ChromaDB1.1.1 remains in research image; containment is not remediation |
+| Railway deployment access | BLOCKED_EXTERNAL_INFRA | Owner selected Railway. Connector discovery reports DISABLED_BY_ADMIN / NOT_AVAILABLE; installed CLI 5.57.5 whoami and status fail DNS for backboard.railway.com | Restricted session | Administrator must make the approved Railway connection available; no project/services verified or remote writes attempted |
+| Managed services | BLOCKED_CREDENTIAL | Railway selected, but no verified Money project, managed DB URL, API URL, SMTP, Stripe, provider or inference credentials available | Presence-only checks; no values exposed | Approved Railway access plus service credentials/licences |
+
+Current shell also denies localhost listeners and Docker socket access. The
+isolated PostgreSQL drill returned `BLOCKED_ENVIRONMENT`, phase `postgres_init`,
+code `ENVIRONMENT_PERMISSION_DENIED`, zero completed steps; owned temporary data
+was removed. Configured local database is loopback/non-qualified and a read-only
+probe fails. No unrelated AWS profile was selected or provisioned.
+
+## Current local checks
+
+| Requirement | Status | Actual command/evidence | Environment | Blocker |
+| --- | --- | --- | --- | --- |
+| Locked Python install | VERIFIED | `uv sync --locked`: 191 resolved, 188 checked (workspace-safe UV cache) | Python3.12 | None |
+| Python lint/types | VERIFIED | `uv run ruff check .`; `uv run mypy src/money`: 101 files | Local | None |
+| Python unit suite | VERIFIED | JUnit `/private/tmp/money-live-final.xml`: **608 passed / 0 failed / 0 skipped** | Local | Not live qualification |
+| Python integration suite | VERIFIED | Same JUnit: **210 passed / 0 failed / 122 skipped** | SQLite/local processes | Real PG variants unavailable |
+| All Python tests | VERIFIED | `uv run pytest -q`: **818 passed / 0 failed / 133 skipped**, 28 warnings,95.16s | Local | Explicit skips retained |
+| Explicit live integration | BLOCKED_CREDENTIAL | `MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run pytest tests/production -q`: **0 passed / 0 failed / 11 skipped** | Real integration suite opted in | Six missing manifest/hash; five missing native snapshot |
+| Separate-process recovery regression | VERIFIED | Eight isolated migrated SQLite DBs, eight actual worker processes, seeds 0/1/2/3/7/19/99/random all COMPLETE | Synthetic local processes | Does not reproduce or repair PG/HTTP CI failures |
+| Reference tables and boundaries | VERIFIED | `validate_data_tables.py` validates all four unchanged assets; `check_deployment.py` passes | Local | Provider rights remain unapproved |
+| Compose | VERIFIED | `docker compose --profile commercial config --quiet` with disposable validation values | CLI parse only | Not running containers |
+| Current Docker build | BLOCKED_EXTERNAL_INFRA | `docker build -t money-production-check .`: Docker socket permission denied | Restricted shell | Current baseline CI image builds passed separately |
+| Current Netlify CLI | BLOCKED_EXTERNAL_INFRA | `npx --yes netlify-cli@latest status`, `build`, `logs --source deploy --since 24h`: registry ENOTFOUND | Restricted shell | No remote writes/deploy triggered |
+| Current Node audit | BLOCKED_EXTERNAL_INFRA | `npm audit --omit=dev --prefix apps/web`: registry ENOTFOUND | Restricted shell | Baseline 6846bdc CI high-threshold check passed separately |
+| Web clean install/lint/types/build | VERIFIED | `npm ci`, lint, typecheck and `npm run build --prefix apps/web` succeed; SSR routes retained | Local Next16.3.5 | Not a new Netlify deploy |
+| Web unit/component contracts | VERIFIED | **238 passed / 0 failed / 0 skipped**, 13 files; search selection, stale responses, canonical bounds, exact admission errors, health SHA and deploy mismatch tests | Local Vitest | Real browser acceptance separate |
+| Commercial/legacy HTTP and browser | BLOCKED_EXTERNAL_INFRA | All four `test:commercial`, `test:commercial:browser`, `test:smoke`, `test:browser` commands stop at `listen EPERM 127.0.0.1`; zero completed journeys | Restricted shell | Listener/browser permission required; no mocked acceptance substituted |
+| Publish this follow-up | BLOCKED_EXTERNAL_INFRA | Reviewed diff and targeted `git add` denied creating `.git/index.lock`; no lock exists, index remains unstaged; process listing denied | Read-only Git metadata | Git-write-capable approved session; changes preserved, no commit/push/deploy of this follow-up |
+
+The Git data checksums are unchanged: exclusions
+`34e8d352530a467b7a233e7e0ba248060bcfb1d2db38f0ea30a152814b2f9665`, plans
+`58392f17d1d42b40b6e323d3951e1e3206bfcb6e372db14be8072f2272f6e04a`, provider_datasets
+`a882a9267ff12a3e1157305b7bcfa5491c597d63b43df7c335f6e131a16f2a30`, provider_licences
+`ed2576283633605b02f7f70a84e856dfa269e3f55c85b55e4cb85f3418311edd`.
+Each remains schema1/data1.0.0. No customer state is written into these assets.
+
+## Full customer acceptance matrix
+
+VERIFIED below means only the exact stated scope. BLOCKED rows are not passes.
+
+| Requirement | Status | Evidence / remaining release gate |
+| --- | --- | --- |
+| Public marketing website | VERIFIED | Current production root HTTP 200 and Money route/assets check in linked live-web run |
+| Signup | BLOCKED_EXTERNAL_INFRA | Local API tests exist; no deployed commercial API |
+| Verification email delivered | BLOCKED_CREDENTIAL | No SMTP credentials/verified sender or actual delivery |
+| Login | BLOCKED_EXTERNAL_INFRA | Local verified flow only; hosted API/session acceptance missing |
+| Logout | BLOCKED_EXTERNAL_INFRA | Local revocation tests only; hosted acceptance missing |
+| Password reset | BLOCKED_CREDENTIAL | Local one-use/reset tests; actual email/hosted reset missing |
+| Tenant isolation | BLOCKED_EXTERNAL_INFRA | Local guessed-UUID/forged-workspace tests pass; hosted PG/customer test missing |
+| Managed PostgreSQL | BLOCKED_CREDENTIAL | No approved remote TLS database available |
+| Production API | BLOCKED_EXTERNAL_INFRA | Railway selected; account/project inaccessible, no verified public API URL |
+| Production worker | BLOCKED_EXTERNAL_INFRA | Railway selected; services inaccessible and research runtime unqualified |
+| Durable queue | BLOCKED_EXTERNAL_INFRA | Local durable tests pass; PG CI failure unresolved, no hosted queue |
+| Company search | BLOCKED_CREDENTIAL | Reviewed-catalogue API/UI implemented; real manifest/rights/eligibility absent |
+| Live instrument identity | BLOCKED_CREDENTIAL | Reviewed identifiers required; no qualified real catalogue supplied |
+| Live market data | BLOCKED_CREDENTIAL | EODHD adapter; commercial UK entitlement/key and qualification missing |
+| Live historical prices | BLOCKED_CREDENTIAL | EODHD/archive path; licensed PIT dataset absent |
+| Live fundamentals/filings | BLOCKED_CREDENTIAL | Companies House/document/XBRL path; key/reviewed financial data missing |
+| Live news/catalysts | BLOCKED_CREDENTIAL | EODHD adapter; commercial news entitlement/key missing |
+| Verified eligibility | BLOCKED_CREDENTIAL | Current ISA-specific availability/proof missing; generic ticker list not accepted |
+| Immutable evidence snapshot | BLOCKED_CREDENTIAL | Local hash/PIT/immutability tests; no qualified live evidence snapshot |
+| TradingAgents live path | BLOCKED_CREDENTIAL | Pinned adapter, no genuine qualified inference/runtime execution |
+| ai-hedge-fund live path | BLOCKED_CREDENTIAL | Pinned adapter, no genuine qualified inference/runtime execution |
+| Qlib production model | BLOCKED_CREDENTIAL | No independently validated manually promoted artifact |
+| LEAN runtime | BLOCKED_EXTERNAL_INFRA | No qualified isolated image/host/dataset; no real OOS validation |
+| CrewAI challenge | FAILED | No live qualification; unresolved research dependency advisories |
+| Research persistence | BLOCKED_EXTERNAL_INFRA | Local separate-worker persistence passes; hosted PG acceptance missing |
+| Research results UI | BLOCKED_EXTERNAL_INFRA | Local render/contracts; no customer live result/browser acceptance |
+| History | BLOCKED_EXTERNAL_INFRA | Local scoped/paginated history; hosted return-later flow missing |
+| Watchlist | BLOCKED_EXTERNAL_INFRA | Local persisted/scoped controls and reviewed picker; hosted acceptance missing |
+| Account settings | BLOCKED_EXTERNAL_INFRA | Local implementation/tests; hosted authenticated acceptance missing |
+| Billing test lifecycle | BLOCKED_CREDENTIAL | Stripe adapter tests are not a real test-account lifecycle |
+| Usage limits | BLOCKED_EXTERNAL_INFRA | Local transactional/quota tests; live PG/admission acceptance missing |
+| Transactional email | BLOCKED_CREDENTIAL | Encrypted durable outbox tested; actual SMTP delivery missing |
+| Monitoring | BLOCKED_CREDENTIAL | Safe logs/metrics/heartbeats; destination and alert delivery unconfigured |
+| Backups | BLOCKED_EXTERNAL_INFRA | No production managed backup schedule/retention configured |
+| Restore drill | FAILED | Current remote drill fails; local isolated run blocked, not a restore pass |
+| Git data tables intact | VERIFIED | Four existing schema1/data1.0.0 assets retained with original checksums |
+| Commercial live data rights verified | BLOCKED_CREDENTIAL | Inventory remains UNAPPROVED; no licence invented |
+| Public production E2E | BLOCKED_EXTERNAL_INFRA | No signup → delivered email → qualified live research → return-later journey |
+
+## Historical verification before publication
+
 # Final commercial release verification — 2026-09-16
 
 **PRODUCTION BLOCKED.** Preserved `main` at local `be30431`; GitHub's read API

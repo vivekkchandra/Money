@@ -122,8 +122,16 @@ class ProductService:
         return result
 
     def reserve_research(
-        self, connection: Connection, job_id: str, actor: Any, ticker: str
+        self, connection: Connection, job_id: str, actor: Any, ticker: str,
+        *, personal_rnd: bool = False,
     ) -> None:
+        if personal_rnd:
+            from money.storage.models import jobs
+
+            if connection.scalar(select(jobs.c.research_kind).where(
+                jobs.c.id == job_id, jobs.c.workspace_id == actor.workspace_id,
+            )) != "live_rnd":
+                raise EntitlementDenied("RND_JOB_REQUIRED")
         if actor.role not in {"OWNER", "ADMIN", "MEMBER"}:
             raise EntitlementDenied("ROLE_FORBIDDEN")
         sub = self.subscription(connection, actor.workspace_id)
@@ -143,7 +151,7 @@ class ProductService:
         if sub["status"] not in {"active", "trialing"} or aware(sub["period_end"]) <= utc_now():
             raise EntitlementDenied("SUBSCRIPTION_INACTIVE")
         plan = self.catalog.plan(sub["plan"])
-        if ticker != "DEMO.L" and not plan.live_research:
+        if ticker != "DEMO.L" and not personal_rnd and not plan.live_research:
             raise EntitlementDenied("PLAN_LIVE_RESEARCH_UNAVAILABLE")
         used = (
             connection.scalar(
@@ -171,7 +179,7 @@ class ProductService:
                 period_start=sub["period_start"],
                 period_end=sub["period_end"],
                 plan=sub["plan"],
-                max_tokens=0 if ticker == "DEMO.L" else plan.max_job_tokens,
+                max_tokens=0 if ticker == "DEMO.L" or personal_rnd else plan.max_job_tokens,
                 max_seconds=plan.max_job_seconds,
                 data_version=sha256(str(self.catalog.diagnostics()).encode()).hexdigest(),
                 created_at=utc_now(),

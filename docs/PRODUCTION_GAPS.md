@@ -1,20 +1,40 @@
 # Production gap matrix
 
+## Personal R&D scope — supersedes commercial licensing as this task's gate
+
+| Requirement | Status | Actual remaining gap |
+| --- | --- | --- |
+| Personal real-data adapters, queue and evidence UI | VERIFIED | Local contracts/fixture persistence tests only; no fake live result |
+| BoE macro fetch | FAILED |21 actual IUDBEDR observations fetched2026-09-16T21:11:19Z; latest repeated probes fail PROVIDER_UNAVAILABLE |
+| BARC.L / AAPL Yahoo fetch | BLOCKED_EXTERNAL_INFRA | Actual bounded calls failed Yahoo DNS; no quote/snapshot accepted |
+| Railway API/Postgres/private worker | BLOCKED_EXTERNAL_INFRA | Existing project/service names supplied, connector administrator-disabled; no remote state verified |
+| UK / US official filings | BLOCKED_CREDENTIAL | CH key + reviewed company number; SEC contact User-Agent |
+| Native multi-firm R&D | NOT_IMPLEMENTED | Safe evidence/citation bridge and R&D report barrier still needed; commercial PIT/currency contracts deliberately unchanged |
+| Hosted login→result→return | BLOCKED_EXTERNAL_INFRA | No healthy connected backend; browser listeners denied locally |
+| Commercial isolation | VERIFIED | Personal mode does not claim commercial rights; production qualification/rights gates remain unchanged |
+
+`live_rnd` stores evidence studies, not qualified recommendations. Native components
+remain NOT_CONFIGURED and final state INSUFFICIENT_EVIDENCE. No synthetic fallback.
+
 ## Final commercial release follow-up — 2026-09-16
 
 These supersede the historical starting gaps below. **PRODUCTION BLOCKED.**
 
 | Requirement | Status | Actual state / remaining gate |
 | --- | --- | --- |
-| Publish preserved commercial work | BLOCKED_EXTERNAL_INFRA | `.git/index.lock` creation denied; no lock exists to remove. Local main is be30431; GitHub main still fc5ddeb. No destructive cleanup or partial release push |
-| Existing Netlify production | BLOCKED_EXTERNAL_INFRA | Correct local project ID/runtime/SSR guard. Earlier fc5ddeb live-web job succeeded after initial 404; current commercial build is unpublished and direct HTTP/DNS unavailable |
+| Publish preserved commercial work | VERIFIED | Local and GitHub main match 6846bdc; clean starting tree and commercial implementation preserved. This follow-up needs its own publication |
+| Publish company-search/acceptance follow-up | BLOCKED_EXTERNAL_INFRA | Targeted git add denied creating index.lock; no stale lock. All modified/untracked work preserved, no new release SHA |
+| Existing Netlify public web | VERIFIED | Current-SHA live-web run 35146196319 records root HTTP 200 and route/asset/auth-closure/security checks. Deployed SHA/authenticated journey remain unverified; direct Netlify access blocked |
+| Current CI | FAILED | Run 35146196196: one PG test, backend drill, legacy HTTP smoke and research audit fail. No full trace available; additional safe diagnostics do not constitute a repair |
+| Company search/live admission | VERIFIED | Reviewed catalogue, bounded identifier/name search, per-use freshness/ethics/rights checks and durable rate limits. Real live catalogue still requires a qualified manifest |
 | Production demo prohibition | VERIFIED | Startup rejects both switches; enqueue, worker and read-time tests deny synthetic production research |
 | Offboarding/retention | VERIFIED | Durable closure, fresh-password ownership transfer, reviewed billing/retention workflow and local erasure drill; immutable evidence retained. Real Stripe closure, approved legal retention and PostgreSQL races remain launch gates |
 | Per-call accounting | VERIFIED | Fenced immutable receipts, individual inference attempts and native/provider-operation timing; actual and estimated costs separated. Unobserved provider subcalls/vendor invoices remain unknown |
 | ChromaDB dependency | FAILED | API/email/billing dependency set now excludes it and audits clean; research set retains four distinct unresolved advisories. Native capability containment is not a package patch; research CI still fails |
-| Node advisory retrieval | BLOCKED_EXTERNAL_INFRA | Local npm audit ENOTFOUND. Earlier fc5ddeb CI Node audit passed; no inference of current hosted release acceptance |
+| Node advisory scan | VERIFIED | Current 6846bdc CI production audit passes high-severity threshold; local fresh retrieval remains DNS-blocked |
 | PostgreSQL / backup / recovery | BLOCKED_EXTERNAL_INFRA | Isolated local drill cannot initialize shared memory; real-PG tests skipped without URL. No production restore proof |
-| Container / browser acceptance | BLOCKED_EXTERNAL_INFRA | Docker socket and localhost listener denied; Compose parses, but containers and browser journey are not verified |
+| Railway deployment access | BLOCKED_EXTERNAL_INFRA | Owner selected Railway; connector is DISABLED_BY_ADMIN / NOT_AVAILABLE and CLI 5.57.5 status/whoami fail API DNS. No project/service/database state verified; no alternate account or access workaround used |
+| Container / browser acceptance | BLOCKED_EXTERNAL_INFRA | Current CI builds both images and verifies control-plane dependency exclusion/Compose. Local socket/listener denied; CI HTTP failure skips commercial/browser checks; no hosted-process acceptance |
 | SMTP / Stripe / monitoring | BLOCKED_CREDENTIAL | No available credentials/destination; real delivery, payment lifecycle and production alerts unqualified |
 | Live research / commercial data rights | BLOCKED_CREDENTIAL | Eleven explicit live checks skip without manifest/hash and genuine native qualification snapshot; rights, ISA evidence, model promotion and runtime qualification remain mandatory |
 

@@ -38,11 +38,15 @@ jobs:
       - name: Verify Money routes, assets, auth closure and security headers
         if: always()
         shell: bash
+        env:
+          MONEY_EXPECTED_GIT_SHA: ${{ github.sha }}
         run: |
-          for attempt in 1 2 3 4 5; do
-            if node apps/web/scripts/check-deployment.mjs https://neon-griffin-08e616.netlify.app --production; then
+          # Netlify's independent Git build may still be publishing. Never pass
+          # this release by checking a healthy page served by an older commit.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if node apps/web/scripts/check-deployment.mjs https://neon-griffin-08e616.netlify.app --production --expected-sha "$MONEY_EXPECTED_GIT_SHA"; then
               exit 0
             fi
-            if [ "$attempt" -lt 5 ]; then sleep 15; fi
+            if [ "$attempt" -lt 10 ]; then sleep 20; fi
           done
           exit 1

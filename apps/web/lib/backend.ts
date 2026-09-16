@@ -1,12 +1,13 @@
 import "server-only";
 import { authConfigured, json, readLimitedJson, requestAuthenticated, requestSession, sameOrigin, validSession } from "@/lib/auth";
 import { validateJobInput } from "@/lib/contracts";
-import { serviceEndpoint } from "@/lib/service";
+import { productionEnvironment, serviceEndpoint } from "@/lib/service";
 import { parseSystemMetrics } from "@/lib/system";
 import { accountHeaders, saasMode } from "@/lib/commercial";
+import { instrumentQuery, parseInstrumentSearch } from "@/lib/instruments";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const allowed = new RegExp(`^(?:/health(?:/ready)?|/research/(?:signals|outcomes|discovery|universe|alerts|system)|/research/jobs(?:/${UUID}(?:/(?:reports|evidence))?)?)$`);
+const allowed = new RegExp(`^(?:/health(?:/ready)?|/research/(?:signals|outcomes|discovery|universe|alerts|system|instruments)|/research/jobs(?:/${UUID}(?:/(?:reports|evidence))?)?)$`);
 
 export async function proxyBackend(request: Request, path: string): Promise<Response> {
   if (!allowed.test(path)) return json({ error: "Unknown endpoint" }, 404);
@@ -14,10 +15,13 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
   if (saasMode() ? !accountHeaders(request)["X-Money-Session"] : !validSession(requestSession(request))) return json({ error: "Please sign in to your workspace", code: "SESSION_EXPIRED" }, 401);
   if (!["GET", "POST"].includes(request.method) || (request.method === "POST" && path !== "/research/jobs")) return json({ error: "Method not allowed" }, 405);
   if (request.method === "POST" && !sameOrigin(request)) return json({ error: "Invalid request origin" }, 403);
+  const search = path === "/research/instruments" ? instrumentQuery(new URL(request.url).searchParams) : undefined;
+  if (search === null) return json({ error: "Enter a company name or ticker of at most 80 characters.", code: "INVALID_INSTRUMENT_QUERY" }, 400);
   const token = process.env.RESEARCH_API_TOKEN;
   let endpoint: URL;
   try {
     endpoint = serviceEndpoint(path);
+    if (search) endpoint.search = search.toString();
     if (path === "/research/signals") {
       const expired = new URL(request.url).searchParams.get("expired");
       if (expired === "true" || expired === "false") endpoint.searchParams.set("expired", expired);
@@ -47,24 +51,34 @@ export async function proxyBackend(request: Request, path: string): Promise<Resp
         status: safe(health.status, ["ok", "degraded", "unavailable"], "unavailable"),
         database: safe(health.database, ["ready", "unavailable", "unknown"], "unknown"),
         worker: safe(health.worker, ["ready", "unavailable", "unknown", "stale", "offline", "missing"], "unknown"),
-        mode: safe(health.mode, ["demo", "live"], "unknown"),
+        mode: safe(health.mode, ["demo", "live", "live_rnd"], "unknown"),
         ...(path === "/health/ready" ? {
           version: typeof health.version === "string" && /^[a-zA-Z0-9.+_-]{1,50}$/.test(health.version) ? health.version : "unknown",
           git_sha: typeof health.git_sha === "string" && /^[a-f0-9]{7,40}$/.test(health.git_sha) ? health.git_sha : "unknown",
           environment: safe(health.environment, ["development", "test", "preview", "production"], "unknown"),
-          auth_mode: "private", schema_revision: typeof health.schema_revision === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(health.schema_revision) ? health.schema_revision : "unknown",
+          auth_mode: safe(health.auth_mode, ["private", "saas"], "unknown"), schema_revision: typeof health.schema_revision === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(health.schema_revision) ? health.schema_revision : "unknown",
           queue_depth: Number.isSafeInteger(health.queue_depth) && health.queue_depth >= 0 ? health.queue_depth : null,
           queue_age_seconds: typeof health.queue_age_seconds === "number" && Number.isFinite(health.queue_age_seconds) ? health.queue_age_seconds : null,
         } : {}),
       });
     }
     if (!response.ok) {
+      if (path === "/research/instruments" && response.status >= 500) return json({ error: "Company search is temporarily unavailable. Please retry.", code: "INSTRUMENT_SEARCH_UNAVAILABLE" }, 503);
+      if (path === "/research/jobs" && request.method === "POST" && response.status === 422) {
+        const failure = await readLimitedJson(response) as Record<string, unknown>;
+        if (failure?.code === "INSTRUMENT_NOT_RESEARCHABLE") return json({ error: "This company is not currently available for research. Search again to review its eligibility. No research job or usage charge was created.", code: "INSTRUMENT_NOT_RESEARCHABLE" }, 422);
+      }
       const status = [400, 401, 402, 403, 404, 409, 422, 429].includes(response.status) ? response.status : 502;
       const messages: Record<number, string> = { 401: "Your session has expired. Please sign in again.", 402: "Your workspace research allowance is exhausted. Review your plan and usage.", 403: "You do not have access to this research action.", 404: "Research record was not found", 429: "Too many requests. Try again shortly." };
       const requestId = response.headers.get("x-request-id");
       return json({ error: messages[status] ?? "The research service could not fulfil this request", ...(status === 401 ? { code: "SESSION_EXPIRED" } : {}), ...(requestId && /^[a-zA-Z0-9_-]{1,80}$/.test(requestId) ? { request_id: requestId } : {}) }, status);
     }
+    if (path === "/research/instruments") {
+      const catalogue = parseInstrumentSearch(await readLimitedJson(response, 65_536));
+      if (productionEnvironment() && catalogue.mode === "live_rnd") throw new Error("Personal R&D cannot authorize production research");
+      return json(catalogue);
+    }
     const result = await response.json();
     return json(path === "/research/system" ? parseSystemMetrics(result) : result, response.status);
-  } catch { return json({ error: "Research service is unavailable. Your saved research remains in durable storage." }, 503); }
+  } catch { return path === "/research/instruments" ? json({ error: "Company search is temporarily unavailable. Please retry.", code: "INSTRUMENT_SEARCH_UNAVAILABLE" }, 503) : json({ error: "Research service is unavailable. Your saved research remains in durable storage." }, 503); }
 }

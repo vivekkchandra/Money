@@ -37,6 +37,13 @@ function mockService(result: () => Promise<Response> = async () => Response.json
 }
 
 describe("workspace authentication", () => {
+  it("reports the actual allowlisted backend authentication mode", async () => {
+    for (const [auth_mode, expected] of [["saas", "saas"], ["private", "private"], ["provider-secret", "unknown"]]) {
+      mockService(async () => Response.json({ status: "ok", auth_mode }));
+      const result = await proxyBackend(request("/api/health"), "/health/ready");
+      expect((await result.json()).auth_mode).toBe(expected);
+    }
+  });
   it("fails closed without strong configured secrets", async () => {
     vi.stubEnv("MONEY_WEB_PASSWORD", "");
     expect(authConfigured()).toBe(false);

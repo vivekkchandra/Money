@@ -4,6 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { DEFAULT_MANDATE, humanize, isTerminal, JOB_STAGES, signalState, unwrapSignal, validateJobInput, type Evidence, type Health, type Job, type Mandate, type RecordData, type Reports } from "@/lib/contracts";
 import { api } from "@/lib/client";
+import { type Instrument } from "@/lib/instruments";
+import { InstrumentPicker } from "./instrument-picker";
+import { PersonalResearchDetail, PersonalRndNotice } from "./personal-rnd";
 import { canonicalView } from "@/lib/routes";
 import { type SystemMetrics } from "@/lib/system";
 import { OperationalMetrics } from "./operational-metrics";
@@ -62,7 +65,7 @@ function useResource<T>(path: string | null, refresh = 0, poll = false) {
   return { data: loadedPath === path ? data : null, error: loadedPath === path ? error : null, loading: !!path && loadedPath !== path };
 }
 
-export function Workspace({ view: requestedView, commercial = false }: { view: string[]; commercial?: boolean }) {
+export function Workspace({ view: requestedView, commercial = false, personalRnd = false }: { view: string[]; commercial?: boolean; personalRnd?: boolean }) {
   const view = canonicalView(requestedView);
   const page = view[0] ?? "";
   const [revision, setRevision] = useState(0);
@@ -77,6 +80,7 @@ export function Workspace({ view: requestedView, commercial = false }: { view: s
   const authenticated = session.data?.authenticated === true;
   const jobsResource = useResource<{ jobs: Job[] }>(authenticated ? "/api/research" : null, revision, true);
   const health = useResource<Health>(authenticated ? "/api/health" : null, revision, true);
+  const rnd = personalRnd || health.data?.mode === "live_rnd";
   const metrics = useResource<SystemMetrics>(authenticated && page === "health" ? "/api/research/system" : null, revision, true);
   const jobs = jobsResource.data?.jobs ?? [];
   const active = jobs.filter((job) => !isTerminal(job.status));
@@ -87,13 +91,13 @@ export function Workspace({ view: requestedView, commercial = false }: { view: s
     <aside className="sidebar">
       <Link href="/" className="brand" aria-label="Money home"><span className="brand-symbol">m<span>·</span></span><span>money<span className="brand-period">.</span></span></Link>
       <p className="sidebar-caption">INDEPENDENT BY DESIGN</p>
-      <div className="workspace-label"><span className="workspace-avatar">P</span><div>{commercial ? "Research workspace" : "Personal workspace"}<small>UK equity research</small></div><Icon name="lock" size={15} /></div>
+      <div className="workspace-label"><span className="workspace-avatar">P</span><div>{commercial ? "Research workspace" : "Personal workspace"}<small>{rnd ? "Personal public-data R&D" : "UK equity research"}</small></div><Icon name="lock" size={15} /></div>
       <p className="nav-label">WORKSPACE</p>
       <nav aria-label="Main navigation">{(commercial ? CUSTOMER_NAV : NAV).map(([path, label, icon], index) => <Link href={`/${path || "dashboard"}`} key={label} className={`nav-link ${page === path || (page === "research" && path === "jobs") ? "selected" : ""} ${index === 4 ? "nav-divider" : ""}`} aria-current={page === path ? "page" : undefined}><Icon name={icon} size={18} /><span>{label}</span>{path === "jobs" && active.length > 0 && <span className="nav-count">{active.length}</span>}</Link>)}</nav>
       <div className="sidebar-bottom"><div className="manual-note"><Icon name="lock" size={18} /><div><strong>Your decisions. Always.</strong><p>Evidence and perspective.<br />Every investment decision stays yours.</p></div></div><div className="sidebar-footer"><span className="status-dot" />Research workspace<span>v0.1</span></div></div>
     </aside>
     <div className="main-column">
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>{eyebrow}</strong></div><div className="topbar-right"><span className="universe-pill">UK · GBP / GBX</span>{authenticated && <button className="icon-button" aria-label="Sign out" onClick={async () => { try { await api("/api/session", { method: "DELETE" }); setSessionNotice(null); refresh(); } catch { setSessionNotice("Sign-out could not be confirmed. Please retry."); } }}><Icon name="logout" size={18} /></button>}<span className="profile-avatar">P</span></div></header>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>{eyebrow}</strong></div><div className="topbar-right"><span className="universe-pill">{rnd ? "R&D · source currency" : "UK · GBP / GBX"}</span>{authenticated && <button className="icon-button" aria-label="Sign out" onClick={async () => { try { await api("/api/session", { method: "DELETE" }); setSessionNotice(null); refresh(); } catch { setSessionNotice("Sign-out could not be confirmed. Please retry."); } }}><Icon name="logout" size={18} /></button>}<span className="profile-avatar">P</span></div></header>
       <main id="main">
         <div className="page-heading"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div><span className="research-only"><Icon name="lock" size={14} />Research only</span></div>
         {sessionNotice && <div className="notice" role="status">{sessionNotice}</div>}
@@ -101,6 +105,7 @@ export function Workspace({ view: requestedView, commercial = false }: { view: s
           {commercial && <CustomerToolbar />}
           {jobsResource.error && <div className="notice error" role="alert">{jobsResource.error}<button onClick={refresh}>Retry</button></div>}
           {health.data?.mode === "demo" && <div className="notice demo"><strong>Demonstration environment</strong> Research uses synthetic fixtures. Use DEMO.L to explore the workflow. Reports are not live firm research or investment opportunities.</div>}
+          {rnd && !personalRnd && <PersonalRndNotice />}
           {page === "" && <>{commercial && <UsageSummary />}{jobsResource.loading ? <div className="notice" role="status">Loading saved investigations…</div> : <Dashboard jobs={jobs} active={active} health={health.data} onCreated={refresh} commercial={commercial} />}</>}
           {page === "mandate" && <MandateEditor commercial={commercial} />}
           {page === "jobs" && <><ResearchRequest onCreated={refresh} commercial={commercial} /><section className="panel"><SectionHeading title="Research activity" action={<button className="text-button" onClick={refresh}>Refresh <Icon name="arrow" size={15} /></button>} /><JobList jobs={jobs} /></section></>}
@@ -164,26 +169,28 @@ function loadMandate(): Mandate {
   return { ...DEFAULT_MANDATE };
 }
 
-function ResearchRequest({ onCreated, commercial = false }: { onCreated: () => void; commercial?: boolean }) {
-  const [ticker, setTicker] = useState("");
+export function ResearchRequest({ onCreated, commercial = false }: { onCreated: () => void; commercial?: boolean }) {
+  const [selected, setSelected] = useState<Instrument | null>(null);
+  const [searchRevision, setSearchRevision] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Job | null>(null);
   const requestIdentity = useRef<{ body: string; key: string } | null>(null);
-  useEffect(() => { const requested = new URLSearchParams(window.location.search).get("ticker"); if (requested && /^[A-Za-z0-9][A-Za-z0-9._-]{0,23}$/.test(requested)) { const timer = setTimeout(() => setTicker(requested), 0); return () => clearTimeout(timer); } }, []);
   async function submit(event: FormEvent) {
-    event.preventDefault(); setPending(true); setError(null); setCreated(null);
+    event.preventDefault();
+    if (pending || !selected?.research_allowed) return;
+    setPending(true); setError(null); setCreated(null);
     try {
       const mandate = commercial ? (await api<{ mandate: Mandate }>("/api/product/preferences")).mandate : loadMandate();
-      const body = JSON.stringify({ ticker: ticker.trim().toUpperCase(), mandate });
+      const body = JSON.stringify({ ticker: selected.ticker, mandate });
       if (requestIdentity.current?.body !== body) requestIdentity.current = { body, key: crypto.randomUUID() };
       const job = await api<Job>("/api/research", { method: "POST", headers: { "Idempotency-Key": requestIdentity.current.key }, body });
-      requestIdentity.current = null; setCreated(job); setTicker(""); onCreated();
+      requestIdentity.current = null; setCreated(job); setSelected(null); setSearchRevision(value => value + 1); onCreated();
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to create research"); }
     finally { setPending(false); }
   }
-  return <section className="request-panel"><div><p className="eyebrow">FOLLOW YOUR CURIOSITY</p><h2>What are you researching?</h2><p>Start with a ticker. Money checks the mandate before investigating.</p></div><form onSubmit={submit}><label className="sr-only" htmlFor="ticker">Stock ticker</label><div className="request-input"><Icon name="search" size={19} /><input id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value)} placeholder="Stock ticker, e.g. XYZ.L" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,23}" required maxLength={24} autoComplete="off" /><button className="button" disabled={pending}>{pending ? "Creating…" : "Request research"}<Icon name="plus" size={16} /></button></div>{error && <p className="form-error" role="alert">{error}</p>}{created && <p className="form-success" role="status">Research queued. <Link href={`/research/${created.id}`}>Follow {created.ticker} →</Link></p>}</form></section>;
+  return <section className="request-panel"><div><p className="eyebrow">FOLLOW YOUR CURIOSITY</p><h2>What are you researching?</h2><p>Find a company. The deployment’s research rules apply before an investigation starts.</p></div><form onSubmit={submit}><InstrumentPicker key={searchRevision} selected={selected} onSelect={setSelected} disabled={pending} /><button className="button request-submit" disabled={pending || !selected?.research_allowed}>{pending ? "Creating…" : "Request research"}<Icon name="plus" size={16} /></button>{error && <p className="form-error" role="alert">{error}</p>}{created && <p className="form-success" role="status">Research queued. <Link href={`/research/${created.id}`}>Follow {created.ticker} →</Link></p>}</form></section>;
 }
 
 function MandateEditor({ commercial = false }: { commercial?: boolean }) {
@@ -201,7 +208,8 @@ const RESEARCH_TABS = [["firms", "Independent firms"], ["audit", "CIO & Red Team
 function ResearchDetail({ id, section, revision, onRefresh }: { id: string | undefined; section?: string; revision: number; onRefresh: () => void }) {
   const validId = id && /^[a-f0-9-]{36}$/i.test(id);
   const job = useResource<Job>(validId ? `/api/research/${id}` : null, revision, true);
-  const reports = useResource<Reports>(validId ? `/api/research/${id}/reports` : null, revision, true);
+  const personalRnd = job.data?.research_kind === "live_rnd" || job.data?.packet?.runtime === "live_rnd";
+  const reports = useResource<Reports>(validId && job.data && !personalRnd ? `/api/research/${id}/reports` : null, revision, true);
   const evidence = useResource<Evidence>(validId ? `/api/research/${id}/evidence` : null, revision, true);
   const [tab, setTab] = useState(RESEARCH_TABS.some(([key]) => key === section) ? section! : "firms");
   const [now, setNow] = useState(() => Date.now());
@@ -210,6 +218,7 @@ function ResearchDetail({ id, section, revision, onRefresh }: { id: string | und
   if (job.error) return <div className="notice error" role="alert">{job.error}<button onClick={onRefresh}>Retry</button></div>;
   if (!job.data) return <div className="notice" role="status">Loading the durable research record…</div>;
   const record = job.data;
+  if (personalRnd) return <PersonalResearchDetail job={record} evidence={evidence.data} evidenceError={evidence.error} onRefresh={onRefresh} />;
   const packet = record.packet ?? reports.data?.packet;
   const packetSignal = packet?.signal && typeof packet.signal === "object" ? packet.signal as RecordData : null;
   const currentState = packetSignal ? signalState(packetSignal, now) : String(record.final_state ?? packet?.final_state ?? "INSUFFICIENT_EVIDENCE");

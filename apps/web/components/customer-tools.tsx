@@ -6,6 +6,8 @@ import type { Job } from "@/lib/contracts";
 import type { Account } from "@/components/account";
 import { DataRecord, EmptyState, JobList } from "@/components/primitives";
 import { historyFiltersReducer, historyQuery, INITIAL_HISTORY_FILTERS } from "@/lib/history";
+import { InstrumentPicker } from "@/components/instrument-picker";
+import type { Instrument } from "@/lib/instruments";
 
 function useCustomer<T>(path: string, revision = 0) {
   const [data, setData] = useState<T | null>(null);
@@ -236,6 +238,8 @@ export function ResearchHistory() {
 
 export function CustomerWatchlist() {
   const [revision, setRevision] = useState(0);
+  const [selected, setSelected] = useState<Instrument | null>(null);
+  const [searchRevision, setSearchRevision] = useState(0);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -252,19 +256,20 @@ export function CustomerWatchlist() {
 
   async function add(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (pending || !selected) return;
     setPending(true);
-    const form = event.currentTarget;
 
     try {
       await api("/api/product/watchlist", {
         method: "POST",
 
         body: JSON.stringify({
-          ticker: String(new FormData(form).get("ticker")).trim().toUpperCase()
+          ticker: selected.ticker
         })
       });
 
-      form.reset();
+      setSelected(null);
+      setSearchRevision(value => value + 1);
       setFailure(null);
       setRevision(value => value + 1);
     } catch (reason) {
@@ -292,7 +297,7 @@ export function CustomerWatchlist() {
   }
 
   return (
-    <section className="panel"><h2>Your watchlist</h2><p>Keep ideas together. Adding a ticker does not create research or imply eligibility.</p><form className="watch-add" onSubmit={add}><label className="sr-only" htmlFor="watch-ticker">Ticker to watch</label><input id="watch-ticker" name="ticker" required maxLength={30} placeholder="Enter ticker" /><button className="button" disabled={pending}>Add ticker</button></form>{(error || failure) && <p className="notice error" role="alert">{failure ?? error}</p>}{loading ? <p role="status">Loading watchlist…</p> : !data?.items.length ? <EmptyState
+    <section className="panel"><h2>Your watchlist</h2><p>Keep ideas together. Adding a company does not create research or imply eligibility.</p><form className="watch-add company-watch" onSubmit={add}><InstrumentPicker key={searchRevision} selected={selected} onSelect={setSelected} disabled={pending} allowUnavailable /><button className="button" disabled={pending || !selected}>Add company</button></form>{(error || failure) && <p className="notice error" role="alert">{failure ?? error}</p>}{loading ? <p role="status">Loading watchlist…</p> : !data?.items.length ? <EmptyState
         title="A place for your next question."
         detail="Add a ticker to keep it in your workspace watchlist." /> : <div className="workspace-list">{data.items.map(
           item => <div key={item.ticker}><strong>{item.ticker}</strong><Link href={`/history?query=${encodeURIComponent(item.ticker)}`}>Research history</Link><Link href={`/jobs?ticker=${encodeURIComponent(item.ticker)}`}>Research again</Link><button

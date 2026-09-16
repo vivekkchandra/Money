@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { authService, productionEnvironment, serviceEndpoint } from "@/lib/service";
+import { authService, secureDeployment, serviceEndpoint } from "@/lib/service";
 
 export const SESSION_COOKIE = "money_session";
 export const SESSION_SECONDS = 60 * 60 * 8;
@@ -8,13 +8,14 @@ export const SESSION_SECONDS = 60 * 60 * 8;
 export function authConfigured(): boolean {
   const environment = process.env.MONEY_ENV;
   if (environment && !["development", "test", "preview", "production"].includes(environment)) return false;
+  if (process.env.MONEY_DEPLOYMENT_ENV && !["local", "hosted"].includes(process.env.MONEY_DEPLOYMENT_ENV)) return false;
   if (process.env.NODE_ENV === "production" && !environment) return false;
   if (process.env.MONEY_AUTH_MODE === "saas") { try { serviceEndpoint("/v1/account/me"); return true; } catch { return false; } }
   if (process.env.MONEY_AUTH_MODE && process.env.MONEY_AUTH_MODE !== "private") return false;
   const password = process.env.MONEY_WEB_PASSWORD ?? "";
   const secret = process.env.SESSION_SECRET ?? "";
   return password.length >= 16 && secret.length >= 32 && password !== secret &&
-    (!productionEnvironment() || !/^(?:password|changeme|change-me|default|example|test)[-\s_\d!]*$/i.test(password));
+    (!secureDeployment() || !/^(?:password|changeme|change-me|default|example|test)[-\s_\d!]*$/i.test(password));
 }
 
 export function passwordMatches(password: string): boolean {
@@ -82,18 +83,19 @@ export async function revokeSession(request: Request): Promise<void> {
 }
 
 export function sessionCookie(cookie: string, request: Request, maxAge = SESSION_SECONDS): string {
-  return `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${productionEnvironment() || new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
+  return `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureDeployment() || new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
 
 export function sameOrigin(request: Request): boolean {
-  return request.headers.get("origin") === new URL(request.url).origin;
+  const origin = new URL(request.url);
+  return (!secureDeployment() || origin.protocol === "https:") && request.headers.get("origin") === origin.origin;
 }
 
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status, headers: { "Cache-Control": "private, no-store" } });
 }
 
-export async function readLimitedJson(request: Request, limit = 8192): Promise<unknown> {
+export async function readLimitedJson(request: Pick<Request, "headers" | "body">, limit = 8192): Promise<unknown> {
   if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Error("JSON required");
   if (Number(request.headers.get("content-length")) > limit) throw new Error("Request too large");
   const reader = request.body?.getReader();

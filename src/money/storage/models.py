@@ -40,6 +40,7 @@ jobs = Table(
     metadata,
     Column("id", String(36), primary_key=True),
     Column("ticker", String(32), nullable=False),
+    Column("research_kind", String(16), nullable=False, server_default="standard"),
     Column("mandate_id", ForeignKey("research_mandates.id"), nullable=False),
     Column("workspace_id", String(80), nullable=False, server_default="private"),
     Column("idempotency_key", String(128), nullable=True),
@@ -65,6 +66,7 @@ jobs = Table(
     Column("error_message", String(512), nullable=True),
 )
 Index("ix_jobs_queue", jobs.c.status, jobs.c.created_at)
+Index("ix_jobs_kind_queue", jobs.c.research_kind, jobs.c.status, jobs.c.created_at)
 Index("ix_jobs_lease", jobs.c.lease_until)
 Index("ix_jobs_workspace_created", jobs.c.workspace_id, jobs.c.created_at)
 Index("ix_jobs_available", jobs.c.status, jobs.c.available_at)

@@ -32,7 +32,7 @@ export function EmptyState({ title, detail, icon = "document", children }: { tit
 
 export function JobList({ jobs }: { jobs: Job[] }) {
   if (!jobs.length) return <EmptyState title="Your next idea starts here" detail="Request research on a stock to create a durable research record. Eligibility and evidence are checked before the firms begin." icon="search" />;
-  return <div className="job-list">{jobs.map((job) => <Link className="job-row" href={`/research/${job.id}`} key={job.id}><div className="ticker-mark">{job.ticker.slice(0, 2)}</div><div className="job-name"><strong>{job.ticker}</strong><span>{humanize(job.current_stage || job.status)}</span></div><Badge value={job.status} /><span className="job-date">{new Date(job.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span><Icon name="arrow" size={17} /></Link>)}</div>;
+  return <div className="job-list">{jobs.map((job) => <Link className="job-row" href={`/research/${job.id}`} key={job.id}><div className="ticker-mark">{job.ticker.slice(0, 2)}</div><div className="job-name"><strong>{job.ticker}</strong><span>{humanize(job.current_stage || job.status)}</span>{job.research_kind === "live_rnd" && <span>R&amp;D / PERSONAL USE</span>}</div><Badge value={job.status} /><span className="job-date">{new Date(job.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span><Icon name="arrow" size={17} /></Link>)}</div>;
 }
 
 export function safeSourceUrl(value: unknown): string | null {

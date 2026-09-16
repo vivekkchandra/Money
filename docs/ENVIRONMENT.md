@@ -2,6 +2,42 @@
 
 Examples in `.env.example` are placeholders only. Secrets are never Git assets.
 
+## Explicit personal live R&D (not commercial production)
+
+API, worker and web use `MONEY_ENV=development`, `MONEY_RESEARCH_MODE=live_rnd`,
+`MONEY_ENABLE_SYNTHETIC_DEMO=false`. For the Railway/Netlify hosted deployment set
+`MONEY_DEPLOYMENT_ENV=hosted` on all three: PostgreSQL, service authentication,
+HTTPS, Secure cookies and strict CSP remain required despite the development label.
+`MONEY_DEPLOYMENT_CONTEXT` is an existing web deployment-context setting; do not
+confuse it with the new application security distinction `MONEY_DEPLOYMENT_ENV`.
+Production/preview refuse `live_rnd`; qualified `live` still requires its manifest.
+
+- Railway project **incredible-flexibility**, environment **production**, existing
+  **Money** API and **Postgres**, are owner-specified targets, not verified remote state.
+  Set API/worker `DATABASE_URL=${{Postgres.DATABASE_URL}}` as a service reference;
+  never copy resolved credentials into docs or logs.
+- `RESEARCH_API_TOKEN`: same strong server-only secret in API, worker and Netlify.
+  `RESEARCH_API_URL`: actual healthy Railway HTTPS API URL, Netlify only.
+- `MONEY_AUTH_MODE=private` explicitly reuses personal workspace/password login,
+  not email-verified customer signup. Web needs `MONEY_WEB_PASSWORD` and
+  `SESSION_SECRET` from the secret store. SaaS mode and real email verification
+  remain available unchanged; no verification bypass was introduced.
+- `COMPANIES_HOUSE_API_KEY` plus `MONEY_RND_COMPANY_NUMBERS` (JSON ticker→reviewed
+  company-number mapping): required for UK official filing metadata. Prefer a
+  reviewed versioned mapping, never guess a company number from its trading symbol.
+- `MONEY_SEC_USER_AGENT`: real application name and operator contact email required
+  for SEC. No invented contact, no key required. Global DB admission ≤5 requests
+  per fixed one-second window plus process pacing bounds concurrent worker traffic.
+- `MONEY_RND_PROVIDER_TIMEOUT_SECONDS`: 5–60, default30; company search has a
+  separate4-second deadline. Yahoo quotes retain UNKNOWN freshness, source timestamps,
+  raw currency and GBX normalization; feeds older than7 days fail explicitly.
+- `FRED_API_KEY`: optional; configured FRED/ONS adapters are not default snapshot
+  sources. Default macro source is keyless official BoE Bank Rate `IUDBEDR`.
+
+Personal mode requires no commercial market-data licence. It does not grant
+commercial redistribution rights. Native multi-firm R&D execution is not yet
+implemented; persisted evidence studies explicitly remain INSUFFICIENT_EVIDENCE.
+
 | Process | Configuration |
 | --- | --- |
 | Netlify web | `MONEY_AUTH_MODE=saas`, `MONEY_ENV`, `MONEY_DEPLOYMENT_CONTEXT`, `RESEARCH_API_URL` (real HTTPS API), `RESEARCH_API_TOKEN` (server-only) |
@@ -32,3 +68,17 @@ Generate an encryption key using your secret manager or
 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`
 in a trusted operator shell, not CI logs. Preserve the key in backup/restore plans;
 losing it makes queued transactional email undecryptable.
+
+Company search uses the same hash-pinned `MONEY_LIVE_MANIFEST` as research, not a
+second provider directory or customer-supplied catalogue. API and worker must mount
+the same reviewed release. Expired identifiers/ISA verification/provider approval
+stop new requests; updating reviewed assets requires a validated release/restart.
+Market credentials default to `EODHD_API_KEY` (the manifest may explicitly choose
+another environment-variable name); the HTTP query parameter is `api_token`.
+
+Netlify settings needed by route handlers must include the **Functions** scope;
+`netlify.toml` build environment alone does not supply runtime function secrets or
+settings. Set the actual SaaS/environment/API settings in the existing project's
+scoped environment store. Never bake tokens or backend/provider secrets into
+Next.js `env`. Only the validated public release SHA is baked into this web build.
+See [Netlify function environment scope](https://docs.netlify.com/build/functions/environment-variables/).

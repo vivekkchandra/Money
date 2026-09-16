@@ -205,3 +205,45 @@ suggestion do not authorize global or upstream changes.
 - Accounting question: where do budget reservations, settlements and native calls connect? Money query `budget token usage reserve provider model` (700 tokens) identified `TokenBudgetManager`, `HTTPInference`, `BoundedNativeRunner`, `ProviderCircuit.call`, `run_first_pass`, `run_research`, `LiveCorrespondence.invoke`. Only those Money files inspected; no upstream source needed. Fenced accounting stays outside firm capabilities, with strict content-free receipts transported to the parent process.
 
 - Offboarding question: how does deletion connect to billing, sessions and workspace ownership? Money queries `account deletion subscription session workspace` then `request_deletion` (700 tokens each) identified `AccountService.request_deletion` and `ProductService.subscription`. Minimal Money accounts service/models/API/email worker and product billing/worker inspected; extended those services plus migration0006, no upstream read. Final Money-only AST update:2609 nodes/7909 edges/152 communities.
+
+## Customer company lookup — 2026-09-16
+
+- Question: which reviewed identities can customers search before paid research?
+  Money queries `InstrumentMetadata Trading212EligibilityService` (600 tokens),
+  narrowed to `LiveManifest`, `eligibility_failures`, `create_app` and web request/
+  proxy seams. Inspected Money contracts, identifiers, manifest loader, reference
+  licence gate, API and request form only. Decision: reuse the immutable reviewed
+  manifest; search is not a vendor directory or new mutable reference database.
+- Question: where can worker failures be diagnosed without leaking provider data?
+  Money query `SafeJsonFormatter classify_failure` (500 tokens), minimal worker,
+  first-pass boundary and formatter inspection. Add bounded package-relative source
+  location/type only; no exception text, locals or source expressions.
+- No new upstream source inspection, graph rebuild, clone or upstream change.
+
+## Personal live R&D — 2026-09-16
+
+- Question: bounded yfinance search/history/news seam without uncontrolled upstream
+  tools. Existing `upstreams/yfinance/graphify-out/graph.json`, query for Search,
+  Ticker/history/news at650tokens; narrowed to exact nodes. Inspected only
+  `yfinance/search.py:31–85`, `scrapers/history.py:105–185`,
+  `base.py:275–295,591–655,808–816`. Pinned SHA
+  `3d9d2f0cacb662bff689874cd6113bae3a30a885`. Money-owned `rnd_market.py` isolates
+  genuine native requests with hard subprocess deadlines and sanitized child env;
+  explicitly disables auto/back adjustment and repair, retains action metadata.
+  No upstream modification or graph refresh. [Official provider documentation](https://ranaroussi.github.io/yfinance/)
+  identifies personal use; no commercial qualification is inferred.
+- Question: official source reuse without inventing ISA identity. Money query
+  `SafeFetcher CompaniesHouse EvidenceRecord --budget700`, inspected only Money
+  security/providers/UK live/resilience/identifiers/contracts and durable limiter.
+  `rnd_official.py` reuses bounded fetch/CH credential transport and a reviewed
+  company-number seam; SEC exact ticker→CIK, BoE/ONS/FRED preserve revisions/PIT limits.
+- Question: can R&D feed the existing actual native organisations unchanged?
+  Money query `native research adapter runtime first pass Money snapshot mandate`,
+  narrowed to NativeInference, snapshot_payload, TradingAgentsNativeRunner and
+  AIHedgeFundNativeRunner. Inspected Money `native.py`, `native_qualitative.py`,
+  `native_process.py`, adapter/LEAN/CIO contracts only. Findings: USD and unverified
+  public history cannot be coerced into GBP/PIT-qualified commercial contracts.
+  Preserve those gates; record unavailable components instead of fabricated reports.
+- Web navigation query: `ResearchDetail InstrumentPicker auth` at700tokens,
+  inspect only Money request/proxy/result presentation. Separate personal evidence
+  view, not a production signal or falsely locked first-pass barrier.

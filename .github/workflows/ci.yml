@@ -153,4 +153,12 @@ jobs:
           pg_config --version
           pg_config --bindir >> "$GITHUB_PATH"
       - name: Isolated migration, killed-worker recovery and backup restore
-        run: uv run --no-sync python scripts/backend_acceptance.py
+        shell: bash
+        run: uv run --no-sync python scripts/backend_acceptance.py | tee /tmp/money-backend-acceptance.json
+      - name: Collect bounded backend acceptance diagnostics
+        id: backend-results
+        if: always()
+        run: python scripts/ci_diagnostics.py acceptance /tmp/money-backend-acceptance.json --github-output "$GITHUB_OUTPUT"
+      - name: "Backend acceptance: ${{ steps.backend-results.outputs.summary }}"
+        if: always()
+        run: echo "The drill exit code remains authoritative; missing evidence is not a pass."

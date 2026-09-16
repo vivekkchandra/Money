@@ -27,6 +27,31 @@ def summarize(path: Path, kind: str) -> str:
             counts = f"{len(list(root.iter('testcase')))} cases; {len(failed)} failed"
             # Parameter values and assertion bodies may contain credentials.
             names = [name for name in failed if re.fullmatch(r"test_[a-zA-Z0-9_]{1,100}", name)]
+            # Only pytest's final source-location line, never its assertion body,
+            # exception value, parameter values, captured output or absolute paths.
+            locations = []
+            for item in root.iter("testcase"):
+                for tag in ("failure", "error"):
+                    failure = item.find(tag)
+                    if failure is None:
+                        continue
+                    locations.extend(re.findall(
+                        r"(?m)^(?:src/money|tests)/(?:[A-Za-z0-9_]+/)*"
+                        r"[A-Za-z0-9_]+\.py:[1-9][0-9]{0,5}: [A-Za-z_][A-Za-z0-9_]{0,79}$",
+                        failure.text or "",
+                    ))
+            names.extend(dict.fromkeys(locations))
+        elif kind == "acceptance":
+            report = json.loads(raw)
+            status = report.get("status")
+            if status not in {"VERIFIED", "FAILED", "BLOCKED_ENVIRONMENT"}:
+                return "REPORT_INVALID"
+            parts = [status]
+            for key in ("phase", "code", "failure_class"):
+                value = report.get(key)
+                if isinstance(value, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", value):
+                    parts.append(f"{key}={value}")
+            return "; ".join(parts)
         else:
             report = json.loads(raw)
             dependencies = report.get("dependencies", [])
@@ -47,7 +72,7 @@ def summarize(path: Path, kind: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=("pytest", "audit"))
+    parser.add_argument("kind", choices=("pytest", "audit", "acceptance"))
     parser.add_argument("report", type=Path)
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args()

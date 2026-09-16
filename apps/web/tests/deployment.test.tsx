@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { Workspace } from "@/components/workspace";
 import { canonicalView } from "@/lib/routes";
-import { boundedText, checkDeployment, deploymentOrigin, ROUTES } from "../scripts/check-deployment.mjs";
+import { boundedText, checkDeployment, deploymentArguments, deploymentOrigin, ROUTES } from "../scripts/check-deployment.mjs";
 
 const origin = "https://money-deployment.example.test";
 
@@ -57,12 +57,26 @@ describe("read-only deployed HTTP acceptance", () => {
     expect(result.backend_status).toBe("NOT_PROBED_WITHOUT_AUTHENTICATION");
     expect(result.assets).toEqual({ javascript: 1, stylesheets: 1 });
     expect(result.research_readiness).toBe("NOT_QUALIFIED_BY_WEB_CHECK");
-    expect(fetchImpl.mock.calls).toHaveLength(ROUTES.length + 6);
+    expect(fetchImpl.mock.calls).toHaveLength(ROUTES.length + 7);
     expect(fetchImpl.mock.calls.every(([url]) => new URL(String(url)).origin === origin)).toBe(true);
   });
   it("recognizes generic Netlify 404 content, including a misleading HTTP 200", async () => {
     const fetchImpl = server({ change: (path, response) => path === "/" ? new Response("<title>Page Not Found</title>Looks like you've followed a broken link on Netlify", { status: 200 }) : response });
     await expect(checkDeployment(origin, { fetchImpl })).rejects.toThrow("GENERIC_HOST_404:/");
+  });
+  it("verifies the actual deployed build rather than trusting a triggering workflow SHA", async () => {
+    const sha = "a".repeat(40);
+    const fetchImpl = server({ change: (path, response) => path === "/api/health" ? Response.json({ error: "Please sign in", web: { status: "ok", version: "0.1.0", git_sha: sha } }, { status: 401 }) : response });
+    expect((await checkDeployment(origin, { fetchImpl, expectedSha: sha })).deployed_sha).toBe(sha);
+    await expect(checkDeployment(origin, { fetchImpl, expectedSha: "b".repeat(40) })).rejects.toThrow("DEPLOYED_GIT_SHA_MISMATCH");
+    await expect(checkDeployment(origin, { fetchImpl: server(), expectedSha: sha })).rejects.toThrow("DEPLOYED_GIT_SHA_MISMATCH");
+    await expect(checkDeployment(origin, { fetchImpl, expectedSha: "" })).rejects.toThrow("INVALID_EXPECTED_GIT_SHA");
+  });
+  it("parses an optional exact expected SHA and rejects malformed or incomplete flags", () => {
+    const sha = "b".repeat(40);
+    expect(deploymentArguments([origin, "--production", "--expected-sha", sha], {})).toEqual({ value: origin, production: true, expectedSha: sha });
+    expect(deploymentArguments([], { MONEY_WEB_URL: origin })).toMatchObject({ value: origin, expectedSha: undefined });
+    for (const args of [[origin, "--expected-sha"], [origin, "--expected-sha", ""], [origin, "--expected-sha", "main"], [origin, "--expected-sha", "--production"], [origin, "--expected-sha", sha, "--expected-sha", sha], [origin, "--unknown"], [origin, origin]]) expect(() => deploymentArguments(args, {})).toThrow();
   });
   it("rejects catchall HTML when the requested product screen is absent", async () => {
     const fetchImpl = server({ change: (path, response) => path === "/dashboard" ? fixtureResponse("/system", "different-nonce") : response });

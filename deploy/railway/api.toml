@@ -1,0 +1,14 @@
+# Select for the existing Money service, repository root build context.
+# This file does not create a project, database, service, domain, or secrets.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+preDeployCommand = ["alembic upgrade head"]
+startCommand = "sh -c 'exec uvicorn money.api.app:app --host 0.0.0.0 --port ${PORT:-8000} --no-server-header'"
+healthcheckPath = "/health/ready"
+healthcheckTimeout = 180
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+drainingSeconds = "30"

@@ -134,11 +134,17 @@ class SafeFetcher:
         maximum_bytes: int = 2_000_000,
         timeout_seconds: float = 20,
         maximum_redirects: int = 2,
+        user_agent: str = "Money-research/0.2",
     ) -> None:
         if not allowed_hosts or not 0 < maximum_bytes <= 20_000_000:
             raise ValueError("bounded source policy required")
         if not 0 < timeout_seconds <= 120 or not 0 <= maximum_redirects <= 3:
             raise ValueError("bounded source deadline required")
+        if not 1 <= len(user_agent) <= 200 or any(
+            ord(character) < 32 or ord(character) > 126 for character in user_agent
+        ):
+            raise SourceSecurityError("SOURCE_USER_AGENT_DENIED")
+        self.user_agent = user_agent
         self.allowed_hosts = allowed_hosts
         self.maximum_bytes = maximum_bytes
         self.timeout_seconds = timeout_seconds
@@ -152,7 +158,7 @@ class SafeFetcher:
         mime_types: tuple[str, ...] = ("application/json",),
     ) -> FetchResult:
         deadline = time.monotonic() + self.timeout_seconds
-        request_headers = {"Accept-Encoding": "identity", "User-Agent": "Money-research/0.2"}
+        request_headers = {"Accept-Encoding": "identity", "User-Agent": self.user_agent}
         if any(
             key.lower() not in {"authorization", "accept"}
             or len(value) > 8192

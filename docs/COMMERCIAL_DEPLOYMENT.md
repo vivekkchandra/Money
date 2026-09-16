@@ -1,8 +1,51 @@
 # Commercial deployment
 
+## Personal R&D deployment target (2026-09-16)
+
+This is separate from commercial launch. Use the existing owner-specified Railway
+**incredible-flexibility / production / Money + Postgres**, not a new project.
+This session cannot inspect/mutate it because connector access is administrator-disabled.
+No actual Railway URL, PostgreSQL migration or healthy worker is claimed.
+
+Checked-in configuration: `deploy/railway/api.toml` and `deploy/railway/worker.toml`,
+selected as per-service config paths with the repository root build context.
+They reuse the existing default non-root locked Docker image; no native research
+extra is installed or falsely qualified. The worker has no public domain or HTTP
+health path. Use `python -m money.worker --healthcheck` and the API's worker
+heartbeat status for a read-only worker probe. The default image's API Docker
+HEALTHCHECK is not a worker probe; Railway worker monitoring must use the heartbeat.
+These files follow the [official config contract](https://docs.railway.com/config-as-code/reference).
+
+Before enabling the API: back up existing state, run the API release migration
+`alembic upgrade head` (now0008), start one private worker using the matching
+`live_rnd` hosted settings, then verify `/health/ready`. Revision0008 is additive:
+old jobs default to `standard`, new personal jobs use `live_rnd`; claims are isolated.
+Do not downgrade to a pre0008 worker: old worker code lacks the kind filter.
+Rollback by stopping personal submissions/workers and retaining the schema/data.
+
+Only after actual readiness set Netlify's genuine HTTPS `RESEARCH_API_URL` and
+matching service token. Existing `neon-griffin-08e616` and SSR settings are unchanged.
+See ENVIRONMENT.md for the hosted personal/private login option and official sources.
+
+Acceptance automation: `MONEY_ENV=development MONEY_RESEARCH_MODE=live_rnd uv run
+python scripts/check_live_rnd.py --providers-only` performs real bounded provider
+requests, never test fixtures. `--run-jobs --workspace rnd-acceptance-<unique-suffix>`
+instead uses the configured migrated database and supervised worker, keeps its
+diagnostic results, and does not claim unrelated workspace jobs. It distinguishes
+an evidence-only study from a complete native research run. Missing data is failure,
+not demo substitution. This is not browser/hosted acceptance.
+
 **Commercial launch blocked.** Local implementation and synthetic tests do not
-qualify a paid research product. No live deployment, real email, Stripe payment,
-PostgreSQL restore or provider licence is claimed here.
+qualify a paid research product. GitHub run 35146196319 verified public root HTTP
+200/routes/assets/security after commercial commit 6846bdc; it did not establish
+the deployed SHA, real email, payment, PostgreSQL restore or live research.
+
+The owner selected **Railway** as the compute/database target. The current session
+cannot inspect it: connector discovery is administrator-disabled and CLI status
+and identity checks fail API DNS. This is not a verified deployment or database;
+no remote Railway changes have been made. Reuse the existing approved Money
+project once accessible, retaining the separate processes and migration ordering
+below. Netlify remains the existing web project.
 
 ## Release ordering
 
@@ -32,7 +75,7 @@ PostgreSQL restore or provider licence is claimed here.
    HTTPS API URL and matching service token. Root `netlify.toml` keeps base
    `apps/web`, build `npm run build`, publish `.next`, explicit Next.js Runtime
    and a post-build SSR artifact guard. Do not initialize another project.
-6. Run `npm run check:deployment --prefix apps/web -- https://neon-griffin-08e616.netlify.app --production`.
+6. Run `npm run check:deployment --prefix apps/web -- https://neon-griffin-08e616.netlify.app --production --expected-sha <full-release-SHA>`.
    Inspect actual Netlify logs, deploy SHA, SSR function bundle and production URL.
 
 `docker compose --profile commercial up --build` is the local topology. It is not

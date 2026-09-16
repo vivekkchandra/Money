@@ -1,6 +1,6 @@
 import "server-only";
 import { json, readLimitedJson, sameOrigin } from "@/lib/auth";
-import { productionEnvironment, serviceEndpoint } from "@/lib/service";
+import { secureDeployment, serviceEndpoint } from "@/lib/service";
 export const ACCOUNT_COOKIE = "money_account";
 export const WORKSPACE_COOKIE = "money_workspace";
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -26,7 +26,7 @@ export function accountHeaders(request: Request): Record<string, string> {
 }
 
 function cookie(name: string, value: string, request: Request, maxAge: number): string {
-  return `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${productionEnvironment() || new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureDeployment() || new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
 
 export async function accountFetch(request: Request, path: string, body?: unknown): Promise<Response> {

@@ -1,0 +1,11 @@
+# Select only for the private worker in incredible-flexibility.
+# Default image contains public-data adapters, not unqualified native runtimes.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m money.worker"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+drainingSeconds = "30"

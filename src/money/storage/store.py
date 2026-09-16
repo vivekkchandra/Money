@@ -17,7 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
-from sqlalchemy import Connection, Engine, case, create_engine, event, func, or_, select, text
+from sqlalchemy import Connection, Engine, case, create_engine, event, func, or_, select, text, true
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
@@ -243,12 +243,18 @@ class ResearchStore:
         idempotency_key: str | None = None,
         max_attempts: int = 3,
         admission: Callable[[Connection, str], None] | None = None,
+        research_kind: str = "standard",
     ) -> dict[str, Any]:
+        if research_kind not in {"standard", "live_rnd"}:
+            raise ValueError("Unknown research kind")
         mandate_data = ResearchMandate.model_validate(payload(mandate)).model_dump(mode="json")
         stamp = now_utc()
         job_id, mandate_id = str(uuid4()), str(uuid4())
         workspace_id = self.workspace_id or "private"
-        request_hash = digest({"ticker": ticker, "mandate": mandate_data})
+        request_data = {"ticker": ticker, "mandate": mandate_data}
+        if research_kind != "standard":
+            request_data["research_kind"] = research_kind
+        request_hash = digest(request_data)
         with self.transaction() as connection:
             # Singleton row serializes capacity and rate checks across API replicas.
             connection.execute(select(db.queue_control).with_for_update()).all()
@@ -302,6 +308,7 @@ class ResearchStore:
                 db.jobs.insert().values(
                     id=job_id,
                     ticker=ticker,
+                    research_kind=research_kind,
                     mandate_id=mandate_id,
                     workspace_id=workspace_id,
                     idempotency_key=idempotency_key,
@@ -409,8 +416,11 @@ class ResearchStore:
             return dict(result)
 
     def claim_job(
-        self, worker_id: str, lease_seconds: int = 120, job_timeout_seconds: int = 1800
+        self, worker_id: str, lease_seconds: int = 120, job_timeout_seconds: int = 1800,
+        *, research_kind: str = "standard", job_id: str | None = None,
     ) -> Claim | None:
+        if research_kind not in {"standard", "live_rnd"}:
+            raise ValueError("Unknown research kind")
         if lease_seconds < 10:
             raise ValueError("Worker leases must last at least ten seconds")
         with self.transaction() as connection:
@@ -420,6 +430,9 @@ class ResearchStore:
                 connection.execute(
                     select(db.jobs)
                     .where(db.jobs.c.status == "QUEUED")
+                    .where(db.jobs.c.research_kind == research_kind)
+                    .where(self._workspace_filter())
+                    .where(db.jobs.c.id == job_id if job_id is not None else true())
                     .where(or_(db.jobs.c.available_at.is_(None), db.jobs.c.available_at <= stamp))
                     .order_by(db.jobs.c.created_at)
                     .with_for_update(skip_locked=True)
@@ -439,7 +452,9 @@ class ResearchStore:
             if admitted_seconds is not None:
                 job_timeout_seconds = min(job_timeout_seconds, admitted_seconds)
             token = str(uuid4())
-            stage = row["resume_stage"] or "ELIGIBILITY_CHECK"
+            stage = row["resume_stage"] or (
+                "SNAPSHOT_BUILD" if research_kind == "live_rnd" else "ELIGIBILITY_CHECK"
+            )
             connection.execute(
                 db.jobs.update()
                 .where(db.jobs.c.id == job_id)
@@ -617,6 +632,8 @@ class ResearchStore:
         snapshot_id = str(data["snapshot_id"])
         with self.transaction() as connection:
             row = self._owned_job(connection, job_id)
+            if row["research_kind"] != "standard":
+                raise StoreError("Personal R&D requires its own snapshot contract")
             if row["status"] != "SNAPSHOT_BUILD" or row["snapshot_id"] is not None:
                 raise StoreError("A snapshot can only be frozen once during snapshot building")
             if data["ticker"] != row["ticker"]:
@@ -896,6 +913,8 @@ class ResearchStore:
             data = validated_packet.model_dump(mode="json")
         with self.transaction() as connection:
             row = self._owned_job(connection, job_id)
+            if row["research_kind"] != "standard":
+                raise StoreError("Personal R&D cannot publish commercial decision packets")
             if status == "COMPLETE" and row["locked_at"] is None:
                 raise BarrierNotLocked("Completed research requires locked reports")
             if status == "COMPLETE":
