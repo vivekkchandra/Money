@@ -1,3 +1,2 @@
-ai-hedge-fund            https://github.com/virattt/ai-hedge-fund.git                                fc1bf250ead209ae5f02c39c3d0062c4bb554505
 ixbrl-parse              https://github.com/cybermaggedon/ixbrl-parse.git                            05d618550d2668329a62ef1b5395a9b7b0d22b15
 openbb                   https://github.com/OpenBB-finance/OpenBB.git                                3e071fcc2cd9f891cac6040ae60296dba76dab46

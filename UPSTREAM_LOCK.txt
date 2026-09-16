@@ -1,3 +1,4 @@
+ai-hedge-fund            https://github.com/virattt/ai-hedge-fund.git                                fc1bf250ead209ae5f02c39c3d0062c4bb554505
 crewai                   https://github.com/crewAIInc/crewAI.git                                     2c24b95eae2b0270b2513f9e24c3f4e536a22f0d
 crewai-skills            https://github.com/crewAIInc/skills.git                                     a8d7ea68c2c50da49df8d7f18e407bec3931f884
 graphify                 https://github.com/safishamsi/graphify.git                                  c7ec1082083e3e876443f643ecf86ebcfae177c2
