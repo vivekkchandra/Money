@@ -7,9 +7,10 @@ date, ex-date or trading date is never promoted to a publication timestamp.
 from __future__ import annotations
 
 import base64
+import json
 import re
 from datetime import UTC, datetime, time, timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit
 
 from money.data.identifiers import InstrumentIdentifiers
@@ -19,7 +20,7 @@ from money.schemas.contracts import DocumentFact, EvidenceRecord, PriceBar, cont
 
 
 class Trading212MetadataProvider:
-    """Only the documented instrument metadata GET, never account APIs.
+    """Only the documented instrument/exchange metadata GETs, never account APIs.
 
     The official schema does not establish ISA/current purchase eligibility.
     Callers MUST retain separate verified ISA eligibility evidence.
@@ -34,8 +35,55 @@ class Trading212MetadataProvider:
         # A complete current broker catalogue is larger than a single-symbol
         # response; retain a hard bound without truncating to a seed list.
         self._fetcher = fetcher or SafeFetcher(
-            frozenset({"live.trading212.com"}), maximum_bytes=20_000_000
+            frozenset({"live.trading212.com"}), maximum_bytes=20_000_000,
+            maximum_redirects=0,
         )
+
+    def metadata_response(
+        self, kind: Literal["instruments", "exchanges"]
+    ) -> tuple[bytes, tuple[Any, ...]]:
+        """Return actual response bytes and rows for a hashable, bulk audit trail.
+
+        A bad row remains visible to the bulk normalizer, which quarantines it
+        without dropping other instruments. The top-level response must still
+        be a bounded JSON array. No caller-supplied account/order path is allowed.
+        """
+        if kind not in {"instruments", "exchanges"}:
+            raise ValueError("TRADING212_METADATA_RESOURCE_DENIED")
+        response = self._fetcher.get(
+            f"https://live.trading212.com/api/v0/equity/metadata/{kind}",
+            headers={"Authorization": self._authorization},
+        )
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("ELIGIBILITY_METADATA_INVALID")
+                result[key] = value
+            return result
+
+        def invalid_constant(value: str) -> None:
+            raise ValueError("ELIGIBILITY_METADATA_INVALID")
+
+        try:
+            rows = json.loads(
+                response.content,
+                object_pairs_hook=unique_object,
+                parse_constant=invalid_constant,
+            )
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError("ELIGIBILITY_METADATA_INVALID") from error
+        if not isinstance(rows, list) or len(rows) > 100000:
+            raise ValueError("ELIGIBILITY_METADATA_INVALID")
+        return response.content, tuple(rows)
+
+    def exchanges(self) -> tuple[dict[str, Any], ...]:
+        """Retrieve exchange metadata without inferring venue country or MIC."""
+        _, rows = self.metadata_response("exchanges")
+        if any(not isinstance(row, dict) for row in rows):
+            raise ValueError("EXCHANGE_METADATA_INVALID")
+        return tuple(rows)
 
     def instruments(self) -> tuple[dict[str, Any], ...]:
         rows = self._fetcher.json(
@@ -52,6 +100,11 @@ class Trading212MetadataProvider:
             "isin",
             "currencyCode",
             "workingScheduleId",
+            "addedOn",
+            "maxOpenQuantity",
+            "extendedHours",
+            "exchangeId",
+            "exchange",
         }
         if any(
             not isinstance(row, dict)
@@ -204,7 +257,10 @@ class EODHDProvider:
         ):
             raise ValueError("PROVIDER_COVERAGE_MISSING")
         symbol = identifiers.symbol_for("eodhd", retrieved_at)
-        if not re.fullmatch(r"[A-Z0-9_-]{1,25}\.LSE", symbol):
+        # The symbol comes from an explicit verified provider mapping. A suffix
+        # is not a geographic authority: UK venue identity is established by
+        # exchange evidence, including venues other than London's main market.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,25}\.[A-Za-z0-9_-]{1,20}", symbol):
             raise ValueError("IDENTIFIER_MAPPING_INVALID")
         start = max(retrieved_at - timedelta(days=365), self.qualification.earliest_observation)
         if start >= retrieved_at:

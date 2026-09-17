@@ -192,6 +192,11 @@ class ResearchSnapshot(Contract):
     instrument: InstrumentMetadata
     evidence: tuple[EvidenceRecord, ...]
     historical: bool = False
+    # Live bulk discovery binds each candidate to the complete pre-screen
+    # universe. Omit absent bindings to retain existing archived hash contracts.
+    universe_hash: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{64}$", exclude_if=lambda value: value is None
+    )
     hash: str = ""
 
     @model_validator(mode="after")

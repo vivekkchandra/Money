@@ -92,6 +92,15 @@ first-pass, review and release gates remain mandatory.
 
 ## Verification and deployment
 
+For current account-bound discovery, use the [full live ISA universe finalizer](docs/live-universe.md).
+It admits every current live Trading 212 `STOCK` quoted in `GBX` to the candidate
+pipeline, then resumes exact provider joins. Exchange/MIC/country metadata is
+optional enrichment, never an admission requirement; GBP is excluded by this
+bulk filter. Only the independently qualified, reviewed and fresh subset enters
+research. No individual ticker is preselected; the complete qualified membership
+is frozen before bounded research screening. ISA/current-buy provenance, ethics
+and all downstream production gates remain unchanged.
+
 For live production admission, use the [resumable qualification runner](docs/LIVE_QUALIFICATION_RUNNER.md):
 
 ```sh

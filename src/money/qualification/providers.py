@@ -288,6 +288,8 @@ def _verified_instrument(
     eligible: EligibilityReview,
     path: str,
     refs: set[tuple[str, str]],
+    *,
+    foreign_issuer_evidence: tuple[str, str] | None = None,
 ) -> VerifiedInstrument | None:
     value = ctx.read_json(path)
     if not isinstance(value, dict) or value.get("review", {}).get("status") != "REVIEWED":
@@ -301,6 +303,8 @@ def _verified_instrument(
         "ethical_proof_hash",
         "corporate_action_coverage_hash",
         "archived_market_proof_hash",
+        "issuer_jurisdiction",
+        "issuer_jurisdiction_proof_hash",
     }
     if controlled.intersection(review.instrument_evidence):
         raise ValueError("GENERATED_PROOF_OVERRIDE_FORBIDDEN")
@@ -320,12 +324,19 @@ def _verified_instrument(
             **review.instrument_evidence,
             "corporate_action_coverage_hash": corporate[0],
             "archived_market_proof_hash": archived[0] if archived else None,
+            "issuer_jurisdiction": foreign_issuer_evidence[0] if foreign_issuer_evidence else None,
+            "issuer_jurisdiction_proof_hash": foreign_issuer_evidence[1] if foreign_issuer_evidence else None,
         }
     )
     instrument.identifiers.symbol_for("eodhd", ctx.now)
     costs = instrument.cost_applicability
     if (
-        not instrument.identifiers.companies_house_number
+        (not instrument.identifiers.companies_house_number and not (
+            foreign_issuer_evidence and foreign_issuer_evidence[0] != "GB"
+            and any(record.payload.kind == "filing" for record in instrument.supplemental_evidence)
+            and any(isinstance(record.payload, FinancialFact) and record.payload.metric != "spread_bps"
+                    for record in instrument.supplemental_evidence)
+        ))
         or not instrument.corporate_actions_complete
         or not instrument.spread_evidence.available_at(ctx.now)
         or costs.sdrt == "UNKNOWN"
@@ -972,6 +983,10 @@ def _filter_source_coverage(ctx: QualificationContext, result: dict[str, Any]) -
 
 def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     """Observe current metadata, resume reviews, and probe only reviewed mappings."""
+    if ctx.read_json("state/bulk-universe-mode.json") is not None:
+        from money.qualification.universe import run_bulk_provider_stages
+
+        return run_bulk_provider_stages(ctx)
     refs: set[tuple[str, str]] = set()
     result: dict[str, Any] = {
         "provider_qualifications": [],

@@ -77,11 +77,22 @@ class ResearchRuntime:
     invocation_budgets: tuple[tuple[str, str, str, int], ...] = ()
     cio_runtime: Callable[[], Contract | None] | None = None
     provenance: Contract | None = None
+    universe_context: Callable[[ResearchSnapshot], Contract] | None = None
     discover: Callable[[ResearchMandate, ResearchSnapshot], Candidate] | None = None
-    cross_examine: Callable[
-        [str, ResearchMandate, ResearchSnapshot, tuple[FirmReport, ...],
-         LeanValidationReport, CIOAuditReport], CrossExaminationPacket
-    ] | None = None
+    cross_examine: (
+        Callable[
+            [
+                str,
+                ResearchMandate,
+                ResearchSnapshot,
+                tuple[FirmReport, ...],
+                LeanValidationReport,
+                CIOAuditReport,
+            ],
+            CrossExaminationPacket,
+        ]
+        | None
+    ) = None
     signal_builder: (
         Callable[
             [
@@ -123,6 +134,7 @@ def run_first_pass(
                 ResearchMandate.model_validate_json(mandate.model_dump_json()),
                 ResearchSnapshot.model_validate_json(snapshot.model_dump_json()),
             )
+
         reservation = (reservations or {}).get(getattr(firm, "firm", ""))
         if budget and reservation:
             return CallMeter(store).invoke_reserved(reservation, operation)
@@ -210,12 +222,37 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         if checkpoint["stage"] in {"ELIGIBILITY_CHECK", "DISCOVERY"}:
             store.update_stage(job_id, JobStatus.DISCOVERY)
         store.update_stage(job_id, JobStatus.SNAPSHOT_BUILD)
-        snapshot = runtime.snapshot_builder(instrument)
+        if "universe_context" in artifacts:
+            from money.scanner.universe import UniverseResearchContext, bind_universe_snapshot
+
+            context = UniverseResearchContext.model_validate(artifacts["universe_context"])
+            source = next(item for item in context.snapshots if item.ticker == instrument.ticker)
+            snapshot = bind_universe_snapshot(source, context.universe)
+        else:
+            snapshot = runtime.snapshot_builder(instrument)
+            if runtime.universe_context is not None:
+                context_artifact = runtime.universe_context(snapshot)
+                store.save_artifact(job_id, "universe_context", context_artifact)
+                artifacts["universe_context"] = context_artifact.model_dump(mode="json")
         store.save_snapshot(job_id, snapshot)
     else:
         snapshot = ResearchSnapshot.model_validate(checkpoint["snapshot"])
     if snapshot.ticker != job["ticker"]:
         raise ValueError("snapshot ticker mismatch")
+    if snapshot.universe_hash is not None or runtime.universe_context is not None:
+        from money.scanner.universe import UniverseResearchContext, bind_universe_snapshot
+
+        context = UniverseResearchContext.model_validate(artifacts.get("universe_context"))
+        frozen_source = next(
+            (item for item in context.snapshots if item.ticker == snapshot.ticker), None
+        )
+        if (
+            frozen_source is None
+            or snapshot.ticker not in context.screen.selected_tickers
+            or snapshot != bind_universe_snapshot(frozen_source, context.universe)
+            or not context.universe.observed_at <= utc_now() < context.universe.valid_until
+        ):
+            raise ValueError("RESEARCH_UNIVERSE_CONTEXT_MISMATCH")
     failures = snapshot_failures(snapshot, utc_now())
     if failures:
         store.complete_job(
@@ -238,10 +275,14 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         discovery = runtime.discover
         candidate = (
             CallMeter(store).invoke(
-                job_id, component="discovery", provider="money", model=None,
+                job_id,
+                component="discovery",
+                provider="money",
+                model=None,
                 operation=lambda: discovery(mandate, snapshot),
             )
-            if runtime.mode == "live" else discovery(mandate, snapshot)
+            if runtime.mode == "live"
+            else discovery(mandate, snapshot)
         )
     else:
         candidate = discover_snapshot(snapshot)
@@ -320,10 +361,14 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         store.update_stage(job_id, JobStatus.LEAN_VALIDATION)
         lean = (
             CallMeter(store).invoke(
-                job_id, component="lean", provider="lean", model=None,
+                job_id,
+                component="lean",
+                provider="lean",
+                model=None,
                 operation=lambda: runtime.validate(snapshot, reports),
             )
-            if runtime.mode == "live" else runtime.validate(snapshot, reports)
+            if runtime.mode == "live"
+            else runtime.validate(snapshot, reports)
         )
         store.save_artifact(job_id, "lean", lean)
     if "audit" in artifacts:
@@ -349,12 +394,14 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
                     prompt_version="money-native-v1",
                 )
                 reservations[agent] = reservation
+
         def audit_operation() -> CIOAuditReport:
             return runtime.audit(snapshot, locked_reports(job_id, store), lean)
 
         audit = (
             CallMeter(store).invoke_reserved(reservations["crewai"], audit_operation)
-            if budget and "crewai" in reservations else audit_operation()
+            if budget and "crewai" in reservations
+            else audit_operation()
         )
         red_team = runtime.red_team(snapshot, reports)
         cio_runtime = runtime.cio_runtime() if runtime.cio_runtime else None
@@ -373,8 +420,8 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         store.update_stage(job_id, JobStatus.CROSS_EXAMINATION)
         examination = (
             runtime.cross_examine(job_id, mandate, snapshot, reports, lean, audit)
-            if runtime.cross_examine else
-            run_cross_examination(snapshot, reports, lean, audit, first_pass_locked=True)
+            if runtime.cross_examine
+            else run_cross_examination(snapshot, reports, lean, audit, first_pass_locked=True)
         )
         store.save_artifact(job_id, "cross_examination", examination)
     store.update_stage(job_id, JobStatus.CONSENSUS)

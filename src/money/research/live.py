@@ -7,6 +7,7 @@ import json
 import os
 import stat
 from contextlib import ExitStack
+from datetime import datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
@@ -15,6 +16,7 @@ from uuid import uuid4
 
 from pydantic import Field, PrivateAttr, TypeAdapter, model_validator
 
+from money.adapters.eligibility import eligibility_failures
 from money.adapters.native import NativeRunSettings
 from money.adapters.native_process import BoundedNativeRunner, NativeProcessPolicy
 from money.adapters.native_qlib import QlibNativeRunner
@@ -93,9 +95,13 @@ class VerifiedInstrument(Contract):
     archived_market_evidence: tuple[EvidenceRecord, ...] = Field(default=(), max_length=4000)
     archived_market_proof_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     filing_documents: tuple[FinancialCurrencyProof, ...] = Field(default=(), max_length=4)
+    issuer_jurisdiction: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    issuer_jurisdiction_proof_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
     def reviewed_filing_identity(self) -> VerifiedInstrument:
+        if (self.issuer_jurisdiction is None) != (self.issuer_jurisdiction_proof_hash is None):
+            raise ValueError("ISSUER_JURISDICTION_PROOF_REQUIRED")
         filings = [proof.filing_id for proof in self.filing_documents]
         documents = [proof.document_content_hash for proof in self.filing_documents]
         if len(filings) != len(set(filings)) or len(documents) != len(set(documents)):
@@ -154,6 +160,13 @@ class LiveManifest(Contract):
     # Both catalogue bytes and every per-instrument proof remain hash-pinned.
     instrument_catalog: tuple[str, str] | None = None
     _catalog_instruments: tuple[VerifiedInstrument, ...] | None = PrivateAttr(default=None)
+    # Eligibility freezes the full qualified universe; expensive research may
+    # have complete supplemental inputs for only a subset. Catalogue chunks
+    # remain individually bounded and hash-pinned like every other proof.
+    eligibility_catalogs: tuple[tuple[str, str], ...] = Field(default=(), max_length=512)
+    _catalog_eligibility: tuple[EligibilityReview, ...] | None = PrivateAttr(default=None)
+    universe_account_binding_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    universe_provenance: tuple[str, str] | None = None
     provider_qualifications: tuple[ProviderQualification, ...] = Field(min_length=1)
     market_credential_environment_variable: str = "EODHD_API_KEY"
     filings_credential_environment_variable: str = "COMPANIES_HOUSE_API_KEY"
@@ -183,6 +196,22 @@ class LiveManifest(Contract):
             raise ValueError("LIVE_INSTRUMENT_CATALOG_NOT_LOADED")
         return (*self.instruments, *(self._catalog_instruments or ()))
 
+    @property
+    def eligibility_reviews(self) -> tuple[EligibilityReview, ...]:
+        """Full hash-verified universe, with legacy manifest compatibility."""
+        if self.eligibility_catalogs:
+            if self._catalog_eligibility is None:
+                raise ValueError("LIVE_ELIGIBILITY_CATALOG_NOT_LOADED")
+            return self._catalog_eligibility
+        return tuple(
+            EligibilityReview(
+                metadata=item.metadata, identifiers=item.identifiers,
+                eligibility_proof_hash=item.eligibility_proof_hash,
+                ethical_proof_hash=item.ethical_proof_hash,
+            )
+            for item in self.reviewed_instruments
+        )
+
     def validate_instrument_coverage(self, instruments: tuple[VerifiedInstrument, ...]) -> None:
         tickers = [item.metadata.ticker for item in instruments]
         broker_ids = [item.identifiers.trading212_id for item in instruments]
@@ -203,6 +232,14 @@ class LiveManifest(Contract):
             selection.require_hosted()
         if not self.instruments and self.instrument_catalog is None:
             raise ValueError("LIVE_INSTRUMENT_CATALOG_REQUIRED")
+        if len(self.eligibility_catalogs) != len(set(self.eligibility_catalogs)):
+            raise ValueError("LIVE_ELIGIBILITY_CATALOG_DUPLICATE")
+        if self.eligibility_catalogs and (
+            self.universe_account_binding_sha256 is None or self.universe_provenance is None
+        ):
+            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_REQUIRED")
+        if (self.universe_account_binding_sha256 is None) != (self.universe_provenance is None):
+            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_REQUIRED")
         if self.lean_parameters.scenario_policy != self.signal_policy:
             raise ValueError("LEAN_SCENARIO_POLICY_MISMATCH")
         validate_invocation_budgets(
@@ -292,6 +329,8 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
         raise ValueError("LIVE_MANIFEST_HASH_MISMATCH")
     manifest = LiveManifest.model_validate_json(raw)
     verified = set()
+    eligibility_parts: dict[tuple[str, str], tuple[EligibilityReview, ...]] = {}
+    universe_provenance: dict[str, Any] | None = None
     for digest, relative in manifest.qualification_artifacts:
         artifact = read_qualification_bytes(root, relative, 2_000_000)
         if hashlib.sha256(artifact).hexdigest() != digest:
@@ -301,10 +340,68 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
             manifest._catalog_instruments = TypeAdapter(
                 tuple[VerifiedInstrument, ...]
             ).validate_json(artifact)
+        if (digest, relative) in manifest.eligibility_catalogs:
+            part = TypeAdapter(tuple[EligibilityReview, ...]).validate_json(artifact)
+            if not part:
+                raise ValueError("LIVE_ELIGIBILITY_CATALOG_EMPTY")
+            eligibility_parts[(digest, relative)] = part
+        if manifest.universe_provenance == (digest, relative):
+            provenance = json.loads(artifact)
+            if not isinstance(provenance, dict):
+                raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID")
+            universe_provenance = provenance
     instruments = manifest.reviewed_instruments
     if not instruments:
         raise ValueError("LIVE_INSTRUMENT_CATALOG_REQUIRED")
     manifest.validate_instrument_coverage(instruments)
+    if manifest.universe_provenance is not None:
+        if universe_provenance is None:
+            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_NOT_LOADED")
+        try:
+            observed = datetime.fromisoformat(universe_provenance["retrieved_at"])
+            now = utc_now()
+            if (universe_provenance["credential_binding_sha256"] != manifest.universe_account_binding_sha256
+                    or universe_provenance["account_context"] != "STOCKS_AND_SHARES_ISA"
+                    or universe_provenance["retrieval_environment"] != "live"
+                    or observed.utcoffset() is None
+                    or not observed <= now < observed + timedelta(hours=24)
+                    or universe_provenance["account_review_hash"] not in verified):
+                raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID")
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID") from error
+    if manifest.eligibility_catalogs:
+        if set(eligibility_parts) != set(manifest.eligibility_catalogs):
+            raise ValueError("LIVE_ELIGIBILITY_CATALOG_NOT_LOADED")
+        reviews = tuple(
+            review for reference in manifest.eligibility_catalogs
+            for review in eligibility_parts[reference]
+        )
+        if not reviews or len(reviews) > 100000:
+            raise ValueError("LIVE_ELIGIBILITY_CATALOG_SIZE_INVALID")
+        tickers = [review.metadata.ticker for review in reviews]
+        broker_ids = [review.identifiers.trading212_id for review in reviews]
+        economic_ids = [
+            (review.identifiers.isin, review.identifiers.exchange, review.identifiers.quote_currency)
+            for review in reviews
+        ]
+        if (len(tickers) != len(set(tickers)) or len(broker_ids) != len(set(broker_ids))
+                or len(economic_ids) != len(set(economic_ids))):
+            raise ValueError("LIVE_ELIGIBILITY_CATALOG_DUPLICATE_IDENTITY")
+        now = utc_now()
+        for review in reviews:
+            review.identifiers.require_current(now)
+            if eligibility_failures(review.metadata, ResearchMandate(), now):
+                raise ValueError("LIVE_ELIGIBILITY_CATALOG_NOT_CURRENT")
+        index = {review.metadata.ticker: review for review in reviews}
+        for item in instruments:
+            expected = EligibilityReview(
+                metadata=item.metadata, identifiers=item.identifiers,
+                eligibility_proof_hash=item.eligibility_proof_hash,
+                ethical_proof_hash=item.ethical_proof_hash,
+            )
+            if index.get(item.metadata.ticker) != expected:
+                raise ValueError("LIVE_ELIGIBILITY_CATALOG_INSTRUMENT_MISMATCH")
+        manifest._catalog_eligibility = reviews
     required = {
         manifest.native_egress_verification_hash,
         manifest.lean_qualification.historical_eligibility_hash,
@@ -330,10 +427,18 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
             if item.archived_market_proof_hash is None:
                 raise ValueError("ARCHIVED_MARKET_PROOF_MISSING")
             required.add(item.archived_market_proof_hash)
+        if item.issuer_jurisdiction is not None:
+            if (item.issuer_jurisdiction == "GB"
+                    or item.identifiers.companies_house_number is not None
+                    or item.issuer_jurisdiction_proof_hash is None):
+                raise ValueError("LIVE_FOREIGN_ISSUER_JURISDICTION_INVALID")
+            required.add(item.issuer_jurisdiction_proof_hash)
         required.update(proof.evidence_hash for proof in item.filing_documents)
     for provider in manifest.provider_qualifications:
         if provider.qualification_report_hash:
             required.add(provider.qualification_report_hash)
+    for review in manifest.eligibility_reviews:
+        required.update((review.eligibility_proof_hash, review.ethical_proof_hash))
     if not required <= verified:
         raise ValueError("QUALIFICATION_ARTIFACT_MISSING")
     return manifest
@@ -425,8 +530,11 @@ class LiveSnapshotBuilder:
 
     def __call__(self, instrument: InstrumentMetadata) -> ResearchSnapshot:
         item = next(
-            i for i in self.manifest.reviewed_instruments if i.metadata.ticker == instrument.ticker
+            (i for i in self.manifest.reviewed_instruments if i.metadata.ticker == instrument.ticker),
+            None,
         )
+        if item is None:
+            raise ValueError("RESEARCH_INSTRUMENT_EVIDENCE_REQUIRED")
         now, snapshot_id = utc_now(), str(uuid4())
         qualifications = {q.provider: q for q in self.manifest.provider_qualifications}
         market = EODHDProvider(
@@ -445,15 +553,19 @@ class LiveSnapshotBuilder:
             records = merge_archived_market(
                 records, item.archived_market_evidence, qualifications, snapshot_id, instrument
             )
-        filing = CompaniesHouseProvider(
-            os.environ.get(self.manifest.filings_credential_environment_variable, "")
-        )
-        qualifications["companies-house"].require("filing", now)
-        records.extend(
-            self.circuit.call(
-                "companies-house:filing", lambda: filing.filings(item.identifiers, snapshot_id, now)
+        if item.identifiers.companies_house_number:
+            filing = CompaniesHouseProvider(
+                os.environ.get(self.manifest.filings_credential_environment_variable, "")
             )
-        )
+            qualifications["companies-house"].require("filing", now)
+            records.extend(
+                self.circuit.call(
+                    "companies-house:filing", lambda: filing.filings(item.identifiers, snapshot_id, now)
+                )
+            )
+        elif (not item.issuer_jurisdiction or item.issuer_jurisdiction == "GB"
+                or not item.issuer_jurisdiction_proof_hash):
+            raise ValueError("ISSUER_JURISDICTION_PROOF_REQUIRED")
         if item.filing_documents:
             document_provider = CompaniesHouseFilingDocuments(
                 os.environ.get(self.manifest.filings_credential_environment_variable, ""),
@@ -510,6 +622,8 @@ class LiveSnapshotBuilder:
                     evidence.model_dump() | {"snapshot_id": snapshot_id, "hash": ""}
                 )
             )
+        if not any(r.payload.kind == "filing" for r in records):
+            raise ValueError("CRITICAL_FILINGS_MISSING")
         if not any(
             r.payload.kind == "financial" and r.payload.metric != "spread_bps" for r in records
         ):
@@ -570,6 +684,7 @@ class DiscoveryQuantFirm:
 def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> ResearchRuntime:
     from money.flows.research import ResearchRuntime
     from money.research.correspondence import LiveCorrespondence
+    from money.scanner.universe import UniverseSnapshotBuilder
 
     model = ModelRegistry(store).load_active(
         manifest.qlib_registry_id, manifest.qlib_artifact_hash, utc_now()
@@ -681,24 +796,39 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
             snapshot, quant=quant.research(mandate, snapshot), policy=manifest.discovery_policy
         )
 
+    def bound_reviews() -> tuple[EligibilityReview, ...]:
+        if manifest.eligibility_catalogs:
+            from money.qualification.universe import credential_binding
+
+            if credential_binding(os.environ) != manifest.universe_account_binding_sha256:
+                raise ValueError("LIVE_ISA_ACCOUNT_BINDING_MISMATCH")
+        return manifest.eligibility_reviews
+
+    # Check before even issuing metadata requests with a possibly different key.
+    bound_reviews()
+    eligibility = Trading212LiveEligibilityService(
+        Trading212MetadataProvider(
+            os.environ.get("TRADING212_API_KEY", ""),
+            os.environ.get("TRADING212_API_SECRET", ""),
+        ),
+        bound_reviews,
+    )
+
+    def validate_sources() -> None:
+        checked_at = utc_now()
+        for qualification in manifest.provider_qualifications:
+            for dataset in qualification.datasets:
+                qualification.require(dataset, checked_at)
+
+    snapshots = UniverseSnapshotBuilder(
+        eligibility.get_isa_universe, bound_reviews,
+        LiveSnapshotBuilder(manifest, store), validate_sources=validate_sources,
+    )
     return ResearchRuntime(
         mode="live",
-        eligibility=Trading212LiveEligibilityService(
-            Trading212MetadataProvider(
-                os.environ.get("TRADING212_API_KEY", ""),
-                os.environ.get("TRADING212_API_SECRET", ""),
-            ),
-            lambda: tuple(
-                EligibilityReview(
-                    metadata=item.metadata,
-                    identifiers=item.identifiers,
-                    eligibility_proof_hash=item.eligibility_proof_hash,
-                    ethical_proof_hash=item.ethical_proof_hash,
-                )
-                for item in manifest.reviewed_instruments
-            ),
-        ),
-        snapshot_builder=LiveSnapshotBuilder(manifest, store),
+        eligibility=eligibility,
+        snapshot_builder=snapshots,
+        universe_context=snapshots.context_for,
         firms=(trading, hedge, quant),
         validate=validator.validate,
         audit=cio.audit,

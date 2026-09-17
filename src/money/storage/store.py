@@ -40,6 +40,25 @@ from money.schemas.contracts import (
 from money.storage import models as db
 
 FIRST_PASS_FIRMS = frozenset({"tradingagents", "ai_hedge_fund", "qlib"})
+
+
+def _verify_universe_context(snapshot: ResearchSnapshot, raw: Any) -> None:
+    """Recheck complete frozen membership at durable admission/publication boundaries."""
+    if snapshot.universe_hash is None:
+        return
+    from money.scanner.universe import UniverseResearchContext, bind_universe_snapshot
+
+    context = UniverseResearchContext.model_validate(raw)
+    source = next((item for item in context.snapshots if item.ticker == snapshot.ticker), None)
+    if (
+        source is None
+        or snapshot.ticker not in context.screen.selected_tickers
+        or snapshot != bind_universe_snapshot(source, context.universe)
+        or not context.universe.observed_at <= now_utc() < context.universe.valid_until
+    ):
+        raise ValueError("RESEARCH_UNIVERSE_CONTEXT_MISMATCH")
+
+
 STAGES = (
     "QUEUED",
     "ELIGIBILITY_CHECK",
@@ -416,8 +435,13 @@ class ResearchStore:
             return dict(result)
 
     def claim_job(
-        self, worker_id: str, lease_seconds: int = 120, job_timeout_seconds: int = 1800,
-        *, research_kind: str = "standard", job_id: str | None = None,
+        self,
+        worker_id: str,
+        lease_seconds: int = 120,
+        job_timeout_seconds: int = 1800,
+        *,
+        research_kind: str = "standard",
+        job_id: str | None = None,
     ) -> Claim | None:
         if research_kind not in {"standard", "live_rnd"}:
             raise ValueError("Unknown research kind")
@@ -638,6 +662,13 @@ class ResearchStore:
                 raise StoreError("A snapshot can only be frozen once during snapshot building")
             if data["ticker"] != row["ticker"]:
                 raise StoreError("Snapshot ticker differs from the research job")
+            if data.get("universe_hash") is not None:
+                context = connection.scalar(
+                    select(db.artifacts.c.payload).where(
+                        db.artifacts.c.job_id == job_id, db.artifacts.c.kind == "universe_context"
+                    )
+                )
+                _verify_universe_context(ResearchSnapshot.model_validate(data), context)
             connection.execute(
                 db.snapshots.insert().values(
                     id=snapshot_id,
@@ -799,6 +830,7 @@ class ResearchStore:
             "market_quality",
             "compute_budget",
             "source_manifest",
+            "universe_context",
             "cio_runtime",
             "signal_design",
         }:
@@ -806,6 +838,10 @@ class ResearchStore:
         data = payload(value)
         with self.transaction() as connection:
             row = self._owned_job(connection, job_id)
+            if kind == "universe_context" and (
+                row["locked_at"] is not None or row["status"] != "SNAPSHOT_BUILD"
+            ):
+                raise StoreError("Universe context must be frozen before first-pass research")
             if (
                 kind
                 not in {
@@ -815,6 +851,7 @@ class ResearchStore:
                     "market_quality",
                     "compute_budget",
                     "source_manifest",
+                    "universe_context",
                 }
                 and row["locked_at"] is None
             ):
@@ -974,6 +1011,9 @@ class ResearchStore:
 
                 assert validated_packet is not None
                 authoritative_snapshot = ResearchSnapshot.model_validate(frozen)
+                _verify_universe_context(
+                    authoritative_snapshot, stored_artifacts.get("universe_context")
+                )
                 calculated_independence = evidence_independence(
                     authoritative_snapshot, validated_packet.reports
                 )
@@ -1223,13 +1263,20 @@ class ResearchStore:
                 .select_from(db.jobs)
                 .join(db.packets, db.packets.c.job_id == db.jobs.c.id)
                 .join(db.signals, db.signals.c.job_id == db.jobs.c.id)
-                .join(db.artifacts, (db.artifacts.c.job_id == db.jobs.c.id)
-                      & (db.artifacts.c.kind == "signal_design"))
+                .join(
+                    db.artifacts,
+                    (db.artifacts.c.job_id == db.jobs.c.id)
+                    & (db.artifacts.c.kind == "signal_design"),
+                )
                 .outerjoin(invalidations, invalidations.c.job_id == db.jobs.c.id)
-                .where(self._workspace_filter(), db.jobs.c.research_kind == "standard",
-                       db.jobs.c.status == "COMPLETE")
+                .where(
+                    self._workspace_filter(),
+                    db.jobs.c.research_kind == "standard",
+                    db.jobs.c.status == "COMPLETE",
+                )
                 .order_by(db.jobs.c.created_at.desc(), db.jobs.c.id)
-                .offset(offset).limit(limit + 1)
+                .offset(offset)
+                .limit(limit + 1)
             ).mappings()
             return [serialize(row) for row in rows]
 

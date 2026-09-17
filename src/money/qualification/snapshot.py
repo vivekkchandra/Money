@@ -7,11 +7,18 @@ from typing import Any
 from uuid import uuid4
 
 from money.adapters.eligibility import eligibility_failures
+from money.data.live_eligibility import EligibilityReview
 from money.data.qualification import ProviderQualification
 from money.data.quality.market import evaluate_market_quality
+from money.data.security import ProviderFailure
 from money.data.uk.filing_documents import ReviewedStorageHost
 from money.qualification.core import QualificationContext, fingerprint
 from money.research.live import LiveSnapshotBuilder, VerifiedInstrument
+from money.scanner.universe import (
+    bind_universe_snapshot,
+    freeze_qualified_universe,
+    screen_qualified_universe,
+)
 from money.schemas.contracts import Contract, EvidenceRecord, ResearchMandate, ResearchSnapshot
 from money.storage import ResearchStore
 from money.storage.models import queue_control
@@ -70,58 +77,31 @@ def _refreeze(ctx: QualificationContext, previous: ResearchSnapshot) -> Research
     )
 
 
-def run_snapshot_stage(
-    ctx: QualificationContext, provider_output: dict[str, Any]
-) -> dict[str, Any]:
-    """Reuse a fresh frozen snapshot only while all input reviews still match."""
-    fields = provider_output.get("manifest_fields", provider_output)
-    inputs = {
-        "reviewed_instruments": fields.get("instruments", []),
-        "provider_qualifications": fields.get("provider_qualifications", []),
-        "filing_document_storage_hosts": fields.get("filing_document_storage_hosts", []),
-    }
-    if not inputs["reviewed_instruments"] or not inputs["provider_qualifications"]:
-        ctx.block(
-            "SNAPSHOT_REVIEWED_DATA_REQUIRED",
-            "Complete discovered instrument and provider reviews; the runner will then freeze live evidence automatically.",
-        )
-        return {}
-    sources = QualificationSources.model_validate(inputs)
-    current = tuple(
-        item
-        for item in sources.reviewed_instruments
-        if not eligibility_failures(item.metadata, ResearchMandate(), ctx.now)
-    )
-    if not current:
-        ctx.block(
-            "SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED",
-            "Refresh eligibility and identifier reviews for at least one current GBP/GBX stock.",
-        )
-        return {}
-    # Deterministic selection, preferring an instrument with reviewed filings.
-    selected = sorted(
-        current, key=lambda item: (not bool(item.filing_documents), item.metadata.ticker)
-    )[0]
+def _instrument_snapshot(
+    ctx: QualificationContext, sources: QualificationSources, selected: VerifiedInstrument
+) -> ResearchSnapshot:
+    """Resume one genuine data acquisition, never an earlier universe selection."""
     selected.identifiers.require_current(ctx.now)
-    for provider in sources.provider_qualifications:
-        for dataset in provider.datasets:
-            provider.require(dataset, ctx.now)
     study = ctx.read_bytes("reviews/lean-inputs.json") or b""
-    source_key = fingerprint(inputs)
+    source_key = fingerprint(
+        {
+            "instrument": selected.model_dump(mode="json"),
+            "providers": [item.model_dump(mode="json") for item in sources.provider_qualifications],
+            "storage_hosts": [
+                item.model_dump(mode="json") for item in sources.filing_document_storage_hosts
+            ],
+        }
+    )
+    namespace = "snapshot-" + hashlib.sha256(selected.metadata.ticker.encode()).hexdigest()[:24]
     key = fingerprint({"sources": source_key, "lean_review": hashlib.sha256(study).hexdigest()})
-    cached = _cached_snapshot(ctx, ctx.cache("snapshot", key, 3600))
+    cached = _cached_snapshot(ctx, ctx.cache(namespace, key, 3600))
     if cached is not None:
         snapshot = cached
         if snapshot.instrument == selected.metadata and all(
             item.available_at(ctx.now) and item.fresh_until > ctx.now for item in snapshot.evidence
         ):
-            ctx.write_json("outputs/snapshot.json", snapshot.model_dump(mode="json"))
-            return {
-                "complete": True,
-                "snapshot_hash": snapshot.hash,
-                "snapshot_path": "outputs/snapshot.json",
-            }
-    original = _cached_snapshot(ctx, ctx.cache("snapshot-source", source_key, 3600))
+            return snapshot
+    original = _cached_snapshot(ctx, ctx.cache(namespace + "-source", source_key, 3600))
     if original is not None:
         previous = original
         if previous.instrument == selected.metadata and all(
@@ -146,14 +126,9 @@ def run_snapshot_stage(
                         "publication_and_retrieval_times_unchanged": True,
                     }
                 )
-                ctx.write_json("outputs/snapshot.json", value)
-                ctx.checkpoint("snapshot", key, {"snapshot_artifact": reference}, [reference])
+                ctx.checkpoint(namespace, key, {"snapshot_artifact": reference}, [reference])
                 # Do not renew the source checkpoint or its acquisition expiry.
-                return {
-                    "complete": True,
-                    "snapshot_hash": snapshot.hash,
-                    "snapshot_path": "outputs/snapshot.json",
-                }
+                return snapshot
     # Only the circuit-breaker tables exist in this ephemeral in-memory store.
     # It is not a job queue, model registry, production database or qualification.
     store = ResearchStore("sqlite:///:memory:", allow_sqlite=True)
@@ -162,25 +137,7 @@ def run_snapshot_stage(
         provider_state.create(store.engine)
         with store.engine.begin() as connection:
             connection.execute(queue_control.insert().values(id=1))
-        try:
-            snapshot = LiveSnapshotBuilder(sources, store)(selected.metadata)
-        except ValueError as error:
-            # Only repository-owned, allowlisted codes may leave the boundary.
-            reason = str(error).partition(":")[0]
-            actions = {
-                "CRITICAL_FUNDAMENTALS_MISSING": "Complete financial-document or independently qualified financial-data review; filing history alone contains no qualified financial facts.",
-                "PROVIDER_UNQUALIFIED": "Complete provider qualification for every supplemental/spread evidence source; a supplied EvidenceRecord is not provider admission.",
-                "PROVIDER_COVERAGE_MISSING": "Supply current reviewed provider coverage for every required dataset, including financial/spread facts.",
-                "ARCHIVED_MARKET_PROVIDER_UNQUALIFIED": "Provide independently qualified original-publication archive provenance; current API retrieval is not historical PIT proof.",
-                "PROVIDER_HISTORICAL_AVAILABILITY_UNKNOWN": "Review genuine archived original-publication availability; today's backfilled bars cannot establish point-in-time history.",
-                "MARKET_QUALITY_FAILED": "Provide live evidence meeting the existing market-quality contract, including adequate genuinely PIT-safe history, current spread and corporate-action coverage.",
-                "CRITICAL_DATA_STALE": "Refresh expired supplemental evidence and its review; the runner does not extend evidence freshness.",
-                "SPREAD_EVIDENCE_MISMATCH": "Correct independently observed spread_bps evidence and its units so it matches the reviewed instrument spread.",
-            }
-            if reason not in actions:
-                raise
-            ctx.block(reason, actions[reason])
-            return {}
+        snapshot = LiveSnapshotBuilder(sources, store)(selected.metadata)
     finally:
         store.engine.dispose()
     if snapshot.instrument.provider == "money-demo" or any(
@@ -189,11 +146,214 @@ def run_snapshot_stage(
         raise ValueError("QUALIFICATION_SYNTHETIC_EVIDENCE_FORBIDDEN")
     value = snapshot.model_dump(mode="json")
     reference = ctx.artifact(value)
-    ctx.write_json("outputs/snapshot.json", value)
-    ctx.checkpoint("snapshot-source", source_key, {"snapshot_artifact": reference}, [reference])
-    ctx.checkpoint("snapshot", key, {"snapshot_artifact": reference}, [reference])
+    ctx.checkpoint(namespace + "-source", source_key, {"snapshot_artifact": reference}, [reference])
+    ctx.checkpoint(namespace, key, {"snapshot_artifact": reference}, [reference])
+    return snapshot
+
+
+def run_snapshot_stage(
+    ctx: QualificationContext, provider_output: dict[str, Any]
+) -> dict[str, Any]:
+    """Freeze complete admitted membership/data before bounded numeric screening.
+
+    Missing data excludes a stock from expensive native work, not from the
+    record of admitted universe membership. It does not veto unrelated stocks.
+    """
+    fields = provider_output.get("manifest_fields", provider_output)
+    sources = QualificationSources.model_validate(
+        {
+            "reviewed_instruments": fields.get("instruments", []),
+            "provider_qualifications": fields.get("provider_qualifications", []),
+            "filing_document_storage_hosts": fields.get("filing_document_storage_hosts", []),
+        }
+    )
+    reviews = tuple(
+        EligibilityReview.model_validate(item)
+        for item in provider_output.get(
+            "qualified_universe",
+            [
+                item.model_dump(
+                    include={
+                        "metadata",
+                        "identifiers",
+                        "eligibility_proof_hash",
+                        "ethical_proof_hash",
+                    }
+                )
+                for item in sources.reviewed_instruments
+            ],
+        )
+    )
+    current = []
+    expired = []
+    for review in reviews:
+        try:
+            review.identifiers.require_current(ctx.now)
+            if eligibility_failures(review.metadata, ResearchMandate(), ctx.now):
+                raise ValueError("SNAPSHOT_INSTRUMENT_INELIGIBLE")
+        except ValueError:
+            expired.append(review.metadata.ticker)
+        else:
+            current.append(review)
+    if not current:
+        ctx.block(
+            "SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED",
+            "Refresh the complete live universe; no current eligibility-qualified GBP/GBX stock is admitted.",
+        )
+        return {"complete": False, "qualified_count": 0, "expired_or_ineligible": sorted(expired)}
+    source_universe_hash = None
+    universe_reference = provider_output.get("universe_artifact")
+    if universe_reference is not None:
+        if not isinstance(universe_reference, (tuple, list)) or len(universe_reference) != 2:
+            raise ValueError("SNAPSHOT_UNIVERSE_ARTIFACT_INVALID")
+        ctx.verify_artifact(*universe_reference)
+        source_universe_hash = universe_reference[0]
+    provider_current = True
+    try:
+        if not sources.provider_qualifications:
+            raise ValueError("SNAPSHOT_PROVIDER_QUALIFICATION_REQUIRED")
+        for provider in sources.provider_qualifications:
+            for dataset in provider.datasets:
+                provider.require(dataset, ctx.now)
+    except ValueError:
+        provider_current = False
+    details = {item.metadata.ticker: item for item in sources.reviewed_instruments}
+    if len(details) != len(sources.reviewed_instruments):
+        raise ValueError("SNAPSHOT_DUPLICATE_IDENTITY")
+    snapshots = []
+    missing = {}
+    allowed_reasons = {
+        "CRITICAL_FUNDAMENTALS_MISSING",
+        "PROVIDER_UNQUALIFIED",
+        "PROVIDER_COVERAGE_MISSING",
+        "ARCHIVED_MARKET_PROVIDER_UNQUALIFIED",
+        "PROVIDER_HISTORICAL_AVAILABILITY_UNKNOWN",
+        "MARKET_QUALITY_FAILED",
+        "CRITICAL_DATA_STALE",
+        "SPREAD_EVIDENCE_MISMATCH",
+        "QUALIFICATION_SYNTHETIC_EVIDENCE_FORBIDDEN",
+    }
+    for review in sorted(current, key=lambda item: item.metadata.ticker):
+        ticker = review.metadata.ticker
+        selected = details.get(ticker)
+        if selected is None or not provider_current:
+            missing[ticker] = "RESEARCH_PROVIDER_EVIDENCE_REQUIRED"
+            continue
+        if selected.metadata != review.metadata or selected.identifiers != review.identifiers:
+            missing[ticker] = "RESEARCH_QUALIFIED_IDENTITY_MISMATCH"
+            continue
+        try:
+            snapshots.append(_instrument_snapshot(ctx, sources, selected))
+        except (ValueError, OSError, TimeoutError, ProviderFailure) as error:
+            reason = str(error).partition(":")[0]
+            missing[ticker] = (
+                "RESEARCH_PROVIDER_UNAVAILABLE"
+                if isinstance(error, ProviderFailure)
+                else reason
+                if reason in allowed_reasons
+                else "RESEARCH_EVIDENCE_NOT_VERIFIED"
+            )
+    frozen_at = max([ctx.now, *(snapshot.created_at for snapshot in snapshots)])
+    # Acquisition can cross a review expiry. Expired members are not admitted
+    # at the final time T; retain an explicit audit of their removal.
+    fresh = []
+    for review in current:
+        if eligibility_failures(review.metadata, ResearchMandate(), frozen_at) or not (
+            review.identifiers.verified_at <= frozen_at < review.identifiers.valid_until
+        ):
+            expired.append(review.metadata.ticker)
+        else:
+            fresh.append(review)
+    if not fresh:
+        ctx.block(
+            "SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED",
+            "Universe evidence expired during acquisition; refresh before research.",
+        )
+        return {"complete": False, "qualified_count": 0, "expired_or_ineligible": sorted(expired)}
+    fresh_tickers = {review.metadata.ticker for review in fresh}
+    ready = []
+    for snapshot in snapshots:
+        if snapshot.ticker not in fresh_tickers:
+            continue
+        if any(
+            record.fresh_until <= frozen_at
+            or record.conflicting
+            or not record.available_at(snapshot.cutoff_for(record))
+            for record in snapshot.evidence
+        ):
+            missing[snapshot.ticker] = "CRITICAL_DATA_STALE"
+            continue
+        ready.append(snapshot)
+    universe = freeze_qualified_universe(
+        tuple(fresh),
+        tuple(ready),
+        frozen_at,
+        missing_reasons=missing,
+        source_universe_hash=source_universe_hash,
+    )
+    references = {
+        snapshot.ticker: ctx.artifact(snapshot.model_dump(mode="json")) for snapshot in ready
+    }
+    universe_value = universe.model_dump(mode="json")
+    universe_artifact = ctx.artifact(universe_value)
+    ctx.write_json("outputs/universe-snapshot.json", universe_value)
+    ctx.write_json(
+        "outputs/universe-snapshot-evidence.json",
+        {
+            "universe_hash": universe.hash,
+            "snapshot_artifacts": references,
+            "expired_or_ineligible": sorted(set(expired)),
+        },
+    )
+    screen = screen_qualified_universe(universe, tuple(ready), at=frozen_at)
+    screen_value = screen.model_dump(mode="json")
+    screen_artifact = ctx.artifact(screen_value)
+    ctx.write_json("outputs/universe-screen.json", screen_value)
+    index = {snapshot.ticker: snapshot for snapshot in ready}
+    candidates = []
+    for ticker in screen.selected_tickers:
+        bound = bind_universe_snapshot(index[ticker], universe)
+        path = (
+            "outputs/candidate-snapshots/"
+            + hashlib.sha256(ticker.encode()).hexdigest()[:24]
+            + ".json"
+        )
+        reference = ctx.artifact(bound.model_dump(mode="json"))
+        ctx.write_json(path, bound.model_dump(mode="json"))
+        candidates.append(
+            {
+                "ticker": ticker,
+                "snapshot_hash": bound.hash,
+                "snapshot_path": path,
+                "snapshot_artifact": reference,
+            }
+        )
+    if candidates:
+        # Compatibility admission sample for existing native/LEAN qualification
+        # contracts; it never defines or truncates the frozen universe.
+        ctx.write_bytes(
+            "outputs/snapshot.json", ctx.verify_artifact(*candidates[0]["snapshot_artifact"])
+        )
+    else:
+        ctx.block(
+            "SNAPSHOT_REVIEWED_DATA_REQUIRED",
+            "Full membership is frozen; see outputs/universe-screen.json for missing per-stock provider, PIT, spread, financial or current-history evidence.",
+        )
     return {
-        "complete": True,
-        "snapshot_hash": snapshot.hash,
-        "snapshot_path": "outputs/snapshot.json",
+        "complete": bool(candidates),
+        "qualified_count": len(universe.members),
+        "qualified_universe_hash": universe.hash,
+        "universe_artifact": universe_artifact,
+        "screen_artifact": screen_artifact,
+        "candidate_snapshots": candidates,
+        "unresolved_data": missing,
+        "expired_or_ineligible": sorted(set(expired)),
+        **(
+            {
+                "snapshot_hash": candidates[0]["snapshot_hash"],
+                "snapshot_path": "outputs/snapshot.json",
+            }
+            if candidates
+            else {}
+        ),
     }

@@ -88,7 +88,12 @@ def _execute(
         if diagnostics:
             ctx.check_secrets(diagnostics)
             ctx.write_bytes(f"outputs/{name}-diagnostics.txt", diagnostics)
-        ctx.write_json(f"outputs/{name}-result.json", result)
+        if name == "providers" and ctx.read_json("state/bulk-universe-mode.json") is not None:
+            from money.qualification.universe import _large_write
+
+            _large_write(ctx, f"outputs/{name}-result.json", json_bytes(result))
+        else:
+            ctx.write_json(f"outputs/{name}-result.json", result)
         return result
     except Exception:
         # Pydantic input values, HTTP URLs, subprocess logs and tracebacks are
@@ -134,6 +139,12 @@ def assemble_manifest(
     if instruments:
         fields["instruments"] = []
         fields["instrument_catalog"] = ctx.artifact(instruments)
+    if "qualified_universe" in providers:
+        from money.qualification.universe_catalog import eligibility_catalogs
+
+        fields["eligibility_catalogs"] = eligibility_catalogs(ctx, providers["qualified_universe"])
+        fields["universe_account_binding_sha256"] = providers.get("universe_account_binding_sha256")
+        fields["universe_provenance"] = providers.get("universe_provenance")
     inputs_hash = hashlib.sha256(json_bytes(fields)).hexdigest()
     ctx.write_json(
         "outputs/release-inputs.json", {"inputs_hash": inputs_hash, "manifest_fields": fields}
@@ -355,6 +366,9 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
                 "PRODUCTION_CONFIGURATION_REQUIRED",
                 "Production bundle completion requires production/hosted/live with synthetic demo disabled. Local inference probes can run without satisfying this gate; the runner will not change production settings.",
             )
+    # New operator runs always discover the full universe. Existing individual
+    # review-preparation files are audit history, never a selection list.
+    ctx.template("state/bulk-universe-mode.json", {"version": "money-bulk-universe-v1"})
     providers = _execute(ctx, "providers", lambda: run_provider_stages(ctx))
     inference = _execute(ctx, "inference", lambda: run_inference_stage(ctx))
     preflight = _execute(ctx, "native-preflight", lambda: run_native_preflight_stage(ctx))
