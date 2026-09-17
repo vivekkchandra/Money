@@ -106,10 +106,8 @@ def _venue(
         if (country and reviewed_country != country) or (mic and reviewed_mic != mic):
             return None, None, "VENUE_REVIEW_CONFLICT"
         country, mic = reviewed_country, reviewed_mic
-    if country is None:
-        return None, mic, "VENUE_COUNTRY_NOT_VERIFIED"
-    if mic is None:
-        return country, None, "VENUE_MIC_NOT_VERIFIED"
+    # Missing enrichment is not a failed verification or a review requirement.
+    # Retain the nullable facts; only actual conflicts need diagnostic reasons.
     return country, mic, None
 
 
@@ -151,7 +149,7 @@ def _enrich_venue(
     country, mic, venue_problem = _venue(exchange, reviews, observed_at)
     row["country"], row["mic"] = country, mic
     row["uk_venue"] = country == "GB"
-    row["venue_status"] = "PARTIAL" if venue_problem else "RESOLVED"
+    row["venue_status"] = "PARTIAL" if venue_problem or not country or not mic else "RESOLVED"
     if venue_problem:
         reasons.append(venue_problem)
 
@@ -166,7 +164,9 @@ def normalize_universe(
     """Normalize every row deterministically; quarantine uncertainty individually.
 
     ``universe_member`` records the exact live type/currency market filter even
-    when a subsequent identity check fails. Valid candidates remain
+    when a subsequent identity check fails. ``identity_valid`` is independently
+    established by the broker identifier, ISIN, name, and duplicate checks only;
+    provider enrichment may run before final qualification. Valid candidates remain
     ``UNRESOLVED_ISA_SCOPE`` until account, purchase availability, providers,
     ethics, and freshness gates are verified. Venue facts are informational.
     Never strips or invents ticker suffixes and never filters by ISIN prefix.
@@ -212,6 +212,7 @@ def normalize_universe(
             "instrument_type": instrument_type,
             "universe_member": source.get("type") == "STOCK"
             and source.get("currencyCode") == "GBX",
+            "identity_valid": False,
             "exchange_id": None,
             "exchange_name": None,
             "mic": None,
@@ -260,6 +261,7 @@ def normalize_universe(
         # the same ISIN into a separate economic security. Quarantine aliases;
         # never select a preferred line using provider order or ticker heuristics.
         economic_keys[isin].append(row)
+        row["identity_valid"] = True
         row["qualification_state"] = "UNRESOLVED_ISA_SCOPE"
         reasons.append("ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED")
 
@@ -270,6 +272,7 @@ def normalize_universe(
         for duplicates in groups:
             if len(duplicates) > 1:
                 for row in duplicates:
+                    row["identity_valid"] = False
                     if row["universe_member"]:
                         row["qualification_state"] = "UNRESOLVED_IDENTITY"
                     row["reasons"] = [

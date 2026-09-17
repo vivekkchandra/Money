@@ -68,6 +68,8 @@ def _error(error: Exception) -> str:
                 "PROVIDER_TIMEOUT",
                 "PROVIDER_REQUEST_BUDGET_EXHAUSTED",
                 "PROVIDER_BACKOFF_ACTIVE",
+                "PROVIDER_CACHED_OBSERVATION_REQUIRED",
+                "PROVIDER_CREDENTIAL_REQUIRED_FOR_LIVE_PROBE",
                 "PROVIDER_RESPONSE_INVALID",
                 "PROVIDER_SOURCE_REJECTED",
             }
@@ -153,6 +155,8 @@ class _CachedFetcher(SafeFetcher):
         sleep: Callable[[float], None],
         monotonic: Callable[[], float],
         clock: Callable[[], datetime],
+        *,
+        offline: bool = False,
     ) -> None:
         super().__init__(_HOSTS, maximum_redirects=0)
         self.ctx = ctx
@@ -160,6 +164,7 @@ class _CachedFetcher(SafeFetcher):
         self.maximum, self.interval = maximum, 60 / per_minute
         self.sleep, self.monotonic = sleep, monotonic
         self.clock = clock
+        self.__offline = offline
         self.cache_only = False
         self.integrity_failed = False
         self.used = 0
@@ -167,6 +172,11 @@ class _CachedFetcher(SafeFetcher):
         self.refs: set[tuple[str, str]] = set()
         self.observations: list[datetime] = []
         self.backoff: set[str] = set()
+
+    @property
+    def offline(self) -> bool:
+        """Persistent transport policy, independent of temporary probe caching."""
+        return self.__offline
 
     def refresh_clock(self) -> datetime:
         observed = self.clock()
@@ -229,7 +239,7 @@ class _CachedFetcher(SafeFetcher):
                     self.refs.add((cache["sha256"], cache["path"]))
                     self.observations.append(observed)
                     return envelope["response"]
-        if self.cache_only:
+        if self.offline or self.cache_only:
             raise ProviderFailure("PROVIDER_CACHED_OBSERVATION_REQUIRED")
         failed = self.ctx.cache("bulk-failure-" + key, key, 300)
         if failed:
@@ -286,12 +296,20 @@ class BulkProviderEnricher:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         clock: Callable[[], datetime] = utc_now,
+        offline: bool = False,
     ) -> None:
         if not 0 <= max_requests <= 100000 or not 1 <= requests_per_minute <= 60:
             raise ValueError("BULK_PROVIDER_BUDGET_INVALID")
         self.ctx = ctx
         self.fetcher = _CachedFetcher(
-            ctx, fetcher, max_requests, requests_per_minute, sleep, monotonic, clock
+            ctx,
+            fetcher,
+            max_requests,
+            requests_per_minute,
+            sleep,
+            monotonic,
+            clock,
+            offline=offline,
         )
         self.artifacts = _ContextArtifacts(ctx)
 
@@ -300,21 +318,22 @@ class BulkProviderEnricher:
         return self.fetcher.used
 
     def _eodhd(self, path: str, **query: str) -> Any:
-        return self.fetcher.json(
-            "https://eodhd.com/api/"
-            + path
-            + "?"
-            + urlencode(dict(query, fmt="json", api_token=self.ctx.environ["EODHD_API_KEY"]))
-        )
+        parameters = dict(query, fmt="json")
+        if not self.fetcher.offline:
+            parameters["api_token"] = self.ctx.environ["EODHD_API_KEY"]
+        return self.fetcher.json("https://eodhd.com/api/" + path + "?" + urlencode(parameters))
 
     def _company(self, path: str, **query: str) -> Any:
-        credential = self.ctx.environ["COMPANIES_HOUSE_API_KEY"]
-        authorization = "Basic " + base64.b64encode((credential + ":").encode()).decode()
+        headers = None
+        if not self.fetcher.offline:
+            credential = self.ctx.environ["COMPANIES_HOUSE_API_KEY"]
+            authorization = "Basic " + base64.b64encode((credential + ":").encode()).decode()
+            headers = {"Authorization": authorization}
         return self.fetcher.json(
             "https://api.company-information.service.gov.uk/"
             + path
             + ("?" + urlencode(query) if query else ""),
-            headers={"Authorization": authorization},
+            headers=headers,
         )
 
     def _mapping(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -444,7 +463,7 @@ class BulkProviderEnricher:
             row["companies_house_state"] = "UNRESOLVED_APPLICABILITY"
             row["provider_reasons"].append("ISSUER_REGISTRATION_COUNTRY_UNVERIFIED")
             return
-        if not self.ctx.environ.get("COMPANIES_HOUSE_API_KEY"):
+        if not self.fetcher.offline and not self.ctx.environ.get("COMPANIES_HOUSE_API_KEY"):
             row["provider_reasons"].append("COMPANIES_HOUSE_CREDENTIAL_MISSING")
             return
         name = general["Name"]
@@ -533,10 +552,16 @@ class BulkProviderEnricher:
                     self.ctx.verify_artifact(reference["sha256"], reference["path"])
                     self.fetcher.refs.add((reference["sha256"], reference["path"]))
                 return report
-        probe = probe_eodhd if provider == "eodhd" else probe_companies_house
-        credential = self.ctx.environ[
+        credential = self.ctx.environ.get(
             "EODHD_API_KEY" if provider == "eodhd" else "COMPANIES_HOUSE_API_KEY"
-        ]
+        )
+        if not credential:
+            raise ProviderFailure("PROVIDER_CREDENTIAL_REQUIRED_FOR_LIVE_PROBE")
+        if self.fetcher.offline:
+            # A replay reuses exact admitted probe bytes only. It does not
+            # generate fresh dataset qualification timestamps from old responses.
+            raise ProviderFailure("PROVIDER_CACHED_OBSERVATION_REQUIRED")
+        probe = probe_eodhd if provider == "eodhd" else probe_companies_house
         # First acquire endpoints using the existing normalizers, but do not
         # publish their provisional request-start timestamps or proof bytes.
         acquired = probe(
@@ -683,7 +708,7 @@ class BulkProviderEnricher:
         self.fetcher.refs = set()
         self.fetcher.observations = []
         self.fetcher.integrity_failed = False
-        if not self.ctx.environ.get("EODHD_API_KEY"):
+        if not self.fetcher.offline and not self.ctx.environ.get("EODHD_API_KEY"):
             row["provider_reasons"].append("EODHD_CREDENTIAL_MISSING")
             return row
         try:

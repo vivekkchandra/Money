@@ -101,6 +101,17 @@ research. No individual ticker is preselected; the complete qualified membership
 is frozen before bounded research screening. ISA/current-buy provenance, ethics
 and all downstream production gates remain unchanged.
 
+The versioned policy is `money-t212-gbx-stock-universe-v2`. Normal finalizer and
+qualification runs automatically archive and rebuild obsolete derived universe
+state while preserving raw broker/provider evidence and human review inputs.
+No qualification-directory deletion is needed. Provider-stage candidates are
+exposed separately from fully qualified instruments, so zero eligible stocks
+does not prevent identity-valid GBX candidates from entering enrichment. Account
+scope is one credential/source-bound universe review, not a per-stock task.
+See the linked guide for the safe `--rebuild-universe` option and hash-verified
+`--replay-saved` diagnostic mode, which cannot grant eligibility or production
+approval.
+
 For live production admission, use the [resumable qualification runner](docs/LIVE_QUALIFICATION_RUNNER.md):
 
 ```sh

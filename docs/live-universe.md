@@ -47,6 +47,47 @@ railway run --service Money --environment production sh -c 'MONEY_INFERENCE_CONF
 Neither command places orders or accesses balances, positions or order history.
 Credentials are read from the process environment, not placed in review files.
 
+## Policy migration and offline replay
+
+The active `universe_policy_version` is
+`money-t212-gbx-stock-universe-v2`. It is recorded in the authoritative universe
+JSON, provenance, review queue, provider-stage result/checkpoint and bulk-mode
+marker. A missing or different version triggers automatic reclassification on
+the normal commands above; no manual directory deletion or rebuild flag is
+required. CSV is regenerated from the versioned JSON, never read as authority.
+
+Only these seven derived paths are moved into recoverable audit history beneath
+`state/universe-policy-history/` before rebuilding:
+
+- `outputs/uk-isa-stock-universe.json`
+- `outputs/uk-isa-stock-universe.csv`
+- `outputs/universe-provenance.json`
+- `outputs/universe-review-queue.json`
+- `outputs/providers-result.json`
+- `state/provider-stage.json`
+- `state/bulk-universe-mode.json`
+
+The migration preserves raw broker and provider artifacts/caches, their hashes
+and original observation timestamps, operator inputs/reviews, snapshots and
+other quantitative/native outputs. Archived classifications are audit history,
+not reusable approvals. The new review queue is calculated from source evidence,
+not copied from obsolete venue decisions. Appending `--rebuild-universe` to the
+finalizer forces this same narrowly scoped rebuild when explicitly needed.
+
+For a network-free diagnostic replay of already saved genuine responses:
+
+```bash
+MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/finalize_live_universe.py --replay-saved
+```
+
+Replay verifies the stored raw response hashes and uses applicable cached
+provider evidence only. It requires no fake credentials, does not refresh any
+observation timestamp and records `status: REPLAYED` with
+`scope: SAVED_RESPONSE_REPLAY_ONLY`. It cannot generate an `EligibilityReview`
+or grant account, ethical or production approval. Its counts describe the saved
+response, not a newly fetched live universe. Run the normal live command before
+continuing qualification.
+
 ## Bulk facts and genuine review boundaries
 
 Every currently accessible `STOCK` quoted in GBX enters the candidate pipeline,
@@ -60,7 +101,8 @@ Initial membership is not ISA approval, permission to buy, ethical clearance or
 full qualification. Account binding/current purchase availability and every
 downstream evidence and review gate remain independently mandatory.
 
-EODHD joins are attempted for GBX candidates without waiting for venue resolution.
+EODHD joins receive every identity-valid GBX candidate before final qualification,
+without waiting for venue resolution or an account/ethical approval.
 They use exact ISIN, the returned provider exchange/code, quote-unit agreement
 and company/ticker corroboration; ambiguous matches stay unresolved. Money never
 manufactures an EODHD `.LSE` suffix. Companies House
@@ -68,6 +110,14 @@ mapping must distinguish the issuer from similarly named operating companies.
 A genuinely foreign-incorporated issuer can be `NOT_APPLICABLE` for Companies
 House; unknown incorporation or identity is unresolved, not assumed foreign.
 Foreign companies still need independently admitted financial evidence.
+
+The finalizer refreshes both `outputs/providers-result.json` and
+`state/provider-stage.json`. Their `provider_stage_inputs` and
+`provider_stage_input_count` expose candidates ready for provider enrichment.
+They are separate from `instruments`, `eligible_counts` and `qualified_universe`,
+which remain reserved for successfully qualified outputs. A nonzero provider
+input count with zero eligible instruments is expected while genuine downstream
+evidence or reviews are missing; it does not prevent enrichment from running.
 
 The runner generates bulk inputs, **not thousands of per-stock identity review
 templates**:
@@ -79,9 +129,18 @@ templates**:
 | `inputs/universe/supplemental.json` | Link independently reviewed spread, costs, corporate-action coverage, financial and archived point-in-time evidence by ISIN. |
 | `inputs/provider-rights/eodhd.json`, `inputs/provider-rights/companies-house.json` | Review explicit permitted use and retention/redistribution rights. Working API access is not licensing approval. |
 
+Account scope is **one universe-level review** in
+`inputs/universe/account-scope.json`, not a separate review for every stock.
+The explicit `STOCKS_AND_SHARES_ISA` operator attestation is bound to the
+credential HMAC and source-response hashes/retrieval evidence in provenance.
+It is identified as an operator attestation, never as account type returned by
+the metadata API. The review queue carries this requirement once at its top
+level while individual entries describe their remaining instrument issues.
+
 An existing `inputs/universe/venues.json` may enrich venue information, but it is
 optional. Neither an unresolved venue review nor missing country/MIC metadata
-blocks initial admission or provider lookup.
+blocks initial admission or provider lookup. Missing country/MIC facts are
+nullable enrichment, not venue-failure review tasks.
 
 Follow the generated schemas and `inputs/universe/README.md`. Approval requires
 real, distinct preparer/reviewer identities, actual review timestamps, finite
@@ -97,9 +156,11 @@ coverage. Missing reviews, stale evidence and ambiguous joins stay explicitly
 unresolved; only the qualified subset can enter research. Membership and the
 existing eligibility/ethical freshness limits never extend beyond 24 hours.
 
-The finalizer reports the raw instrument count and **GBX stock** denominator,
-then qualified, identity/provider/ISA unresolved, ethical-review/excluded and
-stale counts. Provider coverage uses the GBX universe, not a UK-venue subset.
+The finalizer reports `raw_instruments`, `gbx_stocks`, `identity_valid`,
+`identity_unresolved`, `provider_stage_input_count`, `eodhd_attempted`,
+`eodhd_mapped`, `companies_house_mapped`, `ethical_review_required`,
+`ethical_excluded`, `qualified` and `unresolved`, alongside freshness and dataset
+coverage. Provider coverage uses the GBX universe, not a UK-venue subset.
 Any `Venue resolved: N/N` count is informational coverage only.
 
 ## Freeze the whole universe, then bound expensive research

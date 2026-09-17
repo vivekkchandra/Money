@@ -49,6 +49,7 @@ def test_gbx_stock_is_normalized_without_issuer_country_filter() -> None:
     assert row["isin"] == "US0378331005"
     assert row["quote_currency"] == "GBX"
     assert row["universe_member"] is True
+    assert row["identity_valid"] is True
     assert row["uk_venue"] is True
     assert row["mic"] == "XABC"  # No hard-coded XLON gate.
     assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
@@ -63,6 +64,7 @@ def test_non_uk_venue_does_not_exclude_gbx_stock() -> None:
     row = normalized(instrument(isin="GB00BH4HKS39"), exchanges=[exchange(countryCode="US")])[0]
     assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
     assert row["universe_member"] is True
+    assert row["identity_valid"] is True
     assert row["country"] == "US"
     assert row["uk_venue"] is False
     assert row["venue_status"] == "RESOLVED"
@@ -73,6 +75,7 @@ def test_non_stock_types_are_excluded(kind: str) -> None:
     row = normalized(instrument(type=kind))[0]
     assert row["qualification_state"] == "EXCLUDED_INSTRUMENT_TYPE"
     assert row["universe_member"] is False
+    assert row["identity_valid"] is False
 
 
 def test_names_do_not_replace_provider_classification() -> None:
@@ -86,6 +89,7 @@ def test_every_non_gbx_quote_is_excluded(currency: str | None) -> None:
     row = normalized(instrument(currencyCode=currency))[0]
     assert row["qualification_state"] == "EXCLUDED_NON_GBX"
     assert row["universe_member"] is False
+    assert row["identity_valid"] is False
 
 
 def test_missing_country_is_only_informational_even_if_exchange_is_named_london() -> None:
@@ -95,9 +99,10 @@ def test_missing_country_is_only_informational_even_if_exchange_is_named_london(
     )[0]
     assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
     assert row["universe_member"] is True
+    assert row["identity_valid"] is True
     assert row["venue_status"] == "PARTIAL"
-    assert "VENUE_COUNTRY_NOT_VERIFIED" in row["venue_reasons"]
-    assert "VENUE_COUNTRY_NOT_VERIFIED" not in row["reasons"]
+    assert row["country"] is None
+    assert row["venue_reasons"] == []
 
 
 def test_missing_mic_is_not_invented() -> None:
@@ -106,6 +111,8 @@ def test_missing_mic_is_not_invented() -> None:
     assert row["universe_member"] is True
     assert row["venue_status"] == "PARTIAL"
     assert row["mic"] is None
+    assert row["identity_valid"] is True
+    assert row["venue_reasons"] == []
 
 
 @pytest.mark.parametrize(
@@ -114,6 +121,7 @@ def test_missing_mic_is_not_invented() -> None:
 def test_gbx_stock_without_resolvable_exchange_metadata_enters_universe(venues: list[Any]) -> None:
     row = normalized(instrument(), exchanges=venues)[0]
     assert row["universe_member"] is True
+    assert row["identity_valid"] is True
     assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
     assert row["venue_status"] == "UNRESOLVED"
     assert row["mic"] is None
@@ -129,6 +137,29 @@ def test_all_venue_metadata_is_optional_for_initial_membership() -> None:
     assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
     assert row["instrument_row_sha256"] == metadata_row_hash(raw)
     assert row["exchange_row_sha256"] is None
+    assert row["identity_valid"] is True
+
+
+@pytest.mark.parametrize(
+    "venues",
+    [[], [exchange(countryCode=None)], [exchange(mic=None)], [exchange(countryCode=None, mic=None)]],
+)
+def test_missing_venue_facts_never_emit_obsolete_review_or_qualification_reasons(
+    venues: list[Any],
+) -> None:
+    row = normalized(instrument(), exchanges=venues)[0]
+    assert row["identity_valid"] is True
+    assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    reasons = set(row["reasons"] + row["venue_reasons"])
+    assert reasons.isdisjoint(
+        {
+            "VENUE_COUNTRY_NOT_VERIFIED",
+            "VENUE_MIC_NOT_VERIFIED",
+            "EXCLUDED_NOT_UK_VENUE",
+            "UK_VENUE_REQUIRED",
+            "VENUE_REVIEW_REQUIRED",
+        }
+    )
 
 
 def test_preverified_venue_review_joins_exact_response_identity() -> None:
@@ -189,7 +220,9 @@ def test_one_invalid_instrument_does_not_block_valid_rows(changes: dict[str, Any
     rows = normalized(instrument(ticker="GOODl_EQ"), instrument(**changes), None, "malformed")
     assert len(rows) == 4
     assert rows[0]["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert rows[0]["identity_valid"] is True
     assert all(row["qualification_state"] == "UNRESOLVED_IDENTITY" for row in rows[1:])
+    assert all(row["identity_valid"] is False for row in rows[1:])
     assert rows[1]["universe_member"] is True  # Membership is not identity qualification.
     assert rows[2]["universe_member"] is False
 
@@ -200,6 +233,7 @@ def test_duplicate_economic_identity_is_quarantined(changes: dict[str, Any]) -> 
     assert all(row["qualification_state"] == "UNRESOLVED_IDENTITY" for row in rows)
     assert all("DUPLICATE_ECONOMIC_SHARE_LINE" in row["reasons"] for row in rows)
     assert all(row["universe_member"] for row in rows)
+    assert all(row["identity_valid"] is False for row in rows)
 
 
 def test_same_broker_id_conflicting_type_is_not_admitted() -> None:
@@ -207,11 +241,13 @@ def test_same_broker_id_conflicting_type_is_not_admitted() -> None:
     assert all("DUPLICATE_BROKER_ID" in row["reasons"] for row in rows)
     assert rows[0]["qualification_state"] == "UNRESOLVED_IDENTITY"
     assert rows[1]["qualification_state"] == "EXCLUDED_INSTRUMENT_TYPE"
+    assert all(row["identity_valid"] is False for row in rows)
 
 
 def test_different_securities_remain_distinct() -> None:
     rows = normalized(instrument(), instrument(ticker="OTHERl_EQ", isin="GB00BH4HKS39"))
     assert all(row["qualification_state"] == "UNRESOLVED_ISA_SCOPE" for row in rows)
+    assert all(row["identity_valid"] is True for row in rows)
 
 
 def test_same_isin_on_other_venue_is_not_a_new_economic_security() -> None:
@@ -222,6 +258,7 @@ def test_same_isin_on_other_venue_is_not_a_new_economic_security() -> None:
     )
     assert all(row["qualification_state"] == "UNRESOLVED_IDENTITY" for row in rows)
     assert all("DUPLICATE_ECONOMIC_SHARE_LINE" in row["reasons"] for row in rows)
+    assert all(row["identity_valid"] is False for row in rows)
 
 
 def test_ambiguous_working_schedule_and_exchange_id_conflict_are_enrichment_only() -> None:

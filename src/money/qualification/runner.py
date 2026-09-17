@@ -368,7 +368,11 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
             )
     # New operator runs always discover the full universe. Existing individual
     # review-preparation files are audit history, never a selection list.
-    ctx.template("state/bulk-universe-mode.json", {"version": "money-bulk-universe-v1"})
+    from money.qualification.universe_policy import UNIVERSE_POLICY_VERSION
+
+    ctx.template(
+        "state/bulk-universe-mode.json", {"universe_policy_version": UNIVERSE_POLICY_VERSION}
+    )
     providers = _execute(ctx, "providers", lambda: run_provider_stages(ctx))
     inference = _execute(ctx, "inference", lambda: run_inference_stage(ctx))
     preflight = _execute(ctx, "native-preflight", lambda: run_native_preflight_stage(ctx))

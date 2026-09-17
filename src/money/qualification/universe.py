@@ -34,6 +34,7 @@ from money.data.live_eligibility import EligibilityReview
 from money.data.qualification import ProviderQualification
 from money.data.uk.live import Trading212MetadataProvider
 from money.qualification.core import QualificationContext, json_bytes
+from money.qualification.universe_policy import UNIVERSE_POLICY_VERSION, ensure_universe_policy
 from money.research.inference_config import load_inference_selections
 from money.schemas.contracts import (
     EXCLUDED_ACTIVITIES,
@@ -46,7 +47,9 @@ from money.schemas.contracts import (
 MASTER = "outputs/uk-isa-stock-universe.json"
 MODE = "state/bulk-universe-mode.json"
 MAX_MASTER_BYTES = 64_000_000
-UNIVERSE_VERSION = "money-gbx-isa-universe-v2"
+MAX_BROKER_RESPONSE_BYTES = 20_000_000
+BROKER_RESPONSE_CHUNK_BYTES = 1_500_000
+UNIVERSE_VERSION = UNIVERSE_POLICY_VERSION
 INITIAL_FILTER = {"instrument_type": "STOCK", "quote_currency": "GBX", "venue_required": False}
 
 
@@ -112,7 +115,7 @@ def _review(ctx: QualificationContext, value: Any) -> Any:
 
 def prepare_bulk_inputs(ctx: QualificationContext, binding: str | None) -> None:
     """Only bulk inputs and exception queues; never generate per-stock templates."""
-    ctx.template(MODE, {"version": "money-bulk-universe-v1"})
+    ctx.template(MODE, {"universe_policy_version": UNIVERSE_POLICY_VERSION})
     ctx.template(
         "inputs/universe/account-scope.json",
         {
@@ -273,9 +276,12 @@ def _ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
 
 def _store_response(ctx: QualificationContext, raw: bytes) -> tuple[str, str]:
     """Exact response hashes survive chunking; artifact safety limits stay intact."""
+    if not raw or len(raw) > MAX_BROKER_RESPONSE_BYTES:
+        raise ValueError("BROKER_RESPONSE_SIZE_INVALID")
     ctx.check_secrets(raw)
     parts = [
-        ctx.artifact(raw[start : start + 1_500_000]) for start in range(0, len(raw), 1_500_000)
+        ctx.artifact(raw[start : start + BROKER_RESPONSE_CHUNK_BYTES])
+        for start in range(0, len(raw), BROKER_RESPONSE_CHUNK_BYTES)
     ]
     return ctx.artifact(
         {
@@ -582,6 +588,11 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
     return {
         "raw_instruments": len(rows),
         "gbx_stocks": len(relevant),
+        "identity_valid": sum(r.get("identity_valid") is True for r in relevant),
+        "identity_unresolved": sum(r.get("identity_valid") is not True for r in relevant),
+        "provider_stage_input_count": sum(
+            r.get("provider_enrichment_input") is True for r in relevant
+        ),
         "venue_resolved": sum(r.get("venue_status") == "RESOLVED" for r in relevant),
         "raw_states": dict(sorted(raw_states.items())),
         "states": dict(sorted(states.items())),
@@ -593,6 +604,7 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
             count for state, count in states.items() if state.startswith("UNRESOLVED_")
         ),
         "eodhd_mapping_attempted": sum(r.get("eodhd_mapping_attempted") is True for r in relevant),
+        "eodhd_attempted": sum(r.get("eodhd_mapping_attempted") is True for r in relevant),
         "eodhd_lookups_network": sum(r.get("eodhd_lookup_origin") == "NETWORK" for r in relevant),
         "eodhd_lookups_cached": sum(r.get("eodhd_lookup_origin") == "CACHE" for r in relevant),
         "eodhd_mapped": sum(bool(r.get("eodhd_symbol")) for r in relevant),
@@ -608,6 +620,7 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
         "ethical_review_required": sum(
             r.get("ethical_state") == "ETHICAL_REVIEW_REQUIRED" for r in relevant
         ),
+        "ethical_excluded": states["EXCLUDED_ETHICAL"],
         "datasets": {
             name: sum(current_dataset(r, name) for r in relevant)
             for name in ("ohlcv", "corporate_action", "news")
@@ -628,6 +641,7 @@ def _csv(rows: list[dict[str, Any]]) -> bytes:
         "quote_currency",
         "instrument_type",
         "universe_member",
+        "identity_valid",
         "venue_status",
         "venue_reasons",
         "added_on",
@@ -674,7 +688,23 @@ def _optional_exchanges(
 
 def _restore_response(ctx: QualificationContext, reference: Any) -> tuple[bytes, tuple[Any, ...]]:
     descriptor = json.loads(ctx.verify_artifact(*reference))
-    raw = b"".join(ctx.verify_artifact(*part) for part in descriptor["chunks"])
+    if (
+        not isinstance(descriptor, dict)
+        or descriptor.get("kind") != "exact-response-chunks-v1"
+        or type(descriptor.get("bytes")) is not int
+        or not 0 < descriptor["bytes"] <= MAX_BROKER_RESPONSE_BYTES
+        or not isinstance(descriptor.get("chunks"), list)
+        or not 1 <= len(descriptor["chunks"]) <= 14
+    ):
+        raise ValueError("BROKER_RESPONSE_CACHE_INVALID")
+    chunks, size = [], 0
+    for part in descriptor["chunks"]:
+        chunk = ctx.verify_artifact(*part)
+        size += len(chunk)
+        if len(chunk) > BROKER_RESPONSE_CHUNK_BYTES or size > descriptor["bytes"]:
+            raise ValueError("BROKER_RESPONSE_CACHE_INVALID")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
     if len(raw) != descriptor["bytes"] or hashlib.sha256(raw).hexdigest() != descriptor["sha256"]:
         raise ValueError("BROKER_RESPONSE_CACHE_INVALID")
     items = json.loads(raw)
@@ -750,6 +780,108 @@ def _broker_metadata(
     return raw_instruments, instruments, raw_exchanges, exchanges, observed
 
 
+def _saved_broker_metadata(
+    ctx: QualificationContext,
+) -> tuple[bytes, tuple[Any, ...], bytes | None, tuple[Any, ...], datetime, str | None]:
+    """Verify saved raw bytes without turning replay into a live retrieval.
+
+    Credentials need not be present for forensic replay. Their recorded binding
+    is preserved as a source fact, not as authentication of this process.
+    A future timestamp, corrupted response or missing source is never accepted.
+    """
+    state = ctx.read_json("state/bulk-broker-metadata.json")
+    source: dict[str, Any] | None
+    if isinstance(state, dict) and state.get("status") == "CURRENT":
+        source = state
+        responses = state["responses"]
+        observed = _time(state["observed_at"])
+    else:
+        preserved = ctx.read_json("state/universe-rebuild-source.json")
+        source = preserved.get("source") if isinstance(preserved, dict) else None
+        if not isinstance(source, dict):
+            source = ctx.read_json("outputs/universe-provenance.json")
+        if not isinstance(source, dict) or source.get("retrieval_environment") != "live":
+            raise ValueError("SAVED_LIVE_BROKER_RESPONSE_REQUIRED")
+        responses = source["response_artifacts"]
+        observed = _time(source["retrieved_at"])
+    if observed > ctx.now:
+        raise ValueError("SAVED_BROKER_OBSERVATION_IN_FUTURE")
+    raw, instruments = _restore_response(ctx, responses["instruments"])
+    if source.get("instrument_response_hash") not in {None, hashlib.sha256(raw).hexdigest()}:
+        raise ValueError("SAVED_BROKER_RESPONSE_HASH_MISMATCH")
+    exchange_raw, exchanges = None, ()
+    if responses.get("exchanges") is not None:
+        try:
+            exchange_raw, exchanges = _restore_response(ctx, responses["exchanges"])
+            if source.get("exchange_response_hash") not in {
+                None,
+                hashlib.sha256(exchange_raw).hexdigest(),
+            }:
+                exchange_raw, exchanges = None, ()
+        except (ValueError, OSError, KeyError, TypeError):
+            pass
+    recorded_binding = source.get("credential_binding_sha256")
+    if recorded_binding is not None and (
+        not isinstance(recorded_binding, str) or not re.fullmatch(r"[a-f0-9]{64}", recorded_binding)
+    ):
+        raise ValueError("SAVED_ACCOUNT_BINDING_INVALID")
+    return raw, instruments, exchange_raw, exchanges, observed, recorded_binding
+
+
+def _provider_projection(master: dict[str, Any]) -> dict[str, Any]:
+    """Separate enrichment inputs from fully approved research instruments."""
+    summary = master.get("summary") or {}
+    candidates = [
+        {
+            key: row.get(key)
+            for key in (
+                "trading212_id",
+                "short_ticker",
+                "name",
+                "isin",
+                "quote_currency",
+                "instrument_type",
+                "instrument_row_sha256",
+                "observed_at",
+                "valid_until",
+            )
+        }
+        for row in master.get("stocks", [])
+        if row.get("provider_enrichment_input") is True
+    ]
+    reviews = master.get("eligibility_reviews", [])
+    return {
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "stage": "UNIVERSE_ENRICHMENT_ONLY",
+        "scope": master.get("scope", "LIVE_RETRIEVAL"),
+        "status": master.get("status", "REFRESH_IN_PROGRESS"),
+        "complete": False,
+        "production_qualified": False,
+        "summary": summary,
+        "provider_stage_inputs": candidates,
+        "provider_stage_input_count": len(candidates),
+        "candidate_counts": {"GBX": summary.get("gbx_stocks", 0)},
+        "eligible_counts": {"GBX": len(reviews)},
+        "unresolved_candidate_count": summary.get("unresolved", 0),
+        "instruments": [],
+        "eligibility_reviews": reviews,
+        "qualified_universe": reviews,
+        "provider_qualifications": master.get("provider_qualifications", []),
+        "universe_artifact": master.get("universe_artifact"),
+        "universe_provenance": master.get("universe_provenance"),
+        "universe_account_binding_sha256": (master.get("provenance") or {}).get(
+            "credential_binding_sha256"
+        ),
+        "candidate_exclusions": [],
+        "artifact_refs": master.get("artifact_refs", []),
+    }
+
+
+def _write_provider_projection(ctx: QualificationContext, result: dict[str, Any]) -> None:
+    for path in ("state/provider-stage.json", "outputs/providers-result.json"):
+        _large_write(ctx, path, json_bytes(result))
+
+
 def finalize_universe(
     ctx: QualificationContext,
     *,
@@ -757,15 +889,28 @@ def finalize_universe(
     requests_per_minute: int = 30,
     broker: Any = None,
     enricher: Any = None,
+    rebuild_universe: bool = False,
+    replay_saved: bool = False,
 ) -> dict[str, Any]:
     """Refresh live membership, optionally enrich venues, and isolate bad rows."""
     from money.qualification.universe_normalize import normalize_universe
     from money.qualification.universe_providers import BulkProviderEnricher
 
+    migration = ensure_universe_policy(ctx, force=rebuild_universe)
     binding = credential_binding(ctx.environ)
     prepare_bulk_inputs(ctx, binding)
+    # A standalone finalizer also refreshes these projections. No prior ready
+    # result survives an interrupted or failed provider-enrichment invocation.
+    scope_label = "SAVED_RESPONSE_REPLAY_ONLY" if replay_saved else "LIVE_RETRIEVAL"
+    _write_provider_projection(ctx, _provider_projection({"scope": scope_label}))
     try:
-        if broker is None:
+        if replay_saved:
+            if broker is not None or enricher is not None:
+                raise ValueError("OFFLINE_REPLAY_CANNOT_OVERRIDE_TRANSPORT")
+            raw_instruments, instruments, raw_exchanges, exchanges, observed, binding = (
+                _saved_broker_metadata(ctx)
+            )
+        elif broker is None:
             raw_instruments, instruments, raw_exchanges, exchanges, observed = _broker_metadata(
                 ctx, binding
             )
@@ -787,6 +932,8 @@ def finalize_universe(
     except Exception:
         failed = {
             "version": UNIVERSE_VERSION,
+            "universe_policy_version": UNIVERSE_POLICY_VERSION,
+            "scope": scope_label,
             "initial_filter": INITIAL_FILTER,
             "status": "REFRESH_FAILED",
             "observed_at": None,
@@ -798,6 +945,18 @@ def finalize_universe(
         }
         _large_write(ctx, MASTER, json_bytes(failed))
         _large_write(ctx, "outputs/uk-isa-stock-universe.csv", _csv([]))
+        ctx.write_json(
+            "outputs/universe-review-queue.json",
+            {
+                "universe_policy_version": UNIVERSE_POLICY_VERSION,
+                "status": "REFRESH_FAILED",
+                "account_scope_required": True,
+                "venue_review_required": False,
+                "instruments": [],
+                "errors": failed["errors"],
+            },
+        )
+        _write_provider_projection(ctx, _provider_projection(failed))
         ctx.block(
             "TRADING212_LIVE_METADATA_REQUIRED",
             "Fetch live accessible instruments using the ISA credential; no old membership was served. Exchanges are optional enrichment.",
@@ -806,13 +965,16 @@ def finalize_universe(
     rows = normalize_universe(
         instruments, exchanges, observed_at=observed, venue_reviews=_venues(ctx)
     )
-    scope, ethics = _scope(ctx, binding), _ethics(ctx)
     enricher = enricher or BulkProviderEnricher(
-        ctx, max_requests=max_requests, requests_per_minute=requests_per_minute
+        ctx,
+        max_requests=0 if replay_saved else max_requests,
+        requests_per_minute=requests_per_minute,
+        offline=replay_saved,
     )
     for index, row in enumerate(rows):
         row["broker_response_refs"] = responses
-        if not row["universe_member"]:
+        row["provider_enrichment_input"] = row["universe_member"] and row["identity_valid"]
+        if not row["provider_enrichment_input"]:
             continue
         try:
             rows[index] = enricher.enrich(row)
@@ -820,7 +982,7 @@ def finalize_universe(
             row["provider_reasons"] = ["PROVIDER_ROW_FAILED"]
     ctx.now = utc_now()
     # A long provider batch must not extend any review or membership lifetime.
-    scope, ethics = _scope(ctx, binding), _ethics(ctx)
+    scope, ethics = None if replay_saved else _scope(ctx, binding), _ethics(ctx)
     canonical_counts = Counter(
         row.get("identifiers", {}).get("ticker")
         for row in rows
@@ -830,6 +992,7 @@ def finalize_universe(
         canonical = (row.get("identifiers") or {}).get("ticker")
         if canonical and canonical_counts[canonical] > 1:
             row.update(
+                identity_valid=False,
                 qualification_state="UNRESOLVED_IDENTITY",
                 reasons=[*row.get("reasons", []), "CANONICAL_TICKER_COLLISION"],
             )
@@ -840,10 +1003,18 @@ def finalize_universe(
         if reviewed is not None:
             reviews.append(reviewed.model_dump(mode="json"))
     provenance = {
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "scope": scope_label,
         "account_context": "STOCKS_AND_SHARES_ISA" if scope else "UNVERIFIED",
+        "account_context_source": "OPERATOR_ATTESTATION"
+        if scope
+        else "OPERATOR_ATTESTATION_REQUIRED",
+        "account_type_returned_by_api": False,
+        "credential_binding_verified_this_run": not replay_saved and binding is not None,
         "requested_account_context": "STOCKS_AND_SHARES_ISA",
         "retrieval_environment": "live",
         "retrieved_at": observed.isoformat(),
+        "reclassified_at": ctx.now.isoformat(),
         "credential_binding_sha256": binding,
         "account_review_hash": scope["proof"][0] if scope else None,
         "instrument_response_hash": hashlib.sha256(raw_instruments).hexdigest(),
@@ -884,8 +1055,11 @@ def finalize_universe(
     )
     result = {
         "version": UNIVERSE_VERSION,
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "scope": scope_label,
+        "policy_migration": migration,
         "initial_filter": INITIAL_FILTER,
-        "status": "REFRESHED",
+        "status": "REPLAYED" if replay_saved else "REFRESHED",
         "observed_at": provenance["retrieved_at"],
         "valid_until": (_time(provenance["retrieved_at"]) + ELIGIBILITY_MAXIMUM_AGE).isoformat(),
         "production_qualified": False,
@@ -899,7 +1073,19 @@ def finalize_universe(
         "artifact_refs": sorted(ctx.artifact_refs),
     }
     queue = {
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "scope": scope_label,
         "account_scope_required": scope is None,
+        "account_scope": {
+            "required": scope is None,
+            "review_file": "inputs/universe/account-scope.json",
+            "requested_context": "STOCKS_AND_SHARES_ISA",
+            "source": "OPERATOR_ATTESTATION",
+            "account_type_returned_by_api": False,
+            "credential_binding_sha256": binding,
+            "instrument_response_hash": provenance["instrument_response_hash"],
+            "retrieved_at": provenance["retrieved_at"],
+        },
         "credential_binding_sha256": binding,
         "venue_review_required": False,
         "venue_information": list(
@@ -920,25 +1106,40 @@ def finalize_universe(
         ),
         "instruments": [
             {
-                key: r.get(key)
-                for key in (
-                    "trading212_id",
-                    "isin",
-                    "name",
-                    "qualification_state",
-                    "reasons",
-                    "provider_reasons",
-                    "provider_evidence",
-                )
+                **{
+                    key: r.get(key)
+                    for key in (
+                        "trading212_id",
+                        "isin",
+                        "name",
+                        "qualification_state",
+                        "provider_reasons",
+                        "provider_evidence",
+                    )
+                },
+                "reasons": [
+                    reason
+                    for reason in r.get("reasons", [])
+                    if reason
+                    not in {
+                        "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED",
+                        "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED",
+                    }
+                ],
             }
             for r in rows
-            if r["qualification_state"].startswith("UNRESOLVED_")
+            if r["universe_member"]
+            and (
+                r["qualification_state"].startswith("UNRESOLVED_")
+                or r["qualification_state"] in {"EXPIRED", "STALE_EVIDENCE"}
+            )
         ],
     }
     _large_write(ctx, MASTER, json_bytes(result))
     _large_write(ctx, "outputs/uk-isa-stock-universe.csv", _csv(rows))
     _large_write(ctx, "outputs/universe-review-queue.json", json_bytes(queue))
     ctx.write_json("outputs/universe-provenance.json", provenance)
+    _write_provider_projection(ctx, _provider_projection(result))
     return result
 
 
@@ -955,28 +1156,8 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     reviews = tuple(
         EligibilityReview.model_validate(value) for value in master.get("eligibility_reviews", [])
     )
-    result: dict[str, Any] = {
-        "complete": False,
-        "instruments": [],
-        "eligibility_reviews": [r.model_dump(mode="json") for r in reviews],
-        "qualified_universe": [r.model_dump(mode="json") for r in reviews],
-        "universe_artifact": master.get("universe_artifact"),
-        "universe_provenance": master.get("universe_provenance"),
-        "universe_account_binding_sha256": (master.get("provenance") or {}).get(
-            "credential_binding_sha256"
-        ),
-        "provider_qualifications": master.get("provider_qualifications", []),
-        "candidate_exclusions": [],
-        "candidate_counts": {"GBP": 0, "GBX": 0},
-        "eligible_counts": {
-            currency: sum(r.metadata.quote_currency == currency for r in reviews)
-            for currency in ("GBP", "GBX")
-        },
-        "unresolved_candidate_count": (master.get("summary") or {}).get("unresolved", 0),
-    }
-    for row in master.get("stocks", []):
-        if row.get("universe_member") is True:
-            result["candidate_counts"]["GBX"] += 1
+    result = _provider_projection(master)
+    result["stage"] = "SUPPLEMENTAL_RESEARCH_QUALIFICATION"
     refs = set(ctx.artifact_refs)
     supplemental = ctx.read_json("inputs/universe/supplemental.json") or {}
     paths = supplemental.get("instruments", {})
@@ -1050,7 +1231,7 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     result["artifact_refs"] = sorted(refs | ctx.artifact_refs)
     # This is a resumable projection, never a qualification proof. Individual
     # referenced artifacts retain their unchanged two-megabyte verification bound.
-    _large_write(ctx, "state/provider-stage.json", json_bytes(result))
+    _write_provider_projection(ctx, result)
     return result
 
 
@@ -1059,6 +1240,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--max-provider-requests", type=int, default=300)
     parser.add_argument("--requests-per-minute", type=int, default=30)
+    parser.add_argument(
+        "--rebuild-universe",
+        action="store_true",
+        help="Rebuild only derived universe views, preserving raw evidence and reviews. Policy changes do this automatically.",
+    )
+    parser.add_argument(
+        "--replay-saved",
+        action="store_true",
+        help="Reclassify hash-verified saved responses without network access. Diagnostic replay only; cannot approve eligibility or production.",
+    )
     args = parser.parse_args(argv)
     try:
         if not 1 <= args.max_provider_requests <= 100000 or not 1 <= args.requests_per_minute <= 60:
@@ -1076,13 +1267,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ctx,
                 max_requests=args.max_provider_requests,
                 requests_per_minute=args.requests_per_minute,
+                rebuild_universe=args.rebuild_universe,
+                replay_saved=args.replay_saved,
             )
-        print("TRADING 212 LIVE ISA UNIVERSE")
-        if result["status"] != "REFRESHED":
+        print(
+            "TRADING 212 SAVED RESPONSE REPLAY"
+            if args.replay_saved
+            else "TRADING 212 LIVE ISA UNIVERSE"
+        )
+        print(f"Universe policy: {UNIVERSE_POLICY_VERSION}")
+        if result["status"] not in {"REFRESHED", "REPLAYED"}:
             print("Live refresh failed; counts unavailable. No stale membership admitted.")
             return 2
         s = result["summary"]
         print(f"Raw instruments: {s['raw_instruments']}\nGBX stocks: {s['gbx_stocks']}")
+        print(
+            f"Identity valid: {s['identity_valid']}\nProvider-stage input count: {s['provider_stage_input_count']}"
+        )
         print(f"Venue resolved (informational only): {s['venue_resolved']}/{s['gbx_stocks']}")
         print("\nQUALIFICATION")
         labels = {
@@ -1111,6 +1312,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             print(f"{label}: {s['datasets'][name]}/{s['gbx_stocks']}")
         print("Universe qualification is not production/native/release qualification.")
+        if args.replay_saved:
+            print(
+                "Saved-response replay only; original retrieval time preserved. No network access or eligibility approval."
+            )
         print("After resolving bulk review inputs, continue with:")
         print(
             "railway run --service Money --environment production sh -c 'MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/build_live_qualification.py'"

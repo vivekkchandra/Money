@@ -338,6 +338,138 @@ def test_successful_unchanged_joins_are_resumed_without_network(ctx):
     assert fetcher.calls == []
 
 
+def test_offline_reuses_exact_cached_observations_without_credentials(ctx, monkeypatch):
+    first = enricher(ctx).enrich(row())
+    original_bytes = {
+        path.relative_to(ctx.root): path.read_bytes()
+        for path in ctx.root.rglob("*.json")
+    }
+    ctx.environ = {}
+    ctx.now += timedelta(hours=1)
+    fetcher = Fetcher()
+    fetcher.fail = AssertionError("Offline replay must never access the network")
+    worker = enricher(ctx, fetcher, offline=True)
+    requests = []
+    cached_json = worker.fetcher.json
+
+    def record_request(url, *, headers=None):
+        requests.append((url, headers))
+        return cached_json(url, headers=headers)
+
+    monkeypatch.setattr(worker.fetcher, "json", record_request)
+    result = worker.enrich(row())
+    assert result["eodhd_symbol"] == first["eodhd_symbol"]
+    assert result["eodhd_mapping_attempted"]
+    assert result["eodhd_lookup_origin"] == "CACHE"
+    assert result["companies_house_number"] == first["companies_house_number"]
+    assert result["provider_reports"] == first["provider_reports"]
+    assert result["provider_evidence_observed_at"] == first["provider_evidence_observed_at"]
+    assert result["provider_evidence_valid_until"] == first["provider_evidence_valid_until"]
+    assert result["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert not result["provider_rights_verified"]
+    assert fetcher.calls == []
+    assert worker.requests_used == 0
+    assert requests
+    assert all("api_token" not in parse_qs(urlsplit(url).query) for url, _ in requests)
+    assert all(headers is None for _, headers in requests)
+    assert {
+        path.relative_to(ctx.root): path.read_bytes()
+        for path in ctx.root.rglob("*.json")
+    } == original_bytes
+
+
+@pytest.mark.parametrize("credentials", [False, True])
+def test_offline_cache_miss_never_uses_network_or_writes_negative_cache(ctx, credentials):
+    if not credentials:
+        ctx.environ = {}
+    fetcher = Fetcher()
+    worker = enricher(ctx, fetcher, offline=True)
+    # The temporary normalization-pass flag cannot disable the transport policy.
+    worker.fetcher.cache_only = True
+    worker.fetcher.cache_only = False
+    with pytest.raises(AttributeError):
+        worker.fetcher.offline = False
+    result = worker.enrich(row())
+    assert result["eodhd_symbol"] is None
+    assert not result["eodhd_mapping_attempted"]
+    assert result["eodhd_lookup_origin"] == "NOT_PERFORMED"
+    assert result["provider_reasons"] == ["PROVIDER_CACHED_OBSERVATION_REQUIRED"]
+    assert result["provider_reports"] == {}
+    assert not tuple((ctx.root / "state").glob("bulk-failure-*.json"))
+    assert fetcher.calls == []
+    assert worker.requests_used == 0
+
+
+@pytest.mark.parametrize("credentials", [False, True])
+def test_offline_partial_mapping_is_retained_without_inventing_probe(ctx, credentials):
+    first = enricher(ctx, max_requests=1).enrich(row())
+    assert first["eodhd_symbol"] == "FIX.LSE"
+    if not credentials:
+        ctx.environ = {}
+    original_paths = {path.relative_to(ctx.root) for path in ctx.root.rglob("*.json")}
+    fetcher = Fetcher()
+    worker = enricher(ctx, fetcher, offline=True)
+    result = worker.enrich(row())
+    assert result["eodhd_symbol"] == "FIX.LSE"
+    assert result["eodhd_lookup_origin"] == "CACHE"
+    assert result["eodhd_mapping_attempted"]
+    assert result["provider_reports"] == {}
+    assert result["provider_datasets"] == {}
+    assert "identifiers" not in result
+    if not credentials:
+        assert "PROVIDER_CREDENTIAL_REQUIRED_FOR_LIVE_PROBE" in result["provider_reasons"]
+    else:
+        assert "PROVIDER_CACHED_OBSERVATION_REQUIRED" in result["provider_reasons"]
+    assert result["provider_evidence_observed_at"] == NOW.isoformat()
+    assert result["provider_evidence_valid_until"] == (NOW + timedelta(days=1)).isoformat()
+    assert fetcher.calls == []
+    assert worker.requests_used == 0
+    assert {path.relative_to(ctx.root) for path in ctx.root.rglob("*.json")} == original_paths
+
+
+def test_offline_stale_cache_cannot_create_current_evidence(ctx):
+    enricher(ctx).enrich(row())
+    ctx.environ = {}
+    ctx.now += timedelta(days=2)
+    fetcher = Fetcher()
+    result = enricher(ctx, fetcher, offline=True).enrich(row())
+    assert result["eodhd_symbol"] is None
+    assert not result["eodhd_mapping_attempted"]
+    assert result["provider_reports"] == {}
+    assert "PROVIDER_CACHED_OBSERVATION_REQUIRED" in result["provider_reasons"]
+    assert fetcher.calls == []
+
+
+def test_offline_corrupt_cache_remains_explicit_and_does_not_refetch(ctx):
+    first = enricher(ctx).enrich(row())
+    for reference in first["provider_evidence"]:
+        path = ctx.root / reference["path"]
+        cached = json.loads(path.read_bytes())
+        if cached.get("request", {}).get("path", "").startswith("/api/search/"):
+            path.write_text("{}")
+            break
+    else:
+        pytest.fail("Fixture must include the original provider search response")
+    ctx.environ = {}
+    fetcher = Fetcher()
+    result = enricher(ctx, fetcher, offline=True).enrich(row())
+    assert result["eodhd_symbol"] is None
+    assert "PROVIDER_CACHE_INTEGRITY_FAILED" in result["provider_reasons"]
+    assert result["provider_reports"] == {}
+    assert fetcher.calls == []
+
+
+def test_live_missing_credentials_cannot_reuse_cache_as_if_authenticated(ctx):
+    enricher(ctx).enrich(row())
+    ctx.environ = {}
+    fetcher = Fetcher()
+    result = enricher(ctx, fetcher).enrich(row())
+    assert result["provider_reasons"] == ["EODHD_CREDENTIAL_MISSING"]
+    assert result["eodhd_symbol"] is None
+    assert not result["eodhd_mapping_attempted"]
+    assert fetcher.calls == []
+
+
 def test_cache_tampering_is_explicit_and_cannot_produce_admission_proofs(ctx):
     first = enricher(ctx).enrich(row())
     # Model an external corrupted disk, not an edit to production evidence.

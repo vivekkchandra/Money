@@ -325,18 +325,29 @@ def _verified_instrument(
             "corporate_action_coverage_hash": corporate[0],
             "archived_market_proof_hash": archived[0] if archived else None,
             "issuer_jurisdiction": foreign_issuer_evidence[0] if foreign_issuer_evidence else None,
-            "issuer_jurisdiction_proof_hash": foreign_issuer_evidence[1] if foreign_issuer_evidence else None,
+            "issuer_jurisdiction_proof_hash": foreign_issuer_evidence[1]
+            if foreign_issuer_evidence
+            else None,
         }
     )
     instrument.identifiers.symbol_for("eodhd", ctx.now)
     costs = instrument.cost_applicability
     if (
-        (not instrument.identifiers.companies_house_number and not (
-            foreign_issuer_evidence and foreign_issuer_evidence[0] != "GB"
-            and any(record.payload.kind == "filing" for record in instrument.supplemental_evidence)
-            and any(isinstance(record.payload, FinancialFact) and record.payload.metric != "spread_bps"
-                    for record in instrument.supplemental_evidence)
-        ))
+        (
+            not instrument.identifiers.companies_house_number
+            and not (
+                foreign_issuer_evidence
+                and foreign_issuer_evidence[0] != "GB"
+                and any(
+                    record.payload.kind == "filing" for record in instrument.supplemental_evidence
+                )
+                and any(
+                    isinstance(record.payload, FinancialFact)
+                    and record.payload.metric != "spread_bps"
+                    for record in instrument.supplemental_evidence
+                )
+            )
+        )
         or not instrument.corporate_actions_complete
         or not instrument.spread_evidence.available_at(ctx.now)
         or costs.sdrt == "UNKNOWN"
@@ -983,7 +994,18 @@ def _filter_source_coverage(ctx: QualificationContext, result: dict[str, Any]) -
 
 def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     """Observe current metadata, resume reviews, and probe only reviewed mappings."""
-    if ctx.read_json("state/bulk-universe-mode.json") is not None:
+    # Presence selects the bulk workflow; its finalizer validates/migrates the
+    # policy before consuming projections. A corrupt/missing marker must not
+    # route an existing bulk universe back to the legacy GBP/GBX workflow.
+    if any(
+        ctx._path(path).exists()
+        for path in (
+            "state/bulk-universe-mode.json",
+            "outputs/uk-isa-stock-universe.json",
+            "outputs/universe-provenance.json",
+            "state/universe-rebuild-source.json",
+        )
+    ):
         from money.qualification.universe import run_bulk_provider_stages
 
         return run_bulk_provider_stages(ctx)
