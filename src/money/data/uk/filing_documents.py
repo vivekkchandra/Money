@@ -20,7 +20,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Any, Literal, Protocol
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from zipfile import ZIP_STORED, ZipFile
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
@@ -166,7 +166,7 @@ class CompaniesHouseDocumentTransport:
             url, headers={"Authorization": self._authorization, "Accept": "application/json"}
         ).content
 
-    def _location(self, url: str, mime: str) -> str:
+    def _location(self, url: str, mime: str, *, discover_only: bool = False) -> str:
         host, target = validate_url(url, frozenset({DOCUMENT_HOST}))
         if not re.fullmatch(rf"/document/{IDENTIFIER}/content", target):
             raise SourceSecurityError("FILING_CONTENT_URL_INVALID")
@@ -216,7 +216,15 @@ class CompaniesHouseDocumentTransport:
             if not location:
                 raise SourceSecurityError("FILING_LOCATION_MISSING")
             redirected = urljoin(url, location)
-            validate_url(redirected, self.storage_hosts | {DOCUMENT_HOST})
+            if discover_only:
+                # Observe an authoritative redirect without following it. This
+                # does not approve the destination or transfer any credentials.
+                destination = urlsplit(redirected).hostname
+                if destination is None:
+                    raise SourceSecurityError("FILING_LOCATION_MISSING")
+                validate_url(redirected, frozenset({destination}))
+            else:
+                validate_url(redirected, self.storage_hosts | {DOCUMENT_HOST})
             return redirected
         except TimeoutError as error:
             raise ProviderFailure("PROVIDER_TIMEOUT", retryable=True) from error
@@ -227,6 +235,16 @@ class CompaniesHouseDocumentTransport:
             if timer:
                 timer.cancel()
             connection.close()
+
+    def inspect_storage_host(self, url: str, mime: str) -> str:
+        """Return only the observed host; never persist signed URLs or follow them."""
+        if mime not in MACHINE_TYPES:
+            raise SourceSecurityError("FILING_MIME_UNSUPPORTED")
+        location = self._location(url, mime, discover_only=True)
+        host = urlsplit(location).hostname
+        if host is None:
+            raise SourceSecurityError("FILING_LOCATION_MISSING")
+        return host
 
     def content(self, url: str, mime: str) -> tuple[FetchResult, str]:
         if mime not in MACHINE_TYPES:
@@ -342,14 +360,67 @@ class CompaniesHouseFilingDocuments:
         snapshot_id: str,
         currency_proof: FinancialCurrencyProof,
     ) -> FilingDocumentBundle:
+        result = self._retrieve_document(
+            identifiers, filing_id, snapshot_id, currency_proof, admission_probe=False
+        )
+        if not isinstance(result, FilingDocumentBundle):
+            raise ValueError("FILING_DOCUMENT_RESPONSE_INVALID")
+        return result
+
+    def inspect_document(
+        self, identifiers: InstrumentIdentifiers, filing_id: str
+    ) -> dict[str, Any]:
+        """Discover actual representation identity without claiming units or qualification.
+
+        Only an explicitly unqualified admission scope can use this operation.
+        Raw bytes and signed download URLs are never returned to the operator.
+        All identity, transport, storage-host and timestamp checks still apply.
+        """
+        result = self._retrieve_document(
+            identifiers, filing_id, "provider-admission-probe", None, admission_probe=True
+        )
+        if not isinstance(result, dict):
+            raise ValueError("FILING_DOCUMENT_RESPONSE_INVALID")
+        return result
+
+    def probe_document(
+        self, identifiers: InstrumentIdentifiers, filing_id: str,
+        currency_proof: FinancialCurrencyProof,
+    ) -> FilingDocumentBundle:
+        """Normalize an unqualified observation after reviewed exact accounting units.
+
+        This never admits the provider. Production callers must use ``fetch``;
+        admission additionally needs independent rights and runtime review.
+        """
+        result = self._retrieve_document(
+            identifiers, filing_id, "provider-admission-probe", currency_proof,
+            admission_probe=True,
+        )
+        if not isinstance(result, FilingDocumentBundle):
+            raise ValueError("FILING_DOCUMENT_RESPONSE_INVALID")
+        return result
+
+    def _retrieve_document(
+        self, identifiers: InstrumentIdentifiers, filing_id: str, snapshot_id: str,
+        currency_proof: FinancialCurrencyProof | None, *, admission_probe: bool,
+    ) -> FilingDocumentBundle | dict[str, Any]:
         start = self.clock()
         identifiers.require_current(start)
-        self.qualification.require("filing", start)
-        self.qualification.require("financial", start)
+        if admission_probe:
+            if (
+                self.qualification.production_qualified
+                or not self.qualification.verified_at <= start < self.qualification.valid_until
+            ):
+                raise ValueError("FILING_ADMISSION_SCOPE_INVALID")
+        else:
+            self.qualification.require("filing", start)
+            self.qualification.require("financial", start)
         number = identifiers.companies_house_number
         if not number or not re.fullmatch(IDENTIFIER, filing_id):
             raise ValueError("FILING_IDENTIFIER_INVALID")
-        if currency_proof.company_number != number or currency_proof.filing_id != filing_id:
+        if currency_proof is not None and (
+            currency_proof.company_number != number or currency_proof.filing_id != filing_id
+        ):
             raise ValueError("FILING_CURRENCY_PROOF_MISMATCH")
         filing_url = f"https://{API_HOST}/company/{number}/filing-history/{filing_id}"
         raw_filing = self.transport.metadata(filing_url)
@@ -382,6 +453,17 @@ class CompaniesHouseFilingDocuments:
         length = resource.get("content_length") if isinstance(resource, dict) else None
         if type(length) is not int or not 0 < length <= 5_000_000:
             raise SourceSecurityError("FILING_DECLARED_SIZE_INVALID")
+        inspect_host = getattr(self.transport, "inspect_storage_host", None)
+        if currency_proof is None and admission_probe and callable(inspect_host):
+            observed_host = inspect_host(link + "/content", mime)
+            if observed_host != DOCUMENT_HOST and observed_host not in self.storage_hosts:
+                return {
+                    "status": "UNREVIEWED_STORAGE_HOST",
+                    "company_number": number, "filing_id": filing_id,
+                    "document_id": document_id, "mime_type": mime,
+                    "storage_host": observed_host, "retrieved_at": self.clock().isoformat(),
+                    "accounting_currency": None, "document_content_hash": None,
+                }
         result, storage_host = self.transport.content(link + "/content", mime)
         if storage_host != DOCUMENT_HOST and storage_host not in self.storage_hosts:
             raise SourceSecurityError("FILING_STORAGE_HOST_UNQUALIFIED")
@@ -389,8 +471,12 @@ class CompaniesHouseFilingDocuments:
             raise SourceSecurityError("FILING_REPRESENTATION_MISMATCH")
         retrieved_at = self.clock()
         identifiers.require_current(retrieved_at)
-        self.qualification.require("filing", retrieved_at)
-        self.qualification.require("financial", retrieved_at)
+        if admission_probe:
+            if not self.qualification.verified_at <= retrieved_at < self.qualification.valid_until:
+                raise ValueError("FILING_ADMISSION_SCOPE_INVALID")
+        else:
+            self.qualification.require("filing", retrieved_at)
+            self.qualification.require("financial", retrieved_at)
         raw_date = filing.get("date")
         if not isinstance(raw_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
             raise ValueError("FILING_DATE_INVALID")
@@ -410,6 +496,15 @@ class CompaniesHouseFilingDocuments:
             )
         )
         digest = hashlib.sha256(result.content).hexdigest()
+        if currency_proof is None:
+            return {
+                "status": "UNQUALIFIED_REPRESENTATION_OBSERVATION",
+                "company_number": number, "filing_id": filing_id,
+                "document_id": document_id, "document_content_hash": digest,
+                "mime_type": mime, "content_length": length, "storage_host": storage_host,
+                "metadata_url": link, "retrieved_at": retrieved_at.isoformat(),
+                "accounting_currency": None,
+            }
         if currency_proof.document_content_hash != digest:
             # A revised/replaced representation cannot inherit an earlier units review.
             raise ValueError("FILING_CURRENCY_PROOF_CONTENT_MISMATCH")

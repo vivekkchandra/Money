@@ -34,3 +34,14 @@ node_modules/
 npm-debug.log*
 playwright-report/
 test-results/
+
+# Operator inputs/checkpoints are local, potentially licensed review material.
+# Only explicitly reviewed final manifest/artifacts should ever be published.
+data/qualified/live/inputs/
+data/qualified/live/discovery/
+data/qualified/live/reviews/
+data/qualified/live/outputs/
+data/qualified/live/state/
+data/qualified/live/status.json
+data/qualified/live/.runner.lock
+data/qualified/live/manifest.pending.json

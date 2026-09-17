@@ -80,6 +80,15 @@ request research for `DEMO.L`. All completed reports remain available after refr
 
 ## Verification and deployment
 
+For live production admission, use the [resumable qualification runner](docs/LIVE_QUALIFICATION_RUNNER.md):
+
+```sh
+railway run --service Money --environment production uv run python scripts/build_live_qualification.py
+```
+
+It generates review inputs and only assembles a manifest from genuinely qualified
+evidence. Rerun the same command after completing required independent reviews.
+
 ```sh
 uv run pytest
 uv run ruff check .

@@ -10,7 +10,7 @@ from contextlib import ExitStack
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from pydantic import Field, PrivateAttr, TypeAdapter, model_validator
@@ -416,8 +416,31 @@ def merge_archived_market(
     return result
 
 
+class SnapshotSources(Protocol):
+    """The data-only subset needed before native qualification can begin.
+
+    A qualification operator may supply validated data sources without inventing
+    a completed LiveManifest. Production still supplies its admitted manifest.
+    """
+
+    @property
+    def reviewed_instruments(self) -> tuple[VerifiedInstrument, ...]: ...
+
+    @property
+    def provider_qualifications(self) -> tuple[ProviderQualification, ...]: ...
+
+    @property
+    def market_credential_environment_variable(self) -> str: ...
+
+    @property
+    def filings_credential_environment_variable(self) -> str: ...
+
+    @property
+    def filing_document_storage_hosts(self) -> tuple[ReviewedStorageHost, ...]: ...
+
+
 class LiveSnapshotBuilder:
-    def __init__(self, manifest: LiveManifest, store: ResearchStore) -> None:
+    def __init__(self, manifest: SnapshotSources, store: ResearchStore) -> None:
         self.manifest = manifest
         self.circuit = ProviderCircuit(store)
 
