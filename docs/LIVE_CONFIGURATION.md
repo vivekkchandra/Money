@@ -3,6 +3,47 @@
 The live assembly is implemented, but this repository is **PRODUCTION BLOCKED**.
 Never turn on live mode with fabricated qualification hashes or demo data.
 
+## Current Railway startup incident
+
+The owner reports `Money` CRASHED and `Postgres` ONLINE in the existing
+`incredible-flexibility / production` project. The configuration rejection is
+intentional: neither a running database nor a research dependency installation
+qualifies providers, ISA availability, models or native execution. Keep
+`MONEY_ENV=production`, `MONEY_DEPLOYMENT_ENV=hosted`, `MONEY_RESEARCH_MODE=live`,
+and `MONEY_ENABLE_SYNTHETIC_DEMO=false`; do not switch modes to clear this error.
+
+Run `python -m money.research.preflight --role api` (or `--role worker`) in the
+configured container to obtain secret-safe, read-only diagnostics without importing
+the API. It checks the existing Settings/manifest validators, never creates proofs,
+never contacts providers, and deliberately exits 2 with `PRODUCTION BLOCKED`.
+Credential presence is not credential qualification. Existing `validate_live.py`
+continues to distinguish offline JSON/hash validation from live acceptance.
+
+Railway API uses `deploy/railway/api.toml` and the default minimal `Dockerfile`.
+The private research worker uses `deploy/railway/worker.toml` and explicit
+`Dockerfile.research`; parity tests keep its instructions aligned with the root
+research target and both use the same dependency lock. This resolves target
+selection, not native package/source attestation, ChromaDB remediation or LEAN
+execution. Do not publish a worker domain or treat this image as qualified.
+
+No genuine bundle currently exists at `data/qualified/live/manifest.json`.
+Only populate that path after actual qualification; the default image already
+copies `data/`. Every artifact component must be a non-symlink regular path under
+the bundle, with bounded bytes matching SHA256. EODHD qualification must cover
+`ohlcv`, `corporate_action`, and `news`; Companies House must cover `filing`
+(plus `financial` when selected filing documents require it).
+
+**Unresolved current-universe defect:** `build_live_runtime` still constructs
+eligibility from reviewed manifest instruments. The documented
+[Trading 212 metadata response](https://docs.trading212.com/api/instruments/instruments)
+does not establish both account-specific current ISA eligibility and buy availability.
+The [ISA directory](https://www.trading212.com/trading-instruments/isa) identifies
+the relevant catalog, but no qualified machine feed/freshness/buy-status contract
+was established in this session. Listing membership, `addedOn`, or maximum quantity
+must not be converted into a fresh eligibility proof. A Trading 212-approved source
+and verified semantics are required before implementing/qualifying that replacement.
+Unknown remains rejected; no new unsupported endpoint or broker account access was added.
+
 ## Configuration inputs
 
 1. Use `uv run python scripts/validate_live.py --schema` for the current strict

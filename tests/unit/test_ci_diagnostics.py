@@ -106,6 +106,38 @@ def test_junit_summary_maps_checkout_frames_but_not_external_paths(tmp_path):
     )
 
 
+def test_pytest_intermediate_bare_frames_survive_external_final_exception(tmp_path):
+    report = _junit_report(
+        tmp_path,
+        (
+            "tests/integration/test_postgres.py:46: \n"
+            f"{ROOT}/src/money/storage/store.py:152:\n"
+            "/private/provider/customer.py:90:\n"
+            "src/money/../../private.py:12:\n"
+            "src/money/not_a_real_source.py:4:\n"
+            "/private/provider/engine.py:10: sqlalchemy.exc.ProgrammingError: PRIVATE\n"
+        ),
+    )
+    assert SUMMARIZE(report, "pytest") == (
+        "1 cases; 1 failed; test_worker, tests/integration/test_postgres.py:46, "
+        "src/money/storage/store.py:152"
+    )
+
+
+def test_qualified_exception_only_exposes_allowlisted_short_type(tmp_path):
+    report = _junit_report(
+        tmp_path,
+        (
+            "tests/integration/test_postgres.py:46: private.module.IntegrityError: PRIVATE\n"
+            "src/money/worker.py:12: private.module.UnknownPrivateClass: PRIVATE\n"
+        ),
+    )
+    assert SUMMARIZE(report, "pytest") == (
+        "1 cases; 1 failed; test_worker, tests/integration/test_postgres.py:46: IntegrityError, "
+        "src/money/worker.py:12"
+    )
+
+
 def test_junit_summary_uses_only_known_codes_stages_and_relative_logger_location(tmp_path):
     report = _junit_report(
         tmp_path,
@@ -202,6 +234,21 @@ def test_smoke_summary_extracts_stage_and_checkout_node_frame_only(tmp_path):
 def test_unknown_smoke_content_is_not_success_or_exposed(tmp_path):
     report = tmp_path / "smoke.log"
     report.write_text("Smoke failed during PRIVATE_ACCOUNT: PRIVATE_API_KEY\nSuccess!\n")
+    assert SUMMARIZE(report, "smoke") == "NO_SAFE_FAILURE_DIAGNOSTICS"
+
+
+@pytest.mark.parametrize(
+    "prefix,field",
+    [
+        ("Login returned HTTP ", "login_http"),
+        ("Signed-out research returned HTTP ", "signed_out_http"),
+    ],
+)
+def test_smoke_auth_status_is_bounded_without_response_content(tmp_path, prefix, field):
+    report = tmp_path / "smoke.log"
+    report.write_text(f"Smoke failed during durable workspace login: {prefix}503 PRIVATE\n")
+    assert SUMMARIZE(report, "smoke") == f"FAILURE_DIAGNOSTICS; stage=LOGIN, {field}=503"
+    report.write_text(f"{prefix}5030 PRIVATE\n")
     assert SUMMARIZE(report, "smoke") == "NO_SAFE_FAILURE_DIAGNOSTICS"
 
 

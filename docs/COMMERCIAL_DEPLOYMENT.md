@@ -8,10 +8,18 @@ startup gates. The personal R&D deployment instructions below describe a separat
 noncommercial mode, not a route around these gates. Existing project IDs, Git
 reference tables, Netlify SSR and API/private-worker boundaries are unchanged.
 
-Published `cade435` passed the release-SHA public web check in GitHub run
-35153377355. The same release's broader CI failed PostgreSQL, backend drill,
-HTTP smoke and research dependency checks. Do not promote this local follow-up
+Published `3ab2ff9` passed the release-SHA public web check in GitHub run
+35156964352. The same release's broader CI (35156964337) failed PostgreSQL, backend
+drill, LOGIN-stage HTTP smoke and research dependency checks. Do not promote this local follow-up
 until those failures and the hosted live research acceptance are resolved.
+
+For Railway, the API keeps `deploy/railway/api.toml` and the minimal default image;
+the private worker now selects `Dockerfile.research` through
+`deploy/railway/worker.toml`. No service was created or deployed by this follow-up.
+Use the read-only `python -m money.research.preflight --role api|worker` with one
+role selected to diagnose missing production configuration; its blocked exit is
+intentional and it is not a readiness probe. See LIVE_CONFIGURATION.md for the
+unresolved current-ISA-source and genuine qualification bundle requirements.
 
 ## Personal R&D deployment target (2026-09-16; retained separately)
 

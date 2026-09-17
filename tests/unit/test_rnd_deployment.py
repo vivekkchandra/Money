@@ -42,10 +42,11 @@ def test_rnd_migration_is_frozen_and_matches_queue_column(dialect, monkeypatch):
         migration.downgrade()
 
 
-def test_railway_uses_existing_image_separate_worker_and_release_migration():
+def test_railway_selects_research_image_only_for_private_worker():
     api, worker = [tomllib.loads((ROOT / f"deploy/railway/{service}.toml").read_text())
                    for service in ("api", "worker")]
-    assert api["build"] == worker["build"] == {"builder": "DOCKERFILE", "dockerfilePath": "Dockerfile"}
+    assert api["build"] == {"builder": "DOCKERFILE", "dockerfilePath": "Dockerfile"}
+    assert worker["build"] == {"builder": "DOCKERFILE", "dockerfilePath": "Dockerfile.research"}
     assert api["deploy"]["preDeployCommand"] == ["alembic upgrade head"]
     assert "exec uvicorn money.api.app:app" in api["deploy"]["startCommand"]
     assert "${PORT:-8000}" in api["deploy"]["startCommand"]
@@ -53,3 +54,50 @@ def test_railway_uses_existing_image_separate_worker_and_release_migration():
     assert worker["deploy"]["startCommand"] == "python -m money.worker"
     assert "healthcheckPath" not in worker["deploy"]  # Private worker is not an HTTP service.
     assert "preDeployCommand" not in worker["deploy"]
+
+
+def _docker_instructions(path: Path) -> list[str]:
+    """Compare checked-in instructions, not comments or whitespace-only changes."""
+    return [line.strip() for line in path.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")]
+
+
+def test_railway_research_image_matches_existing_research_target():
+    root = _docker_instructions(ROOT / "Dockerfile")
+    research = _docker_instructions(ROOT / "Dockerfile.research")
+    # Railway's custom Dockerfile path must select exactly the target already
+    # used by Compose. Keep dependency pins/settings single-source via parity.
+    assert root[-1] == "FROM control-plane AS runtime"
+    assert research == root[:-1]
+    assert research[-1] == 'CMD ["python", "-m", "money.worker"]'
+    assert "CMD python -m money.worker --healthcheck" in research
+    assert research[-4] == "USER money"
+
+
+def test_default_api_image_stays_minimal_and_builds_stay_locked():
+    root = _docker_instructions(ROOT / "Dockerfile")
+    control = root[:root.index("FROM control-plane AS research")]
+    assert "FROM control-plane AS runtime" == root[-1]
+    assert not any("--extra" in line for line in control)
+    assert "COPY pyproject.toml uv.lock README.md ./" in control
+    assert "USER money" in control
+    assert "STOPSIGNAL SIGTERM" in control
+    assert any("useradd --system --uid 10001" in line for line in control)
+    for filename in ("Dockerfile", "Dockerfile.research"):
+        instructions = _docker_instructions(ROOT / filename)
+        installs = [line for line in instructions if line.startswith("RUN uv sync")]
+        assert len(installs) == 2
+        assert all("--locked --no-dev --no-editable" in line for line in installs)
+        assert installs[-1] == "RUN uv sync --locked --no-dev --no-editable --extra research"
+        assert not any("pip install" in line or "--no-deps" in line for line in instructions)
+
+
+def test_worker_image_does_not_include_qualification_or_change_research_mode():
+    instructions = _docker_instructions(ROOT / "Dockerfile.research")
+    joined = "\n".join(instructions)
+    assert "MONEY_ENV=production" in joined
+    for bypass in ("MONEY_RESEARCH_MODE", "MONEY_LIVE_MANIFEST", "live_rnd", "demo"):
+        assert bypass not in joined
+    for line in instructions:
+        if line.startswith(("COPY", "ADD")):
+            assert not any(item in line for item in ("upstreams", ".env", "fixtures", "qualification"))

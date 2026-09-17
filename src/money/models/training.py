@@ -1,7 +1,7 @@
-"""Offline numeric baseline experiments; no registry writes or automatic promotion.
+"""Chronological numeric experiments; no registry writes or automatic promotion.
 
-The solver is Money-owned NumPy ridge, not native Qlib training. Its raw-space
-coefficients use exactly the features consumed by the native Qlib inference seam.
+The baseline solver is Money-owned NumPy ridge; qlib_training supplies the separate
+attested native solver. Raw-space coefficients use the native inference features.
 Chronology checks verify the supplied provenance; independent source/PIT review,
 regression qualification and manual model promotion remain separate requirements.
 """
@@ -14,7 +14,7 @@ import math
 import os
 import platform
 import stat
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -163,7 +163,7 @@ class FitEvaluation(Contract):
 
 class TrainingValidationReport(Contract):
     status: Literal["UNPROMOTED"] = "UNPROMOTED"
-    solver: Literal["money-numpy-standardized-ridge-v1"] = "money-numpy-standardized-ridge-v1"
+    solver: Literal["money-numpy-standardized-ridge-v1", "pinned-qlib-standardized-ridge-v1"] = "money-numpy-standardized-ridge-v1"
     dataset_hash: Digest
     dataset_origin: Literal["SYNTHETIC_TEST", "ARCHIVED_EVIDENCE"]
     configuration: TrainingConfiguration
@@ -173,6 +173,8 @@ class TrainingValidationReport(Contract):
     feature_implementation_hash: Digest
     numpy_version: str
     python_version: str
+    native_source_hash: Digest | None = None
+    runtime_versions: dict[str, str] = Field(default_factory=dict)
     walk_forward: tuple[FitEvaluation, ...]
     held_out: FitEvaluation
     chronology_checks_passed: Literal[True] = True
@@ -287,6 +289,7 @@ def _evaluate(
     name: str, all_rows: Sequence[TrainingObservation], validation_rows: Sequence[TrainingObservation],
     fit_cutoff: datetime, evaluation_cutoff: datetime, configuration: TrainingConfiguration,
     minimum_validation: int,
+    fit: Callable[[Sequence[TrainingObservation], float], tuple[NDArray[np.float64], float, float]] = _fit,
 ) -> FitEvaluation:
     if not validation_rows:
         raise ValueError(f"{name}: validation partition is empty")
@@ -306,7 +309,7 @@ def _evaluate(
             last_label_end[row.ticker] = row.label_end
     if len(test) < minimum_validation:
         raise ValueError(f"{name}: insufficient non-overlapping available validation observations")
-    weights, intercept, mean = _fit(train, configuration.ridge_alpha)
+    weights, intercept, mean = fit(train, configuration.ridge_alpha)
     return FitEvaluation(name=name, fit_cutoff=fit_cutoff,
         training_start=min(row.prediction_time for row in train),
         training_latest_label_availability=max(row.label_available_at for row in train),
@@ -322,6 +325,18 @@ def _evaluate(
 
 def train_baseline(dataset: TrainingDataset, configuration: TrainingConfiguration) -> TrainingResult:
     """Fixed-configuration chronological experiment. Never tune on or refit after OOS."""
+    return _train(dataset, configuration, fit=_fit)
+
+
+def _train(
+    dataset: TrainingDataset,
+    configuration: TrainingConfiguration,
+    *,
+    fit: Callable[[Sequence[TrainingObservation], float], tuple[NDArray[np.float64], float, float]],
+    native_source_hash: str | None = None,
+    runtime_versions: dict[str, str] | None = None,
+) -> TrainingResult:
+    """Shared chronological partitions; native and baseline solvers stay explicit."""
     dataset = TrainingDataset.model_validate_json(dataset.model_dump_json())
     configuration = TrainingConfiguration.model_validate_json(configuration.model_dump_json())
     rows = dataset.observations
@@ -343,13 +358,13 @@ def train_baseline(dataset: TrainingDataset, configuration: TrainingConfiguratio
                           else configuration.training_cutoff)
         folds.append(_evaluate(f"walk-forward-{index + 1}", pre_oos, validation_rows,
             min(selected) - embargo, outcome_cutoff, configuration,
-            configuration.minimum_fold_observations))
+            configuration.minimum_fold_observations, fit))
     # The final holdout is not used for parameter selection, preprocessing, fitting,
     # or fold design. A changed OOS label can change only evaluation/identity fields.
     holdout = [row for row in rows if configuration.training_cutoff + embargo <= row.prediction_time
                <= configuration.evaluation_cutoff]
     evaluation = _evaluate("held-out", rows, holdout, configuration.training_cutoff,
-        configuration.evaluation_cutoff, configuration, configuration.minimum_oos_observations)
+        configuration.evaluation_cutoff, configuration, configuration.minimum_oos_observations, fit)
     artifact = LinearModelArtifact(model_id=configuration.model_id, model_version=configuration.model_version,
         coefficients=evaluation.coefficients, intercept=evaluation.intercept,
         training_data_version=dataset.version, dataset_hash=dataset.hash,
@@ -358,17 +373,25 @@ def train_baseline(dataset: TrainingDataset, configuration: TrainingConfiguratio
         oos_observations=evaluation.metrics.observations, walk_forward_folds=len(folds),
         oos_rmse=evaluation.metrics.rmse, pit_validated=False)
     implementation = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    if native_source_hash is not None:
+        implementation = content_hash({
+            "chronology": implementation,
+            "native_training": hashlib.sha256(Path(__file__).with_name("qlib_training.py").read_bytes()).hexdigest(),
+        })
     report = TrainingValidationReport(dataset_hash=dataset.hash, dataset_origin=dataset.origin,
+        solver="pinned-qlib-standardized-ridge-v1" if native_source_hash else "money-numpy-standardized-ridge-v1",
         configuration=configuration, configuration_hash=configuration.config_hash,
         artifact_hash=artifact.artifact_hash, implementation_hash=implementation,
         feature_implementation_hash=hashlib.sha256(inspect.getsource(feature_values).encode()).hexdigest(),
         numpy_version=np.__version__, python_version=platform.python_version(),
+        native_source_hash=native_source_hash, runtime_versions=runtime_versions or {},
         walk_forward=tuple(folds), held_out=evaluation,
         limitations=(
             "UNPROMOTED: no registry registration, approval or production activation was performed.",
             "PIT checks validate declared timestamps; source authenticity, historical universe, adjustment policy and archive hashes require independent review.",
             "Artifact pit_validated remains false until independent source/PIT review; reviewing a final true artifact changes its hash and requires newly bound validation evidence.",
-            "Money-owned NumPy ridge training; native Qlib training and native runtime qualification are not claimed.",
+            ("Pinned native Qlib ridge training; this experiment does not certify a production dataset, native egress or runtime qualification."
+             if native_source_hash else "Money-owned NumPy ridge training; native Qlib training and native runtime qualification are not claimed."),
             "Fixed predeclared alpha; repeated experiments on this holdout invalidate its untouched status and require a new independent holdout.",
             "Non-overlapping labels per instrument reduce overlap; cross-instrument dependence and regime coverage are not certified.",
             "Regression qualification, independent manual review and separately attested source/PIT validation remain required.",

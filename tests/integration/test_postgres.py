@@ -122,6 +122,10 @@ def test_postgres_migration_worker_claims_and_immutability(monkeypatch: pytest.M
         assert measured["costs"]["actual_total"] is None
         assert measured["costs"]["actual_count"] == 0
         assert measured["jobs"]["duration"]["samples"] == 1
+        assert measured["signals"]["insufficient_evidence"] == 1
+        assert store.for_workspace("other").operational_metrics(include_details=True)["signals"] == {
+            "produced": 0, "rejected": 0, "insufficient_evidence": 0,
+        }
     finally:
         store.engine.dispose()
         with admin.begin() as connection:

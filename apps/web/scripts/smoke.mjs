@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import assert from "node:assert/strict";
 import { checkDeployment } from "./check-deployment.mjs";
 import { stopChild, trackChild, waitForChild } from "./process-lifecycle.mjs";
+import { smokeWebOrigin } from "./smoke-origin.mjs";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 const root = resolve(web, "../..");
@@ -57,7 +58,7 @@ async function waitFor(url, child) {
 try {
   const backendPort = await port();
   const webPort = await port();
-  const origin = `http://127.0.0.1:${webPort}`;
+  const origin = smokeWebOrigin(webPort);
   const backend = `http://127.0.0.1:${backendPort}`;
   stage = "database migration";
   await waitForChild(run(resolve(root, ".venv/bin/alembic"), ["upgrade", "head"], root), { timeoutMs: 60000 });
@@ -69,7 +70,7 @@ try {
   await checkDeployment(origin);
   stage = "durable workspace login";
   const signedOut = await fetch(`${origin}/api/research`);
-  assert.equal(signedOut.status, 401);
+  assert.equal(signedOut.status, 401, `Signed-out research returned HTTP ${signedOut.status}`);
   const login = await fetch(`${origin}/api/session`, { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
   assert.equal(login.status, 200, `Login returned HTTP ${login.status}`);
   const cookie = login.headers.get("set-cookie").split(";")[0];

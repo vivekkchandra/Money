@@ -1,5 +1,47 @@
 # Production gap matrix
 
+## Authenticated-credential production continuation — 2026-09-17
+
+**PRODUCTION BLOCKED.** The current implementation and observed checks are recorded
+in [PRODUCTION_EXECUTION_2026-09-17.md](PRODUCTION_EXECUTION_2026-09-17.md). The live
+worker now refreshes Trading 212 metadata against separate current reviewed
+eligibility evidence and can consume an external hash-pinned catalogue. Provider
+admission probes and native Qlib training are implemented; they do not constitute
+live qualifications. The isolated PostgreSQL recovery/restore drill passed after
+fixing its SQLAlchemy result iteration. Railway CLI DNS and Docker access remain
+blocked; no genuine manifest, promoted model or hosted acceptance exists.
+
+Earlier entries below describe the state when recorded and are historical.
+
+## CI continuation — 2026-09-17
+
+Two local fixes now have regression evidence: canonical Next.js smoke origins
+fix the reproduced403 login mismatch without changing CSRF, and shared JSON-key
+binding fixes the PostgreSQL metrics SELECT/GROUP BY expression mismatch. Neither
+has been published or rerun in hosted CI. Current main stays3ab2ff9; deployment
+connectors remain administrator-disabled and Git metadata read-only. All live
+universe, real qualification bundle, native security and hosted acceptance gaps
+remain open. VERIFICATION.md records exact local results separately from CI.
+
+## Railway startup qualification follow-up — current
+
+**PRODUCTION BLOCKED.** Initial local and tracking main are now
+`3ab2ff93c6dfe5b06de70872803edd02fbb72e98`; earlier baseline entries below are historical.
+
+| Requirement | Status | Actual evidence / remaining gap |
+| --- | --- | --- |
+| Production guard | VERIFIED | Settings unchanged; no mode switch, synthetic bundle or fake proof hash |
+| Current broker universe | NOT_IMPLEMENTED | Static reviewed manifest subset remains; no approved feed proving both current ISA and buy availability established |
+| Qualification bundle | BLOCKED_CREDENTIAL | No real manifest/proof collection or provider/inference configuration available; all 11 opted-in production tests skip |
+| Artifact validation | VERIFIED | Descriptor-relative bounded reads reject symlink ancestors, special files and malformed paths; required runtime datasets cannot be omitted |
+| API/worker image boundary | VERIFIED | Offline parity tests and CI select explicit research Dockerfile for private worker; actual image build blocked locally |
+| Railway services | BLOCKED_EXTERNAL_INFRA | Owner reports Money CRASHED/Postgres ONLINE; fresh connector discovery still DISABLED_BY_ADMIN/NOT_AVAILABLE, so no remote inspection, migrations or mutation |
+| Published public web | VERIFIED | Live-web run 35156964352 checks HTTP 200, routes/assets/headers and served SHA 3ab2ff9; not authenticated research |
+| PostgreSQL and HTTP acceptance | FAILED | CI 35156964337 still fails one PG test, backend drill and LOGIN-stage HTTP smoke; sanitized diagnostics improved, no speculative root-cause fix |
+| Native runtime qualification | BLOCKED_EXTERNAL_INFRA | TradingAgents/AI-HF/pyqlib absent; installed CrewAI source attestation fails; no promoted model or qualified LEAN/egress runtime |
+| Research dependency security | FAILED | ChromaDB 1.1.1 retains four advisories; memory disabled does not remove CrewAI's Chroma import; no patched compatible version established |
+| Publish/deploy follow-up | BLOCKED_EXTERNAL_INFRA | Git metadata is explicitly read-only; local changes preserved, no commit/push or deployment claimed |
+
 ## Current primary mandate: qualified live GBP/GBX ISA stocks
 
 **PRODUCTION BLOCKED.** The latest mandate restores production data qualification;

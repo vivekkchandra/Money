@@ -178,10 +178,16 @@ def _safe_details(text: str) -> list[str]:
     # and a known exception type, but NEVER the remainder of that line.
     for match in re.finditer(
         r"(?m)^[ \t]*(?P<path>[^\s:\"'<>]+\.py):(?P<line>[1-9][0-9]{0,5})"
-        r":[ \t]*(?P<exception>[A-Za-z_][A-Za-z0-9_]*)(?::[^\r\n]*)?[ \t]*$",
+        r":[ \t]*(?P<exception>[A-Za-z_][A-Za-z0-9_.]*)(?::[^\r\n]*)?[ \t]*$",
         text,
     ):
-        found = _location(match["path"], match["line"], match["exception"])
+        found = _location(match["path"], match["line"], match["exception"].rsplit(".", 1)[-1])
+        if found:
+            locations.append(found)
+    # Non-final pytest frames have no exception name. The final frame may be in
+    # a dependency, so ignoring these drops the only Money-owned call location.
+    for match in re.finditer(r"(?m)^[ \t]*([^\s:\"'<>]+\.py):([1-9][0-9]{0,5}):[ \t]*$", text):
+        found = _location(match[1], match[2])
         if found:
             locations.append(found)
     # Standard Python traceback frames and Node's checkout-owned file:// frames.
@@ -283,6 +289,15 @@ def summarize(path: Path, kind: str) -> str:
                     stages.append(f"stage={SMOKE_STAGES[match[1]]}")
             # This summarizes failure evidence only, never infers a successful journey.
             details = _safe_details(decoded)
+            # These two assertion prefixes are emitted by the Money-owned smoke
+            # harness. Preserve only the HTTP status, never the response body.
+            for prefix, field in (
+                ("Login returned HTTP ", "login_http"),
+                ("Signed-out research returned HTTP ", "signed_out_http"),
+            ):
+                match = re.search(re.escape(prefix) + r"([1-5][0-9]{2})\b", decoded)
+                if match:
+                    details.insert(0, f"{field}={match[1]}")
             counts = "FAILURE_DIAGNOSTICS" if stages or details else "NO_SAFE_FAILURE_DIAGNOSTICS"
             return _bounded_summary(counts, [], [*stages, *details])
         elif kind == "acceptance":

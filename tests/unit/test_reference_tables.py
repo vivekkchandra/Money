@@ -437,7 +437,8 @@ def test_customer_read_checks_current_not_original_research_date(assets):
 @pytest.mark.parametrize(
     "source", ["qualification", "metadata", "spread", "supplemental", "archive"]
 )
-def test_live_manifest_checks_every_embedded_provider(assets, source):
+@pytest.mark.parametrize("embedded", [True, False])
+def test_live_manifest_checks_every_embedded_provider(assets, source, embedded):
     def provider(name):
         return SimpleNamespace(provider=name)
 
@@ -449,7 +450,8 @@ def test_live_manifest_checks_every_embedded_provider(assets, source):
     )
     manifest = SimpleNamespace(
         provider_qualifications=(provider("eodhd"), provider("companies-house")),
-        instruments=(instrument,),
+        instruments=(instrument,) if embedded else (),
+        reviewed_instruments=(instrument,),
     )
     catalog = approved_test_catalog(assets)
     assert require_manifest_commercial_rights(catalog, manifest, as_of=date(2026, 9, 16)) == (

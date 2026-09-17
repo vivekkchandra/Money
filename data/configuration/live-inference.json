@@ -1,0 +1,38 @@
+{
+  "tradingagents": {
+    "provider": "openai",
+    "model": "gpt-5.4-2026-03-05",
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "credential_environment_variable": "OPENAI_API_KEY",
+    "protocol": "openai-compatible",
+    "temperature": null,
+    "reasoning_effort": "low",
+    "max_output_tokens": 8000,
+    "maximum_prompt_bytes": 100000,
+    "timeout_seconds": 180
+  },
+  "ai_hedge_fund": {
+    "provider": "openai",
+    "model": "gpt-5.4-2026-03-05",
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "credential_environment_variable": "OPENAI_API_KEY",
+    "protocol": "openai-compatible",
+    "temperature": null,
+    "reasoning_effort": "low",
+    "max_output_tokens": 8000,
+    "maximum_prompt_bytes": 100000,
+    "timeout_seconds": 180
+  },
+  "crewai": {
+    "provider": "openai",
+    "model": "gpt-5.4-2026-03-05",
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "credential_environment_variable": "OPENAI_API_KEY",
+    "protocol": "openai-compatible",
+    "temperature": null,
+    "reasoning_effort": "low",
+    "max_output_tokens": 8000,
+    "maximum_prompt_bytes": 100000,
+    "timeout_seconds": 180
+  }
+}

@@ -31,7 +31,11 @@ class Trading212MetadataProvider:
         self._authorization = (
             "Basic " + base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
         )
-        self._fetcher = fetcher or SafeFetcher(frozenset({"live.trading212.com"}))
+        # A complete current broker catalogue is larger than a single-symbol
+        # response; retain a hard bound without truncating to a seed list.
+        self._fetcher = fetcher or SafeFetcher(
+            frozenset({"live.trading212.com"}), maximum_bytes=20_000_000
+        )
 
     def instruments(self) -> tuple[dict[str, Any], ...]:
         rows = self._fetcher.json(
@@ -66,6 +70,28 @@ class CompaniesHouseProvider:
         self._fetcher = fetcher or SafeFetcher(
             frozenset({"api.company-information.service.gov.uk"})
         )
+
+    def company(
+        self, identifiers: InstrumentIdentifiers, retrieved_at: datetime
+    ) -> dict[str, Any]:
+        """Retrieve only public company identity/classification, never officer data."""
+        identifiers.require_current(retrieved_at)
+        number = identifiers.companies_house_number
+        if not number:
+            raise ValueError("COMPANY_NUMBER_MAPPING_MISSING")
+        result = self._fetcher.json(
+            f"https://api.company-information.service.gov.uk/company/{number}",
+            headers={"Authorization": self._authorization},
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("company_number") != number
+            or not isinstance(result.get("company_name"), str)
+            or not result["company_name"].strip()
+        ):
+            raise ValueError("COMPANY_RESPONSE_INVALID")
+        allowed = {"company_number", "company_name", "company_status", "type", "sic_codes"}
+        return {key: result[key] for key in allowed & result.keys()}
 
     def filings(
         self, identifiers: InstrumentIdentifiers, snapshot_id: str, retrieved_at: datetime
@@ -154,6 +180,23 @@ class EODHDProvider:
         retrieved_at: datetime,
     ) -> tuple[EvidenceRecord, ...]:
         self.qualification.require(dataset, retrieved_at)
+        if dataset == "ohlcv":
+            self.qualification.require("corporate_action", retrieved_at)
+        return self._fetch_records(identifiers, dataset, snapshot_id, retrieved_at)
+
+    def _fetch_records(
+        self,
+        identifiers: InstrumentIdentifiers,
+        dataset: str,
+        snapshot_id: str,
+        retrieved_at: datetime,
+    ) -> tuple[EvidenceRecord, ...]:
+        """Normalize live responses; also used by the admission probe.
+
+        The production entry point above always enforces qualification. The probe
+        uses an explicitly unqualified scope and cannot return production data
+        through ``fetch`` until its actual observations have been reviewed.
+        """
         if (
             identifiers.quote_currency not in self.qualification.currencies
             or "GB" not in self.qualification.geography
@@ -171,7 +214,6 @@ class EODHDProvider:
             "to": retrieved_at.date().isoformat(),
         }
         if dataset == "ohlcv":
-            self.qualification.require("corporate_action", retrieved_at)
             # EODHD explicitly documents raw OHLC and split-adjusted volume.
             # Do not combine these bases across a split/consolidation. Until
             # Money has a qualified reversal policy, reject the affected window.

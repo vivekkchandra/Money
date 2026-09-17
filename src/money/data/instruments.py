@@ -158,7 +158,7 @@ class InstrumentCatalogue:
                     item.eligibility_proof_hash,
                     item.ethical_proof_hash,
                 )
-                for item in manifest.instruments
+                for item in getattr(manifest, "reviewed_instruments", manifest.instruments)
             ),
             "live",
             manifest.provider_qualifications,

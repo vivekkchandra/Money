@@ -5,15 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
+from contextlib import ExitStack
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, TypeAdapter, model_validator
 
-from money.adapters.eligibility import Trading212EligibilityAdapter
 from money.adapters.native import NativeRunSettings
 from money.adapters.native_process import BoundedNativeRunner, NativeProcessPolicy
 from money.adapters.native_qlib import QlibNativeRunner
@@ -35,6 +36,7 @@ from money.backtest.lean import (
 )
 from money.crews.cio import CIOResult, CrewAICioAdapter, CrewAINativeRunner
 from money.data.identifiers import InstrumentIdentifiers
+from money.data.live_eligibility import EligibilityReview, Trading212LiveEligibilityService
 from money.data.qualification import ProviderQualification
 from money.data.quality.market import evaluate_market_quality
 from money.data.resilience import ProviderCircuit
@@ -43,7 +45,7 @@ from money.data.uk.filing_documents import (
     FinancialCurrencyProof,
     ReviewedStorageHost,
 )
-from money.data.uk.live import CompaniesHouseProvider, EODHDProvider
+from money.data.uk.live import CompaniesHouseProvider, EODHDProvider, Trading212MetadataProvider
 from money.models.registry import ModelRegistry
 from money.research.budgets import BudgetLimits
 from money.research.inference import HTTPInference, InferenceConfiguration
@@ -172,7 +174,11 @@ class LiveManifest(Contract):
     reviewed_by: str = Field(min_length=1)
     qualification_artifacts: tuple[tuple[str, str], ...]
     # Each (sha256, relative file path) references actual reviewed bytes.
-    instruments: tuple[VerifiedInstrument, ...] = Field(min_length=1)
+    instruments: tuple[VerifiedInstrument, ...] = ()
+    # Full reviewed catalogues can be released independently of the seed rows.
+    # Both catalogue bytes and every per-instrument proof remain hash-pinned.
+    instrument_catalog: tuple[str, str] | None = None
+    _catalog_instruments: tuple[VerifiedInstrument, ...] | None = PrivateAttr(default=None)
     provider_qualifications: tuple[ProviderQualification, ...] = Field(min_length=1)
     market_credential_environment_variable: str = "EODHD_API_KEY"
     filings_credential_environment_variable: str = "COMPANIES_HOUSE_API_KEY"
@@ -196,8 +202,28 @@ class LiveManifest(Contract):
     enable_native_cross_examination: bool = False
     cross_examination_maximum_challenges: int = Field(default=8, ge=1, le=24)
 
+    @property
+    def reviewed_instruments(self) -> tuple[VerifiedInstrument, ...]:
+        if self.instrument_catalog is not None and self._catalog_instruments is None:
+            raise ValueError("LIVE_INSTRUMENT_CATALOG_NOT_LOADED")
+        return (*self.instruments, *(self._catalog_instruments or ()))
+
+    def validate_instrument_coverage(self, instruments: tuple[VerifiedInstrument, ...]) -> None:
+        tickers = [item.metadata.ticker for item in instruments]
+        broker_ids = [item.identifiers.trading212_id for item in instruments]
+        if len(tickers) != len(set(tickers)) or len(broker_ids) != len(set(broker_ids)):
+            raise ValueError("LIVE_MANIFEST_DUPLICATE_IDENTITY")
+        if any(item.filing_documents for item in instruments):
+            company_qualification = next(
+                item for item in self.provider_qualifications if item.provider == "companies-house"
+            )
+            if not {"filing", "financial"} <= set(company_qualification.datasets):
+                raise ValueError("LIVE_FILING_DOCUMENT_COVERAGE_MISSING")
+
     @model_validator(mode="after")
     def qualification_consistency(self) -> LiveManifest:
+        if not self.instruments and self.instrument_catalog is None:
+            raise ValueError("LIVE_INSTRUMENT_CATALOG_REQUIRED")
         if self.lean_parameters.scenario_policy != self.signal_policy:
             raise ValueError("LEAN_SCENARIO_POLICY_MISMATCH")
         validate_invocation_budgets(
@@ -207,20 +233,23 @@ class LiveManifest(Contract):
             self.cross_examination_maximum_challenges if self.enable_native_cross_examination else 0,
         )
         providers = [item.provider for item in self.provider_qualifications]
-        tickers = [item.metadata.ticker for item in self.instruments]
-        if len(providers) != len(set(providers)) or len(tickers) != len(set(tickers)):
+        if len(providers) != len(set(providers)):
             raise ValueError("LIVE_MANIFEST_DUPLICATE_IDENTITY")
         if not {"eodhd", "companies-house"} <= set(providers):
             raise ValueError("LIVE_MANIFEST_REQUIRED_PROVIDER_MISSING")
+        required_datasets = {
+            "eodhd": {"ohlcv", "corporate_action", "news"},
+            "companies-house": {"filing"},
+        }
+        for provider in self.provider_qualifications:
+            if not provider.datasets or not required_datasets.get(provider.provider, set()) <= set(
+                provider.datasets
+            ):
+                raise ValueError("LIVE_MANIFEST_REQUIRED_DATASET_MISSING")
         storage_hosts = [review.host for review in self.filing_document_storage_hosts]
         if len(storage_hosts) != len(set(storage_hosts)):
             raise ValueError("FILING_STORAGE_HOST_DUPLICATE")
-        if any(item.filing_documents for item in self.instruments):
-            company_qualification = next(
-                item for item in self.provider_qualifications if item.provider == "companies-house"
-            )
-            if not {"filing", "financial"} <= set(company_qualification.datasets):
-                raise ValueError("LIVE_FILING_DOCUMENT_COVERAGE_MISSING")
+        self.validate_instrument_coverage(self.instruments)
         return self
 
 
@@ -235,27 +264,68 @@ class LiveProvenance(Contract):
     model_selections: tuple[tuple[str, str, str], ...]
 
 
+def read_qualification_bytes(root: Path, relative: str, maximum: int) -> bytes:
+    """Bounded descriptor-relative read, rejecting symlinks in every artifact component.
+
+    The configured bundle root is trusted; relative artifact paths are not. Open
+    directories without following links, rather than check a path then reopen it.
+    O_NONBLOCK prevents special files (including FIFOs) blocking before fstat.
+    These Unix capabilities are required by the supported Linux/macOS runtimes.
+    """
+    path = Path(relative)
+    if (
+        not relative or path.is_absolute() or path.as_posix() != relative
+        or "\\" in relative or any(part in {".", ".."} for part in path.parts)
+        or not path.parts or maximum <= 0
+    ):
+        raise ValueError("QUALIFICATION_ARTIFACT_INVALID")
+    try:
+        with ExitStack() as stack:
+            directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            descriptor = os.open(root, directory_flags)
+            stack.callback(os.close, descriptor)
+            for part in path.parts[:-1]:
+                descriptor = os.open(part, directory_flags, dir_fd=descriptor)
+                stack.callback(os.close, descriptor)
+            file_descriptor = os.open(
+                path.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=descriptor,
+            )
+            stream = stack.enter_context(os.fdopen(file_descriptor, "rb"))
+            attributes = os.fstat(stream.fileno())
+            if not stat.S_ISREG(attributes.st_mode) or attributes.st_size > maximum:
+                raise ValueError("QUALIFICATION_ARTIFACT_INVALID")
+            raw = stream.read(maximum + 1)
+            if len(raw) > maximum:
+                raise ValueError("QUALIFICATION_ARTIFACT_INVALID")
+            return raw
+    except (OSError, ValueError) as error:
+        raise ValueError("QUALIFICATION_ARTIFACT_INVALID") from error
+
+
 def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 5_000_000:
-        raise ValueError("LIVE_MANIFEST_INVALID")
-    raw = path.read_bytes()
+    try:
+        root = path.parent.resolve()
+        raw = read_qualification_bytes(root, path.name, 5_000_000)
+    except (ValueError, OSError, RuntimeError) as error:
+        raise ValueError("LIVE_MANIFEST_INVALID") from error
     if hashlib.sha256(raw).hexdigest() != expected_hash:
         raise ValueError("LIVE_MANIFEST_HASH_MISMATCH")
     manifest = LiveManifest.model_validate_json(raw)
     verified = set()
-    root = path.parent.resolve()
     for digest, relative in manifest.qualification_artifacts:
-        artifact = root / relative
-        if (
-            artifact.is_symlink()
-            or not artifact.resolve().is_relative_to(root)
-            or not artifact.is_file()
-            or artifact.stat().st_size > 2_000_000
-        ):
-            raise ValueError("QUALIFICATION_ARTIFACT_INVALID")
-        if hashlib.sha256(artifact.read_bytes()).hexdigest() != digest:
+        artifact = read_qualification_bytes(root, relative, 2_000_000)
+        if hashlib.sha256(artifact).hexdigest() != digest:
             raise ValueError("QUALIFICATION_ARTIFACT_HASH_MISMATCH")
         verified.add(digest)
+        if manifest.instrument_catalog == (digest, relative):
+            manifest._catalog_instruments = TypeAdapter(
+                tuple[VerifiedInstrument, ...]
+            ).validate_json(artifact)
+    instruments = manifest.reviewed_instruments
+    if not instruments:
+        raise ValueError("LIVE_INSTRUMENT_CATALOG_REQUIRED")
+    manifest.validate_instrument_coverage(instruments)
     required = {
         manifest.native_egress_verification_hash,
         manifest.lean_qualification.historical_eligibility_hash,
@@ -263,7 +333,7 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
         manifest.lean_qualification.corporate_action_audit_hash,
         *(review.review_evidence_hash for review in manifest.filing_document_storage_hosts),
     }
-    for item in manifest.instruments:
+    for item in instruments:
         required.update(
             (
                 item.eligibility_proof_hash,
@@ -352,7 +422,9 @@ class LiveSnapshotBuilder:
         self.circuit = ProviderCircuit(store)
 
     def __call__(self, instrument: InstrumentMetadata) -> ResearchSnapshot:
-        item = next(i for i in self.manifest.instruments if i.metadata.ticker == instrument.ticker)
+        item = next(
+            i for i in self.manifest.reviewed_instruments if i.metadata.ticker == instrument.ticker
+        )
         now, snapshot_id = utc_now(), str(uuid4())
         qualifications = {q.provider: q for q in self.manifest.provider_qualifications}
         market = EODHDProvider(
@@ -572,7 +644,7 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
         red_team: RedTeamReport,
         state: ResearchState,
     ) -> SignalDesign:
-        item = next(i for i in manifest.instruments if i.metadata.ticker == snapshot.ticker)
+        item = next(i for i in manifest.reviewed_instruments if i.metadata.ticker == snapshot.ticker)
         issued_at = utc_now()
         if item.spread_evidence.fresh_until <= issued_at:
             return SignalDesign(
@@ -607,7 +679,21 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
 
     return ResearchRuntime(
         mode="live",
-        eligibility=Trading212EligibilityAdapter(tuple(i.metadata for i in manifest.instruments)),
+        eligibility=Trading212LiveEligibilityService(
+            Trading212MetadataProvider(
+                os.environ.get("TRADING212_API_KEY", ""),
+                os.environ.get("TRADING212_API_SECRET", ""),
+            ),
+            lambda: tuple(
+                EligibilityReview(
+                    metadata=item.metadata,
+                    identifiers=item.identifiers,
+                    eligibility_proof_hash=item.eligibility_proof_hash,
+                    ethical_proof_hash=item.ethical_proof_hash,
+                )
+                for item in manifest.reviewed_instruments
+            ),
+        ),
         snapshot_builder=LiveSnapshotBuilder(manifest, store),
         firms=(trading, hedge, quant),
         validate=validator.validate,

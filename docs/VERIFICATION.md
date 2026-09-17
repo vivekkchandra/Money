@@ -1,4 +1,69 @@
-# Qualified live GBP/GBX ISA verification — 2026-09-16
+# CI blocker fixes — 2026-09-17
+
+**PRODUCTION BLOCKED.** Continuing from the same unpublished tree and main
+`3ab2ff9`. Railway/Netlify discovery still reports DISABLED_BY_ADMIN; Git metadata
+remains read-only. No deploy, migration, model promotion or proof bundle was made.
+
+| Requirement | Status | Actual evidence | Remaining acceptance |
+| --- | --- | --- | --- |
+| Login smoke regression | VERIFIED | Actual built Next16.3.5 handler + real FastAPI/TestClient/migrated SQLite transport bridge: loopback-IP request normalizes to localhost, mismatched Origin returns403 with zero backend calls; canonical localhost returns200 and durable session creation | Not actual HTTP/browser transport or hosted auth |
+| Harness fix | VERIFIED | Both private/commercial (including browser variants) share canonical localhost web origin; explicit127.0.0.1 listener bindings and production CSRF/auth unchanged;12 new real-NextRequest regression cases | Full HTTP commands remain listener EPERM; new GitHub CI needed |
+| PostgreSQL aggregation fix | VERIFIED | Actual metrics query previously compiled independent payload_1/payload_2 parameters in SELECT/GROUP BY. Regression failed before and passes after reusing one expression;3 focused metrics tests pass | Actual PostgreSQL regression skipped without TEST_DATABASE_URL; hosted failure not yet proven resolved |
+| Frozen migration comparison | VERIFIED | All45 frozen tables match application columns/types/FKs/indexes under PostgreSQL dialect compilation | Offline comparison is not schema-drift or migration acceptance against PostgreSQL |
+| Python suite | VERIFIED |1133 passed/0failed/157skipped,28warnings; uv sync --locked, ruff and mypy110files pass | Unit888/0/0, integration245/0/146, production0/0/11; skipped checks are not acceptance |
+| Web suite | VERIFIED |315 passed/0failed/0skipped; lint/typecheck/build pass | Local test evidence only |
+| Current published CI | FAILED | Fresh GitHub read: latest35156964337 remains failed;35156964352 public web passed. No artifacts; detailed annotation endpoint unavailable | These local fixes have not been published/retested in CI |
+| Safety boundaries | VERIFIED | Settings/live mode, eligibility, qualification, billing/auth policies and reference-table bytes unchanged; deployment/data-table checks pass | Genuine live qualification and hosted E2E remain outstanding |
+
+The grouping fix follows PostgreSQL's requirement that selected non-aggregate
+expressions match grouped expressions; distinct server parameters are not the
+same expression even when their supplied values match. See the
+[official GROUP BY contract](https://www.postgresql.org/docs/current/sql-select.html#SQL-GROUPBY).
+It is a concrete query defect, not a claim that the unavailable CI traceback has
+been recovered. The live ISA-source/native/data/security blockers below remain.
+
+## Earlier Railway production qualification incident — 2026-09-16
+
+**PRODUCTION BLOCKED.** The reported Settings rejection was not bypassed. No genuine
+live bundle was available or manufactured; no live provider, model, eligibility,
+runtime or hosted result was falsely qualified. Starting local/tracking main was
+clean at `3ab2ff93c6dfe5b06de70872803edd02fbb72e98`; this follow-up remains local.
+
+| Requirement | Status | Actual command / evidence | Environment / blocker |
+| --- | --- | --- | --- |
+| Preserve production gate | VERIFIED | Settings and validate_live.py unchanged; no demo/R&D mode enabled, no qualification files created | Source/diff review |
+| Locked install / lint / types | VERIFIED | uv sync --locked; ruff check .; mypy src/money:110 source files | Local Python3.12 |
+| Complete Python regression | VERIFIED | pytest -q --junitxml=/private/tmp/money-qualified-final.xml: **1132 passed, 0 failed, 157 skipped**,28 warnings | Unit888/0/0; integration244/0/146; production0/0/11 (passed/failed/skipped). PG and live skips are not acceptance |
+| Manifest hardening | VERIFIED | Bounded descriptor-relative reads, all path components no-follow, regular-file/size/hash checks, cyclic-parent safe errors; required EODHD/CH datasets | Synthetic unit bytes only, not production artifacts |
+| Deployment preflight | VERIFIED | `uv run python -m money.research.preflight --role worker`: secret-safe blocked JSON and intentional exit 2 | Local missing configuration; not a health or qualification probe |
+| Research image selection | VERIFIED | Railway worker chooses explicit Dockerfile.research; parity/locked-install/non-root/private-worker tests; CI builds that exact file | Offline contracts only; native package attestation still unqualified |
+| Production integrations | BLOCKED_CREDENTIAL | `MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run pytest tests/production -q`: **0 passed, 0 failed, 11 skipped**, each QUALIFICATION_MANIFEST_REQUIRED | No genuine manifest/hash; no paid call or live qualification |
+| Current ISA universe | NOT_IMPLEMENTED | Actual runtime still uses manifest instruments; documented broker metadata lacks verified current ISA/buy-status semantics | Approved current source/coverage/usage contract required; GBP/GBX counts unknown |
+| EODHD / Companies House | BLOCKED_CREDENTIAL | No available EODHD_API_KEY/COMPANIES_HOUSE_API_KEY or qualified provider bundle | Prices/actions/news/filings not live tested |
+| Native firms / Qlib / LEAN | BLOCKED_EXTERNAL_INFRA | Pinned checkout SHAs match locks; TradingAgents/AI-HF/pyqlib absent, installed CrewAI attestation fails | No genuine inference configuration, promoted model, LEAN study or host-egress proof |
+| Native boundary regression | VERIFIED | 106 native/correspondence/dependency tests passed during investigation; scripted inference only | Not real paid firm qualification, CIO acceptance or live report locking |
+| Latest public Netlify | VERIFIED | [Live-web run 35156964352](https://github.com/vivekkchandra/Money/actions/runs/35156964352): root 200, routes/assets/headers/auth closure, served SHA 3ab2ff9 | Actual existing site; not signed-in research or this follow-up deployment |
+| Latest broader CI | FAILED | [Run 35156964337](https://github.com/vivekkchandra/Money/actions/runs/35156964337): PG test, backend drill, LOGIN-stage HTTP smoke, research dependency audit fail | No raw traceback available; safe diagnostics improved, failures not claimed fixed |
+| PostgreSQL / restore | BLOCKED_EXTERNAL_INFRA | Local isolated drill fails postgres_init with ENVIRONMENT_PERMISSION_DENIED; TEST_DATABASE_URL absent | No remote migration/current/schema/recovery/restore acceptance |
+| Railway | BLOCKED_EXTERNAL_INFRA | Fresh plugin lookup: DISABLED_BY_ADMIN/NOT_AVAILABLE. Owner reports Postgres ONLINE and Money CRASHED; not independently verified | No API/worker/variables/migration mutation or alternate access route |
+| Web regression | VERIFIED | npm ci, lint, typecheck, **303 passed / 0 failed / 0 skipped**, Next.js production build | Local only |
+| Commercial HTTP/browser E2E | BLOCKED_EXTERNAL_INFRA | Both test:commercial commands fail at allocate local listeners: EPERM 127.0.0.1 | Zero journey steps accepted |
+| Node advisory retrieval | BLOCKED_EXTERNAL_INFRA | npm audit --omit=dev: registry.npmjs.org ENOTFOUND | Previous 3ab2ff9 CI Node audit passes; fresh local audit not obtained |
+| Python advisory retrieval | BLOCKED_EXTERNAL_INFRA | Locked research export succeeds; pip-audit 2.10.1 retrieval fails pypi.org DNS | Previous 3ab2ff9 research CI reports four ChromaDB advisories |
+| ChromaDB remediation | FAILED | Installed1.1.1; two Critical/two High advisories remain. Real import with Chroma blocked fails CrewAI Flow import | Memory-disabled is not dependency removal; containment is not patch or host qualification |
+| Docker execution | BLOCKED_EXTERNAL_INFRA | Both root and explicit research image builds fail Docker socket permission; Compose validation passes | No newly built/running image acceptance |
+| Git data assets | VERIFIED | validate_data_tables.py: four schema1/data1.0.0 tables validate; checksums unchanged | No data/upstream/optional_reference diff |
+| Deployment boundary | VERIFIED | check_deployment.py passes | No broker execution, heavy work stays outside Netlify |
+| Publication | BLOCKED_EXTERNAL_INFRA | Git metadata explicitly read-only; no index.lock exists | No commit/push of this follow-up; existing main/tracking SHA retained |
+| Graphify | VERIFIED | Scoped Money/upstream queries, then AST-only graphify update:3103 nodes/9511 edges/165 communities | No upstream modifications/rebuilds |
+
+No live manifest path or SHA can be reported: `data/qualified/live/manifest.json`
+does not exist. All requested proof categories remain unqualified, rather than
+being represented by placeholder bytes. The current broker-universe replacement,
+PG/HTTP failure fixes and native/security qualification remain engineering work,
+not merely configuration or paperwork. No currently qualified candidate is claimed.
+
+## Previous qualified live GBP/GBX ISA verification — historical
 
 **PRODUCTION BLOCKED.** This is the current mandate. Preserve `live_rnd` as a
 separate experiment, but production acceptance requires qualified `live`, current

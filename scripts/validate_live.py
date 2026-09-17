@@ -30,7 +30,7 @@ def main() -> None:
             {
                 "configuration": "VALIDATED_OFFLINE",
                 "production_status": "PRODUCTION BLOCKED",
-                "instruments": len(manifest.instruments),
+                "instruments": len(manifest.reviewed_instruments),
                 "providers": len(manifest.provider_qualifications),
                 "limitation": "No live credentials, native runtimes, models, egress or deployment were qualified.",
             }

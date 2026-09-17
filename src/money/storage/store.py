@@ -1588,13 +1588,16 @@ class ResearchStore:
             produced = connection.scalar(
                 select(func.count()).select_from(db.signals.join(db.jobs)).where(workspace)
             )
+            # Reuse the expression: independent JSON-key binds become distinct
+            # PostgreSQL parameters, so SELECT would not match GROUP BY.
+            final_state = db.packets.c.payload["final_state"].as_string()
             states = {
                 state: count
                 for state, count in connection.execute(
-                    select(db.packets.c.payload["final_state"].as_string(), func.count())
+                    select(final_state, func.count())
                     .select_from(db.packets.join(db.jobs))
                     .where(workspace)
-                    .group_by(db.packets.c.payload["final_state"].as_string())
+                    .group_by(final_state)
                 ).all()
             }
             provider_rows = (

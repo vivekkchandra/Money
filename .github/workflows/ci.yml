@@ -139,7 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --build-arg MONEY_GIT_SHA=${{ github.sha }} --tag money-ci .
-      - run: docker build --target research --build-arg MONEY_GIT_SHA=${{ github.sha }} --tag money-research-ci .
+      - run: docker build -f Dockerfile.research --build-arg MONEY_GIT_SHA=${{ github.sha }} --tag money-research-ci .
       - name: Verify default image excludes research-only dependencies
         run: docker run --rm money-ci python -c "from importlib.util import find_spec; assert find_spec('chromadb') is None; assert find_spec('crewai') is None"
       - name: Validate Compose configuration

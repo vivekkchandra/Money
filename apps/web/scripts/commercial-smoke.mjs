@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import assert from "node:assert/strict";
 import { stopChild, trackChild, waitForChild } from "./process-lifecycle.mjs";
 import { checkDeployment } from "./check-deployment.mjs";
+import { smokeWebOrigin } from "./smoke-origin.mjs";
 const web = fileURLToPath(new URL("..", import.meta.url));
 const root = resolve(web, "../..");
 const temporary = mkdtempSync(resolve(tmpdir(), "money-commercial-smoke-"));
@@ -132,7 +133,7 @@ async function emailToken(email, kind = "verify") {
 try {
   const apiPort = await port();
   const webPort = await port();
-  const origin = `http://127.0.0.1:${webPort}`;
+  const origin = smokeWebOrigin(webPort);
   const backend = `http://127.0.0.1:${apiPort}`;
   env.MONEY_PUBLIC_WEB_URL = origin;
   stage = "migrate isolated account/research database";

@@ -13,6 +13,7 @@ import pytest
 
 from money.adapters.native_qlib import FEATURES, LinearModelArtifact, QualifiedLinearModel
 from money.adapters.upstream import UpstreamUnavailable
+from money.models import qlib_training
 from money.models.training import (
     TrainingConfiguration,
     TrainingDataset,
@@ -108,6 +109,56 @@ def test_held_out_labels_never_change_fit_or_walk_forward(
     assert result.validation.walk_forward == original.validation.walk_forward
     assert result.validation.held_out.metrics.rmse != original.validation.held_out.metrics.rmse
     assert result.artifact_hash != original.artifact_hash
+
+
+def test_native_training_never_falls_back_when_pinned_runtime_is_unavailable(
+    dataset: TrainingDataset, configuration: TrainingConfiguration, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(package: str) -> None:
+        assert package == "qlib"
+        raise UpstreamUnavailable("pinned native source package is unavailable")
+
+    monkeypatch.setattr(qlib_training, "require_pinned_source", unavailable)
+    with pytest.raises(UpstreamUnavailable, match="pinned native source"):
+        qlib_training.train_qlib(dataset, configuration)
+
+
+def test_native_solver_receives_only_purged_training_rows_and_stays_unpromoted(
+    dataset: TrainingDataset, configuration: TrainingConfiguration, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A unit spy validates the partition boundary; it is not native qualification.
+    from money.models.training import _fit
+
+    seen = []
+
+    def spy(rows, alpha):
+        seen.append(tuple(rows))
+        return _fit(rows, alpha)
+
+    monkeypatch.setattr(qlib_training, "require_pinned_source", lambda _: None)
+    monkeypatch.setattr(qlib_training, "import_module", lambda _: None)
+    monkeypatch.setattr(qlib_training.metadata, "version", lambda _: "unit-test-only")
+    monkeypatch.setattr(qlib_training, "_fit_native", spy)
+    result = qlib_training.train_qlib(dataset, configuration)
+    assert len(seen) == configuration.walk_forward_folds + 1
+    for rows, evaluation in zip(seen, (*result.validation.walk_forward, result.validation.held_out), strict=True):
+        assert len(rows) == evaluation.training_observations
+        assert all(row.prediction_time < evaluation.fit_cutoff and row.label_available_at < evaluation.fit_cutoff
+                   for row in rows)
+    assert result.validation.solver == "pinned-qlib-standardized-ridge-v1"
+    assert result.validation.native_source_hash == qlib_training.SOURCE_DIGESTS["qlib"]
+    assert result.status == "UNPROMOTED"
+    assert not result.artifact.pit_validated
+    assert not result.validation.production_qualified
+    assert not result.validation.independent_approval
+    assert result.validation_report_hash == hashlib.sha256(result.validation.model_dump_json().encode()).hexdigest()
+    changed = tuple(row.model_copy(update={"label_return": 0.9}) if row.prediction_time > configuration.training_cutoff else row
+                    for row in dataset.observations)
+    revised = qlib_training.train_qlib(changed_dataset(dataset, changed), configuration)
+    assert revised.artifact.coefficients == result.artifact.coefficients
+    assert revised.artifact.intercept == result.artifact.intercept
+    assert revised.validation.walk_forward == result.validation.walk_forward
+    assert revised.validation.held_out.metrics.rmse != result.validation.held_out.metrics.rmse
 
 
 def test_post_fold_features_and_labels_cannot_change_that_fold_fit(
@@ -241,6 +292,22 @@ def test_cli_runs_only_offline_and_produces_unpromoted_artifact(
     repeated = subprocess.run(command, text=True, capture_output=True, timeout=30, check=False)
     assert repeated.returncode == 2 and "TRAINING_FAILED" in repeated.stderr
     assert "Traceback" not in repeated.stderr
+
+
+def test_native_cli_rejects_synthetic_test_data_without_writing_an_artifact(
+    dataset: TrainingDataset, configuration: TrainingConfiguration, tmp_path: Path,
+) -> None:
+    data_path, config_path, output = tmp_path / "dataset.json", tmp_path / "config.json", tmp_path / "result"
+    data_path.write_text(dataset.model_dump_json())
+    config_path.write_text(configuration.model_dump_json())
+    result = subprocess.run(
+        [sys.executable, "scripts/train_qlib.py", "--dataset", str(data_path),
+         "--config", str(config_path), "--output", str(output)],
+        text=True, capture_output=True, timeout=30, check=False,
+    )
+    assert result.returncode == 2 and "QLIB_TRAINING_FAILED" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output.exists()
 
 
 def bar(index: int, currency: str = "GBX", late: bool = False) -> EvidenceRecord:

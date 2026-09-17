@@ -1,5 +1,14 @@
 # Commercial implementation plan — 2026-09-16
 
+## Current startup follow-up
+
+Published baseline is now `3ab2ff9`. Local follow-up fixes research-image selection,
+hardens manifest artifact reads/dataset completeness and improves safe diagnostics.
+The current ISA-feed replacement is **NOT_IMPLEMENTED**, genuine qualification
+inputs remain unavailable, and Railway inspection is administrator-blocked in this
+session. No live bundle, migration, service recovery, native qualification or hosted
+end-to-end result is claimed. VERIFICATION.md records the actual checks.
+
 ## Current scope: qualified live GBP/GBX Trading 212 ISA research
 
 The latest mandate supersedes personal R&D as the primary product target. Preserve

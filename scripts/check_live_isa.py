@@ -70,7 +70,7 @@ def select_candidates(
         catalogue = InstrumentCatalogue.from_manifest(manifest)
         if require_filing_documents:
             document_tickers = {
-                item.metadata.ticker for item in manifest.instruments if item.filing_documents
+                item.metadata.ticker for item in manifest.reviewed_instruments if item.filing_documents
             }
             catalogue = replace(
                 catalogue,
@@ -94,7 +94,7 @@ def select_candidates(
         raise LiveAcceptanceFailure("FAILED", "QUALIFIED_ISA_UNIVERSE_INVALID") from error
     if not page.instruments:
         raise LiveAcceptanceFailure("FAILED", "NO_CURRENT_VERIFIED_ISA_CANDIDATE")
-    by_ticker = {item.metadata.ticker: item for item in manifest.instruments}
+    by_ticker = {item.metadata.ticker: item for item in manifest.reviewed_instruments}
     return tuple(by_ticker[item.ticker] for item in page.instruments)
 
 

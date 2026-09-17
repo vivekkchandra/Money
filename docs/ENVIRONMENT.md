@@ -4,7 +4,7 @@ Examples in `.env.example` are placeholders only. Secrets are never Git assets.
 
 ## Primary product: qualified GBP/GBX ISA research
 
-Use `MONEY_ENV=production`, `MONEY_RESEARCH_MODE=live`,
+Use `MONEY_ENV=production`, `MONEY_DEPLOYMENT_ENV=hosted`, `MONEY_RESEARCH_MODE=live`,
 `MONEY_ENABLE_SYNTHETIC_DEMO=false` only with an actually qualified live manifest.
 `MONEY_LIVE_MANIFEST` and `MONEY_LIVE_MANIFEST_SHA256` must identify the reviewed
 provider, instrument, model and native-runtime evidence, not a synthetic fixture.

@@ -79,12 +79,21 @@ def _install_capability_guard(policy: NativeProcessPolicy, workdir: Path) -> Non
     def guard(event: str, args: tuple[Any, ...]) -> None:
         if event == "socket.bind":
             raise ProviderEscapeDenied("native listener capability denied")
-        elif event == "socket.getaddrinfo":
+        elif event in {"socket.getaddrinfo", "socket.gethostbyname"}:
             if str(args[0]).lower() not in allowed_hosts | allowed_addresses:
                 raise ProviderEscapeDenied("native DNS lookup outside configured inference gateway")
+        elif event in {"socket.gethostbyaddr", "socket.getnameinfo"}:
+            # Reverse DNS is not required by the pinned HTTPS transport. It can
+            # otherwise contact an unrelated resolver without socket.connect.
+            raise ProviderEscapeDenied("native reverse DNS capability denied")
+        elif event in {"socket.sendto", "socket.sendmsg"}:
+            # Connectionless sends do not emit socket.connect, including DNS
+            # datagrams to a literal address. HTTPS requires neither interface.
+            raise ProviderEscapeDenied("native datagram/message capability denied")
         elif event == "socket.connect":
             address = args[1]
-            if (not isinstance(address, tuple) or len(address) < 2
+            if (args[0].type != socket.SOCK_STREAM
+                    or not isinstance(address, tuple) or len(address) < 2
                     or str(address[0]) not in allowed_addresses | allowed_hosts
                     or address[1] != policy.gateway_port):
                 raise ProviderEscapeDenied("native network connection outside inference gateway")

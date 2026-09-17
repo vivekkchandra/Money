@@ -39,6 +39,7 @@ def candidate(ticker="ACCEPTED.L", *, documents=False, **updates):
 def manifest(*instruments):
     return SimpleNamespace(
         instruments=instruments,
+        reviewed_instruments=instruments,
         provider_qualifications=(fixture_qualification(),),
     )
 

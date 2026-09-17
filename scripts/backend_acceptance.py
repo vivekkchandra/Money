@@ -11,6 +11,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -38,8 +39,11 @@ ENVIRONMENT_KEYS = ("PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "TMPDIR")
 
 
 class AcceptanceFailure(Exception):
-    def __init__(self, code: str, *, blocked: bool = False) -> None:
+    def __init__(
+        self, code: str, *, blocked: bool = False, test_summary: dict[str, Any] | None = None,
+    ) -> None:
         self.code, self.blocked = code, blocked
+        self.test_summary = test_summary
         super().__init__(code)
 
 
@@ -49,9 +53,35 @@ class SafeArgumentParser(argparse.ArgumentParser):
         self.exit(2, "Invalid acceptance arguments; use --help.\n")
 
 
+def failure_location(error: Exception) -> dict[str, str | int]:
+    """Locate an owned source frame without exposing messages, locals or URLs."""
+    location: dict[str, str | int] = {}
+    frame = error.__traceback__
+    while frame is not None:
+        source = Path(frame.tb_frame.f_code.co_filename)
+        if source.is_absolute() and source.is_relative_to(ROOT):
+            relative = source.relative_to(ROOT)
+            if relative.parts[0] in {"scripts", "src"}:
+                location = {"file": relative.as_posix(), "line": frame.tb_lineno}
+        frame = frame.tb_next
+    return location
+
+
 def isolated_environment() -> dict[str, str]:
     """No inherited database, provider, broker, cloud or LLM credentials."""
     return {key: os.environ[key] for key in ENVIRONMENT_KEYS if key in os.environ}
+
+
+def test_summary(output: str) -> dict[str, Any]:
+    """Allowlist aggregate counts and source test names, never assertion values."""
+    return {
+        "counts": {status: int(count) for count, status in re.findall(
+            r"\b(\d+) (passed|failed|skipped|errors?|warnings?)\b", output,
+        )},
+        "failed_tests": sorted(set(re.findall(
+            r"(?m)^FAILED (tests/[a-zA-Z0-9_./-]+\.py::[a-zA-Z0-9_]+)", output,
+        )))[:50],
+    }
 
 
 def command(argv: list[str], environment: dict[str, str], *, timeout: int = 60) -> str:
@@ -90,7 +120,8 @@ def command(argv: list[str], environment: dict[str, str], *, timeout: int = 60) 
             value in text.lower() for value in ("operation not permitted", "permission denied")
         )
         raise AcceptanceFailure(
-            "ENVIRONMENT_PERMISSION_DENIED" if denied else "COMMAND_FAILED", blocked=denied
+            "ENVIRONMENT_PERMISSION_DENIED" if denied else "COMMAND_FAILED", blocked=denied,
+            test_summary=test_summary(text) if argv[1:3] == ["-m", "pytest"] else None,
         )
     return text
 
@@ -203,13 +234,14 @@ def exercise_recovery(database_url: str, environment: dict[str, str]) -> dict[st
         assert result and result["status"] == "COMPLETE" and result["attempt_count"] == 2
         assert result["packet"]["runtime"] == "demo" and result["packet"]["signal"] is None
         with store.engine.connect() as connection:
-            reports = dict(
-                connection.execute(
+            reports = {
+                firm: report_hash
+                for firm, report_hash in connection.execute(
                     select(db.firm_reports.c.firm, db.firm_reports.c.content_hash).where(
                         db.firm_reports.c.job_id == job_id
                     )
                 ).tuples()
-            )
+            }
         assert len(reports) == 3 and reports["tradingagents"] == checkpoint["sealed_report_hash"]
         session_hash, version = hashlib.sha256(token.encode()).hexdigest(), "a" * 64
         store.create_session(session_hash, version, utc_now() + timedelta(hours=1))
@@ -235,13 +267,14 @@ def verify_restored(database_url: str, expected: dict[str, Any]) -> None:
         )
         assert store.session_valid(expected["session_hash"], expected["credential_version"])
         with store.engine.connect() as connection:
-            reports = dict(
-                connection.execute(
+            reports = {
+                firm: report_hash
+                for firm, report_hash in connection.execute(
                     select(db.firm_reports.c.firm, db.firm_reports.c.content_hash).where(
                         db.firm_reports.c.job_id == expected["job_id"]
                     )
                 ).tuples()
-            )
+            }
         assert reports == expected["report_hashes"]
         try:
             with store.engine.begin() as connection:
@@ -294,7 +327,7 @@ def exercise_migrations(environment: dict[str, str]) -> None:
     command([sys.executable, "-m", "alembic", "check"], environment)
 
 
-def run_acceptance(*, run_tests: bool = True) -> dict[str, Any]:
+def run_acceptance(*, run_tests: bool = True, full_tests: bool = False) -> dict[str, Any]:
     report: dict[str, Any] = {
         "scope": "ISOLATED_LOCAL_POSTGRESQL_SYNTHETIC_RESEARCH",
         "production_qualified": False,
@@ -385,21 +418,27 @@ def run_acceptance(*, run_tests: bool = True) -> dict[str, Any]:
                 {"requirement": phase, "status": "VERIFIED", "concurrent_release_processes": 3}
             )
             if run_tests:
-                phase = "postgresql_integration_tests"
-                command(
+                phase = "full_python_tests" if full_tests else "postgresql_integration_tests"
+                test_paths = ["tests"] if full_tests else [
+                    "tests/integration/test_postgres.py",
+                    "tests/integration/test_budget_recovery.py",
+                ]
+                output = command(
                     [
                         sys.executable,
                         "-m",
                         "pytest",
-                        "tests/integration/test_postgres.py",
-                        "tests/integration/test_budget_recovery.py",
+                        *test_paths,
                         "-q",
                         "--tb=short",
                     ],
                     environment,
-                    timeout=240,
+                    timeout=600 if full_tests else 240,
                 )
-                report["steps"].append({"requirement": phase, "status": "VERIFIED"})
+                report["steps"].append({
+                    "requirement": phase, "status": "VERIFIED",
+                    "test_counts": test_summary(output)["counts"],
+                })
             else:
                 report["steps"].append(
                     {"requirement": "postgresql_integration_tests", "status": "NOT_RUN"}
@@ -464,11 +503,14 @@ def run_acceptance(*, run_tests: bool = True) -> dict[str, Any]:
                 code=error.code,
                 phase=phase,
             )
+            if error.test_summary is not None:
+                report["test_summary"] = error.test_summary
         except Exception as error:  # noqa: BLE001 - never expose source diagnostics/credentials
             report.update(
                 status="FAILED",
                 code="ACCEPTANCE_ASSERTION_FAILED",
                 failure_class=type(error).__name__,
+                failure_location=failure_location(error),
                 phase=phase,
             )
         finally:
@@ -491,9 +533,15 @@ def main() -> int:
         action="store_true",
         help="Run drill only; explicitly mark existing PostgreSQL integration suite NOT_RUN",
     )
+    parser.add_argument(
+        "--full-tests", action="store_true",
+        help="Run the full Python suite against this disposable PostgreSQL cluster",
+    )
     arguments = parser.parse_args()
     try:
-        report = run_acceptance(run_tests=not arguments.skip_tests)
+        report = run_acceptance(
+            run_tests=not arguments.skip_tests, full_tests=arguments.full_tests,
+        )
     except AcceptanceFailure as error:
         report = {"status": "FAILED", "code": error.code, "production_qualified": False}
     print(json.dumps(report, sort_keys=True))

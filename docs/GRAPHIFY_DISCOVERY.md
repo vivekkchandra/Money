@@ -273,3 +273,33 @@ suggestion do not authorize global or upstream changes.
   established. Preserve audit failure and isolation; do not suppress advisories or
   replace pinned source attestation to accept the locally mismatched installation.
 - No upstream edits, clones or graph rebuilds; only Money's AST graph is updated.
+
+## Production startup / qualification follow-up — 2026-09-16
+
+- Money graph vocabulary was extracted first; queried `live manifest eligibility
+  universe provider snapshot runtime` (750 tokens), then provider qualification /
+  required dataset relationships (500). Scoped inspection covered Settings, live
+  assembly, manifest validator, Docker/Railway config and qualification contracts.
+- Exact upstream question: which pinned native execution seam and source/dependency
+  attestation applies to qualification? Queried existing TradingAgents, AI-Hedge-Fund,
+  Qlib, LEAN and CrewAI graphs at 500 tokens each. Only extra upstream source inspected:
+  CrewAI `lib/crewai/src/crewai/rag/chromadb/client.py:1–90` and the Chroma dependency
+  declaration in `lib/crewai/pyproject.toml`. No upstream files changed.
+- Actual CrewAI import with Chroma blocked fails at `crewai.flow.flow`; disabling
+  memory is therefore not removal. Local containment tests are not host-egress or
+  dependency-remediation qualification. Pinned checkout SHAs still match lock files,
+  but installed native runtime attestation has not passed.
+- Official Trading 212 documentation was inspected separately from upstream source;
+  instrument catalog metadata does not establish the required current ISA/buy-status
+  proof. No undocumented endpoint or fake automatic eligibility adapter was added.
+
+## CI continuation — 2026-09-17
+
+- Queried Money graph using existing vocabulary `migration postgres schema claim
+  immutable` (700 tokens), followed by focused metrics/store/migration inspection.
+  The concrete defect was separate server-bound JSON key expressions in metrics
+  SELECT/GROUP BY; one shared expression preserves PostgreSQL grouping semantics.
+- Web graph lookup narrowed authentication/session/origin seams. Actual installed
+  NextRequest and compiled handler tests exposed loopback hostname normalization;
+  only smoke origins changed, not application security. No upstream repository
+  source was inspected or modified. Money's AST graph was refreshed afterward.

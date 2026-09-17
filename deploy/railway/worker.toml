@@ -1,8 +1,9 @@
-# Select only for the private worker in incredible-flexibility.
-# Default image contains public-data adapters, not unqualified native runtimes.
+# Select only for the existing private research worker; repository root context.
+# The explicit image includes locked research dependencies, not qualification.
+# Native artifacts, credentials, licences and the live manifest remain mandatory.
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+dockerfilePath = "Dockerfile.research"
 
 [deploy]
 startCommand = "python -m money.worker"

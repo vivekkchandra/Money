@@ -35,6 +35,31 @@ def test_failed_commands_never_expose_diagnostics_or_secrets():
     assert "private-provider" not in str(caught.value)
 
 
+def test_failure_location_excludes_exception_text_and_locals():
+    try:
+        MODULE["command"](
+            [sys.executable, "-c", "raise SystemExit(1)"],
+            MODULE["isolated_environment"](),
+        )
+    except MODULE["AcceptanceFailure"] as error:
+        error.args = ("private-provider-response",)
+        location = MODULE["failure_location"](error)
+    assert location["file"] == "scripts/backend_acceptance.py"
+    assert isinstance(location["line"], int)
+    assert set(location) == {"file", "line"}
+
+
+def test_test_summary_does_not_include_private_assertion_or_parameter_values():
+    result = MODULE["test_summary"](
+        "FAILED tests/unit/test_example.py::test_case[PRIVATE_PARAMETER] - SECRET_ASSERTION\n"
+        "1 failed, 2 passed, 3 skipped in 0.1s\n"
+    )
+    assert result == {
+        "counts": {"failed": 1, "passed": 2, "skipped": 3},
+        "failed_tests": ["tests/unit/test_example.py::test_case"],
+    }
+
+
 def test_environment_denial_is_blocked_not_a_pass():
     with pytest.raises(MODULE["AcceptanceFailure"]) as caught:
         MODULE["command"](

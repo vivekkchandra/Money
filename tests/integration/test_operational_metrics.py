@@ -2,6 +2,9 @@ from datetime import timedelta
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
+from sqlalchemy.dialects.postgresql.psycopg import PGDialect_psycopg
+from sqlalchemy.sql import Select
 
 from money.api.app import create_app
 from money.api.settings import Settings
@@ -14,6 +17,31 @@ from money.storage.production_models import provider_state
 from money.worker import run_once
 
 TOKEN = "metrics-service-token-with-at-least-32-characters"
+
+
+def test_state_aggregation_reuses_the_same_postgres_bound_expression(store: ResearchStore):
+    """Inspect the actual executed query, not a separate hand-written SQL fixture.
+
+    SQLite permits independent equal-valued parameters in SELECT/GROUP BY;
+    PostgreSQL server-side binding must use the same expression/parameter there.
+    This compilation regression is not a real PostgreSQL execution test.
+    """
+    captured = []
+
+    def capture(connection, clause, multiparams, params, options):
+        if not isinstance(clause, Select):
+            return
+        compiled = clause.compile(dialect=PGDialect_psycopg())
+        if "GROUP BY" in str(compiled) and "final_state" in compiled.params.values():
+            captured.append(compiled)
+
+    event.listen(store.engine, "before_execute", capture)
+    try:
+        store.operational_metrics(include_details=True)
+    finally:
+        event.remove(store.engine, "before_execute", capture)
+    assert len(captured) == 1
+    assert list(captured[0].params.values()).count("final_state") == 1
 
 
 def test_metrics_are_scoped_and_unknown_usage_is_not_free(store: ResearchStore):

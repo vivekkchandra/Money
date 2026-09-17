@@ -29,7 +29,7 @@ def require_manifest_commercial_rights(
     An archive/reviewer cannot wash away the original providers' licensing.
     """
     providers = {qualification.provider for qualification in manifest.provider_qualifications}
-    for item in manifest.instruments:
+    for item in manifest.reviewed_instruments:
         providers.add(item.metadata.provider)
         providers.add(item.spread_evidence.provider)
         providers.update(record.provider for record in item.supplemental_evidence)
