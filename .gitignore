@@ -45,3 +45,5 @@ data/qualified/live/state/
 data/qualified/live/status.json
 data/qualified/live/.runner.lock
 data/qualified/live/manifest.pending.json
+# Local inference probes are not production release evidence.
+data/qualified/local-inference/

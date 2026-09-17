@@ -10,7 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class OperatorSettings(BaseSettings):
     """Offline database administration must remain possible during provider outages."""
 
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        extra="ignore", case_sensitive=False, hide_input_in_errors=True
+    )
     money_env: Literal["development", "test", "preview", "production"] = "production"
     database_url: SecretStr
     money_workspace_id: str = Field(default="private", pattern=r"^[A-Za-z0-9_-]{1,80}$")
@@ -30,7 +32,9 @@ class OperatorSettings(BaseSettings):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        extra="ignore", case_sensitive=False, hide_input_in_errors=True
+    )
 
     money_env: Literal["development", "test", "preview", "production"] = "production"
     money_research_mode: Literal["unconfigured", "demo", "live", "live_rnd"] = "unconfigured"
@@ -42,6 +46,7 @@ class Settings(BaseSettings):
     fred_api_key: SecretStr | None = None
     money_live_manifest: Path | None = None
     money_live_manifest_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    money_inference_config: Path | None = None
     database_url: SecretStr
     research_api_token: SecretStr | None = None
     money_allow_unauthenticated_dev: bool = False
@@ -70,6 +75,17 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def secure_configuration(self) -> Self:
         local = self.money_env in {"development", "test"} and self.money_deployment_env == "local"
+        selected_inference = None
+        if self.money_inference_config is not None:
+            from money.research.inference_config import load_inference_selections
+
+            selected_inference = load_inference_selections(
+                Path(__file__).resolve().parents[3],
+                {"MONEY_INFERENCE_CONFIG": str(self.money_inference_config)},
+            )
+            if not local:
+                for selection in selected_inference.values():
+                    selection.require_hosted()
         if self.money_research_mode == "live_rnd" and self.money_env not in {"development", "test"}:
             raise ValueError("Personal R&D data is forbidden in commercial production/preview")
         if self.money_research_mode == "live_rnd" and self.money_enable_synthetic_demo:
@@ -80,9 +96,7 @@ class Settings(BaseSettings):
             or not self.money_live_manifest.is_file()
         ):
             raise ValueError("Live research requires a pinned qualification manifest")
-        if not local and (
-            self.money_research_mode == "demo" or self.money_enable_synthetic_demo
-        ):
+        if not local and (self.money_research_mode == "demo" or self.money_enable_synthetic_demo):
             raise ValueError("Synthetic demo mode is forbidden in production")
         if (
             self.money_env == "production"
@@ -118,6 +132,13 @@ class Settings(BaseSettings):
             assert self.money_live_manifest is not None
             assert self.money_live_manifest_sha256 is not None
             manifest = load_manifest(self.money_live_manifest, self.money_live_manifest_sha256)
+            if selected_inference is not None and any(
+                selection != getattr(manifest, role)
+                for role, selection in selected_inference.items()
+            ):
+                # An environment selector cannot replace reviewed, hash-pinned
+                # runtime settings after a release has been admitted.
+                raise ValueError("INFERENCE_CONFIG_MANIFEST_MISMATCH")
             for provider in manifest.provider_qualifications:
                 for dataset in provider.datasets:
                     provider.require(dataset, utc_now())

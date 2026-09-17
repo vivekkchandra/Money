@@ -48,7 +48,7 @@ from money.data.uk.filing_documents import (
 from money.data.uk.live import CompaniesHouseProvider, EODHDProvider, Trading212MetadataProvider
 from money.models.registry import ModelRegistry
 from money.research.budgets import BudgetLimits
-from money.research.inference import HTTPInference, InferenceConfiguration
+from money.research.inference_config import InferenceSelection as InferenceSelection
 from money.risk.costs import CostApplicability
 from money.scanner.discovery import DiscoveryPolicy, discover_snapshot
 from money.schemas.contracts import (
@@ -77,31 +77,6 @@ from money.storage import ResearchStore
 
 if TYPE_CHECKING:
     from money.flows.research import ResearchRuntime
-
-
-class InferenceSelection(Contract):
-    provider: str
-    model: str
-    endpoint: str
-    credential_environment_variable: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,80}$")
-    protocol: Literal["openai-compatible", "anthropic"] = "openai-compatible"
-    temperature: float | None = Field(default=0, ge=0, le=2)
-    reasoning_effort: str | None = None
-    max_output_tokens: int = Field(default=3000, ge=256, le=16000)
-    maximum_prompt_bytes: int = Field(default=30000, ge=1000, le=200000)
-    timeout_seconds: int = Field(default=60, ge=1, le=180)
-    input_gbp_per_million: Decimal | None = Field(default=None, ge=0)
-    output_gbp_per_million: Decimal | None = Field(default=None, ge=0)
-
-    def inference(self) -> HTTPInference:
-        secret = os.environ.get(self.credential_environment_variable)
-        if not secret:
-            raise ValueError("INFERENCE_CREDENTIAL_MISSING")
-        return HTTPInference(
-            InferenceConfiguration(
-                **self.model_dump(exclude={"credential_environment_variable"}), api_key=secret
-            )
-        )
 
 
 class VerifiedInstrument(Contract):
@@ -222,6 +197,10 @@ class LiveManifest(Contract):
 
     @model_validator(mode="after")
     def qualification_consistency(self) -> LiveManifest:
+        # A local transport is useful for development, never a public worker
+        # qualification. This gate is independent of ambient environment flags.
+        for selection in (self.tradingagents, self.ai_hedge_fund, self.crewai):
+            selection.require_hosted()
         if not self.instruments and self.instrument_catalog is None:
             raise ValueError("LIVE_INSTRUMENT_CATALOG_REQUIRED")
         if self.lean_parameters.scenario_policy != self.signal_policy:
@@ -600,12 +579,14 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
     )
 
     def wrapped(runner: Any, schema: Any, selection: InferenceSelection) -> BoundedNativeRunner:
+        inference = selection.inference()
         return BoundedNativeRunner(
             runner,
             schema,
             NativeProcessPolicy(
                 timeout_seconds=manifest.native_timeout_seconds,
-                gateway_hosts=selection.inference().allowed_network_hosts,
+                gateway_hosts=inference.allowed_network_hosts,
+                gateway_port=inference.allowed_network_port,
             ),
         )
 

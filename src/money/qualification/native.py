@@ -20,6 +20,7 @@ import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
+from urllib.parse import urlsplit
 
 from pydantic import AwareDatetime, Field, TypeAdapter
 
@@ -44,9 +45,10 @@ from money.data.security import public_addresses
 from money.models.registry import ModelRegistry
 from money.qualification.core import CommandResult, run_captured
 from money.research.budgets import BudgetLimits
-from money.research.call_telemetry import InferenceReceipt, capture_calls
-from money.research.inference import HTTPInference, InferenceConfiguration
-from money.research.live import InferenceSelection, validate_invocation_budgets
+from money.research.inference import HTTPInference
+from money.research.inference_config import InferenceSelection, load_inference_selections
+from money.research.inference_probe import InferenceProbeEvidence, probe_selection, safe_probe_error
+from money.research.live import validate_invocation_budgets
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
     Contract,
@@ -113,39 +115,26 @@ def _reference(ctx: QualificationContext, reference: tuple[str, str]) -> bytes:
 
 
 def _selections(ctx: QualificationContext) -> dict[str, InferenceSelection]:
-    path = ctx.repo / "data/configuration/live-inference.json"
-    if path.is_symlink() or path.stat().st_size > 50_000:
-        raise ValueError("INFERENCE_CONFIGURATION_INVALID")
-    raw = json.loads(path.read_bytes())
-    if not isinstance(raw, dict) or set(raw) != set(FIRMS):
-        raise ValueError("INFERENCE_CONFIGURATION_INVALID")
-    result = {firm: InferenceSelection.model_validate(raw[firm]) for firm in FIRMS}
+    result = load_inference_selections(ctx.repo, ctx.environ)
     for selection in result.values():
-        if (
-            selection.provider != "openai"
-            or selection.endpoint != "https://api.openai.com/v1/chat/completions"
+        if selection.provider == "openai" and (
+            selection.endpoint != "https://api.openai.com/v1/chat/completions"
             or selection.protocol != "openai-compatible"
             or selection.credential_environment_variable != "OPENAI_API_KEY"
+            or selection.authentication != "bearer"
             or not re.fullmatch(r"[a-z0-9.-]+-\d{4}-\d{2}-\d{2}", selection.model)
+        ):
+            raise ValueError("INFERENCE_ENDPOINT_OR_EXACT_MODEL_UNREVIEWED")
+        if not selection.is_local and (
+            selection.model.casefold() in {"latest", "default"}
+            or selection.model.casefold().endswith(":latest")
         ):
             raise ValueError("INFERENCE_ENDPOINT_OR_EXACT_MODEL_UNREVIEWED")
     return result
 
 
-def _inference(
-    ctx: QualificationContext, selection: InferenceSelection, *, probe: bool = False
-) -> HTTPInference:
-    secret = ctx.environ.get(selection.credential_environment_variable)
-    if not secret:
-        raise ValueError("OPENAI_CREDENTIAL_REQUIRED")
-    settings = selection.model_dump(exclude={"credential_environment_variable"})
-    if probe:
-        settings.update(
-            max_output_tokens=min(512, selection.max_output_tokens),
-            maximum_prompt_bytes=1000,
-            timeout_seconds=min(60, selection.timeout_seconds),
-        )
-    return HTTPInference(InferenceConfiguration(**settings, api_key=secret))
+def _inference(ctx: QualificationContext, selection: InferenceSelection) -> HTTPInference:
+    return selection.inference(ctx.environ)
 
 
 def _load_inference_review(
@@ -182,7 +171,8 @@ def _load_inference_review(
             "selections": {key: value.model_dump(mode="json") for key, value in selections.items()},
             "budget_rule": "Money validate_invocation_budgets; choose deliberate limits for full workflows",
             "rates_rule": "Optional GBP rates require actual pricing/FX review; empty means unknown cost",
-            "probe_limit": "Three small credential/model probes; each <=512 completion tokens",
+            "probe_limit": "Three small exact-model probes; each <=512 completion tokens; final content must be OK",
+            "scope_rule": "Local inference functionality is not hosted, native runtime, egress or release qualification",
         },
     )
     try:
@@ -227,7 +217,7 @@ def _load_inference_review(
 
 
 def run_inference_stage(ctx: QualificationContext) -> dict[str, Any]:
-    """Probe each checked-in exact selection; do not confuse access with native PASS."""
+    """Probe explicit selections, including local-only access without production PASS."""
     selections = _selections(ctx)
     refs: list[tuple[str, str]] = []
     success = True
@@ -235,9 +225,14 @@ def run_inference_stage(ctx: QualificationContext) -> dict[str, Any]:
         identity = content_hash(selection.model_dump(mode="json"))
         # Credentials are not hashed or written to disk. Presence is rechecked;
         # cached receipts attest a recent account request, not future key validity.
-        if not ctx.environ.get(selection.credential_environment_variable):
+        if selection.authentication != "none" and not ctx.environ.get(
+            selection.credential_environment_variable or ""
+        ):
             ctx.block(
-                "OPENAI_CREDENTIAL_REQUIRED", "Configure OPENAI_API_KEY on existing Money service."
+                "OPENAI_CREDENTIAL_REQUIRED"
+                if selection.provider == "openai"
+                else "INFERENCE_CREDENTIAL_REQUIRED_" + firm.upper(),
+                "Configure the environment variable explicitly selected by this authenticated inference role.",
             )
             success = False
             continue
@@ -247,63 +242,54 @@ def run_inference_stage(ctx: QualificationContext) -> dict[str, Any]:
                 references = [tuple(reference) for reference in cached["artifacts"]]
                 if len(references) != 1:
                     raise ValueError("INFERENCE_CACHE_INVALID")
-                receipt = json.loads(_reference(ctx, references[0]))
-                observed = TypeAdapter(AwareDatetime).validate_python(receipt["verified_at"])
-                recorded_calls = TypeAdapter(tuple[InferenceReceipt, ...]).validate_python(
-                    receipt["calls"]
-                )
-                if (
-                    receipt["kind"] != "money-inference-access-v1"
-                    or receipt["firm"] != firm
-                    or receipt["selection_sha256"] != identity
-                    or receipt["native_runtime_qualified"] is not False
-                    or not observed <= ctx.now < observed + timedelta(hours=1)
-                    or not recorded_calls
-                    or any(
-                        call.status != "SUCCEEDED"
-                        or call.provider != selection.provider
-                        or call.model != selection.model
-                        for call in recorded_calls
-                    )
-                ):
+                receipt = InferenceProbeEvidence.model_validate_json(_reference(ctx, references[0]))
+                if not receipt.matches(
+                    firm, selection
+                ) or not receipt.verified_at <= ctx.now < receipt.verified_at + timedelta(hours=1):
                     raise ValueError("INFERENCE_CACHE_INVALID")
                 refs.extend(references)
                 continue
             except (ValueError, TypeError, KeyError, IndexError):
                 pass
         try:
-            inference = _inference(ctx, selection, probe=True)
-            with capture_calls() as calls:
-                response = inference.complete(
-                    "Return exactly the word READY.", "Credential and model qualification probe."
-                )
-            if (
-                response.strip() != "READY"
-                or not calls
-                or any(call.status != "SUCCEEDED" for call in calls)
-            ):
-                raise ValueError("INFERENCE_PROBE_INVALID")
-            receipt = {
-                "kind": "money-inference-access-v1",
-                "firm": firm,
-                "selection_sha256": identity,
-                "verified_at": ctx.now.isoformat(),
-                "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
-                "calls": [call.model_dump(mode="json") for call in calls],
-                "native_runtime_qualified": False,
-            }
-            reference = ctx.artifact(receipt)
+            receipt = probe_selection(
+                cast(Literal["tradingagents", "ai_hedge_fund", "crewai"], firm),
+                selection,
+                ctx.environ,
+                observed_at=ctx.now,
+            )
+            reference = ctx.artifact(receipt.model_dump(mode="json"))
             refs.append(reference)
             ctx.checkpoint(
                 "inference-" + firm, identity, {"artifacts": [reference]}, artifacts=(reference,)
             )
-        except Exception:
+        except Exception as error:
             # Transport responses/exceptions can contain URLs or credentials.
             ctx.block(
                 "INFERENCE_PROBE_FAILED_" + firm.upper(),
-                "Bounded exact-model request failed; verify OpenAI access/model/billing and rerun.",
+                "Bounded exact-model request failed ("
+                + safe_probe_error(error)
+                + "); verify the selected server/model/authentication and rerun.",
             )
             success = False
+    local_only = any(selection.is_local for selection in selections.values())
+    hosted_compatible = True
+    for selection in selections.values():
+        try:
+            selection.require_hosted()
+        except ValueError:
+            hosted_compatible = False
+    if local_only:
+        ctx.block(
+            "LOCAL_INFERENCE_NOT_HOSTED_QUALIFIED",
+            "Local Ollama probes attest this machine only. Railway cannot reach the Mac's loopback; "
+            "a separately reviewed remotely reachable inference endpoint and target-worker qualification are required.",
+        )
+    elif not hosted_compatible:
+        ctx.block(
+            "HOSTED_INFERENCE_SELECTION_REQUIRED",
+            "Select and independently review hosted-compatible inference endpoints before production qualification.",
+        )
     reviewed = _load_inference_review(ctx, selections)
     fields: dict[str, Any] = {}
     if reviewed is not None:
@@ -323,19 +309,25 @@ def run_inference_stage(ctx: QualificationContext) -> dict[str, Any]:
             )
         )
     result = {
-        "complete": success and reviewed is not None,
+        "complete": success and reviewed is not None and hosted_compatible and not local_only,
+        "access_verified": success,
+        "scope": "LOCAL_INFERENCE_ONLY" if local_only else "REMOTE_INFERENCE_ACCESS_ONLY",
+        "hosted_compatible": hosted_compatible,
+        "native_runtime_qualified": False,
+        "production_qualified": False,
         "manifest_fields": fields,
         "artifacts": refs,
     }
     ctx.write_json("outputs/inference.json", result)
     # The legacy integration test intentionally uses one configuration. Do not
     # silently use it to attest differing per-firm model selections.
-    if len({content_hash(item.model_dump(mode="json")) for item in selections.values()}) == 1:
+    if (
+        result["complete"]
+        and len({content_hash(item.model_dump(mode="json")) for item in selections.values()}) == 1
+    ):
         ctx.write_json(
             "outputs/native-inference.json",
-            selections[FIRMS[0]].model_dump(
-                mode="json", exclude={"credential_environment_variable"}
-            ),
+            selections[FIRMS[0]].model_dump(mode="json"),
         )
         result["production_environment"] = {
             "MONEY_NATIVE_INFERENCE_CONFIG": str(ctx.root / "outputs/native-inference.json")
@@ -642,7 +634,7 @@ def _resolve_native_closure(ctx: QualificationContext) -> dict[str, Any]:
 # hooks. It has no credentials. Thus its ordinary socket/SSL calls reach the OS
 # directly, including arbitrary subprocess, UDP and raw-socket escape vectors.
 _EGRESS_PROBE = """
-import json, socket, ssl
+import json, socket, ssl, sys
 observations = []
 def tcp(vector, host, expected, tls=False):
     reached = False
@@ -656,7 +648,8 @@ def tcp(vector, host, expected, tls=False):
     except (OSError, ValueError):
         pass
     observations.append({"vector":vector, "host":host, "reached":reached, "expected":expected})
-tcp("approved_https", "api.openai.com", True, True)
+for approved_host in json.loads(sys.argv[1]):
+    tcp("approved_https", approved_host, True, True)
 tcp("unapproved_https", "example.com", False)
 tcp("direct_ipv4", "1.1.1.1", False)
 tcp("direct_ipv6", "2606:4700:4700::1111", False)
@@ -706,25 +699,34 @@ def _verify_running_enforcement(ctx: QualificationContext, review: EgressReview)
     policy = _command(ctx, command, 30)
     if policy.returncode or hashlib.sha256(policy.output).hexdigest() != review.policy[0]:
         raise ValueError("EGRESS_CURRENT_POLICY_MISMATCH")
-    _strict_nft_policy(policy.output, set(public_addresses("api.openai.com")))
-    probe = _command(ctx, [sys.executable, "-I", "-S", "-c", _EGRESS_PROBE], 45)
+    approved_addresses = {
+        address for host in review.approved_hosts for address in public_addresses(host)
+    }
+    _strict_nft_policy(policy.output, approved_addresses)
+    probe = _command(
+        ctx,
+        [sys.executable, "-I", "-S", "-c", _EGRESS_PROBE, json.dumps(review.approved_hosts)],
+        45,
+    )
     raw = json.loads(probe.output)
-    expected = {
-        "approved_https",
-        "unapproved_https",
-        "direct_ipv4",
-        "direct_ipv6",
-        "subprocess_egress",
-        "udp_dns",
-        "raw_socket",
+    expected: dict[tuple[str, str | None], bool] = {
+        **{("approved_https", host): True for host in review.approved_hosts},
+        ("unapproved_https", "example.com"): False,
+        ("direct_ipv4", "1.1.1.1"): False,
+        ("direct_ipv6", "2606:4700:4700::1111"): False,
+        ("subprocess_egress", "example.org"): False,
+        ("udp_dns", "8.8.8.8"): False,
+        ("raw_socket", None): False,
     }
     observations = raw.get("observations", [])
     if (
         probe.returncode
         or raw.get("engine") != "unhooked-native-os-sockets"
-        or len(observations) != 7
-        or {item["vector"] for item in observations} != expected
-        or any(item["reached"] is not (item["vector"] == "approved_https") for item in observations)
+        or len(observations) != len(expected)
+        or {(item["vector"], item["host"]) for item in observations} != set(expected)
+        or any(
+            item["reached"] is not expected[(item["vector"], item["host"])] for item in observations
+        )
     ):
         raise ValueError("EGRESS_CURRENT_PROBE_FAILED")
     return ctx.artifact(
@@ -858,6 +860,8 @@ def _egress(ctx: QualificationContext, identity: str, hosts: tuple[str, ...]) ->
         },
     )
     try:
+        if not hosts:
+            raise ValueError("EGRESS_REMOTE_INFERENCE_HOSTS_REQUIRED")
         review = EgressReview.model_validate(ctx.read_json("reviews/native-egress.json"))
         if (
             review.reviewed_by == review.collected_by
@@ -891,7 +895,7 @@ def _egress(ctx: QualificationContext, identity: str, hosts: tuple[str, ...]) ->
                 "subprocess_egress",
             }
             or not isinstance(probes.get("observations"), list)
-            or len(probes["observations"]) < 7
+            or len(probes["observations"]) < 6 + len(hosts)
         ):
             raise ValueError("EGRESS_TARGET_OBSERVATIONS_INCOMPLETE")
         running_probe = _verify_running_enforcement(ctx, review)
@@ -991,7 +995,23 @@ def run_native_preflight_stage(ctx: QualificationContext) -> dict[str, Any]:
             "NATIVE_SECURITY_AUDIT_UNAVAILABLE",
             "Restore pip-audit/PyPI access and rerun; a missing or incomplete advisory scan cannot qualify runtime.",
         )
-    egress = _egress(ctx, identity, ("api.openai.com",))
+    hosts: tuple[str, ...] = ()
+    try:
+        selections = _selections(ctx)
+        for selection in selections.values():
+            selection.require_hosted()
+            if urlsplit(selection.endpoint).port not in (None, 443):
+                # The existing OS inspector qualifies only HTTPS on port 443.
+                raise ValueError("EGRESS_INFERENCE_PORT_UNSUPPORTED")
+        hosts = tuple(
+            sorted({urlsplit(value.endpoint).hostname or "" for value in selections.values()})
+        )
+    except (ValueError, OSError):
+        ctx.block(
+            "HOST_EGRESS_REMOTE_INFERENCE_REQUIRED",
+            "Hosted native egress needs explicitly selected remote HTTPS:443 inference hosts; local Ollama cannot qualify the worker.",
+        )
+    egress = _egress(ctx, identity, hosts)
     refs.extend(egress["artifacts"])
     result = {
         "complete": all(pins.values())
@@ -1028,6 +1048,8 @@ def _execution_inputs(
             "Complete inference review, native closure/security, target egress and genuine frozen outputs/snapshot.json.",
         )
         return None
+    for firm in FIRMS:
+        InferenceSelection.model_validate(inference["manifest_fields"][firm]).require_hosted()
     verified = TypeAdapter(AwareDatetime).validate_python(preflight["verified_at"])
     if not verified <= ctx.now < verified + timedelta(hours=1):
         raise ValueError("NATIVE_PREFLIGHT_STALE")
@@ -1136,6 +1158,7 @@ def run_first_pass_stage(ctx: QualificationContext) -> dict[str, Any]:
             report_type,
             NativeProcessPolicy(
                 gateway_hosts=transport.allowed_network_hosts,
+                gateway_port=transport.allowed_network_port,
                 timeout_seconds=settings.timeout_seconds,
             ),
         )
@@ -1239,7 +1262,9 @@ def run_cio_stage(ctx: QualificationContext) -> dict[str, Any]:
         CrewAINativeRunner(transport, settings, qualified_model=model),
         CIOResult,
         NativeProcessPolicy(
-            gateway_hosts=transport.allowed_network_hosts, timeout_seconds=settings.timeout_seconds
+            gateway_hosts=transport.allowed_network_hosts,
+            gateway_port=transport.allowed_network_port,
+            timeout_seconds=settings.timeout_seconds,
         ),
     )
     adapter = CrewAICioAdapter(runner)

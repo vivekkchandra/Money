@@ -18,6 +18,7 @@ from pydantic import AwareDatetime, Field, model_validator
 
 from money.qualification.core import MAXIMUM_BYTES, QualificationContext, json_bytes, run_captured
 from money.qualification.snapshot import run_snapshot_stage
+from money.research.inference_config import InferenceSelection, load_inference_selections
 from money.research.live import LiveManifest, load_manifest
 from money.schemas.contracts import Contract, ResearchSnapshot, utc_now
 
@@ -227,7 +228,23 @@ def production_environment(
                 raise ValueError("QUALIFICATION_CHILD_ENVIRONMENT_INVALID")
             ctx.check_secrets(value.encode())
             environ[name] = value if name == "MONEY_QLIB_ARTIFACT_HASH" else str(ctx.root / value)
-    environ["MONEY_NATIVE_INFERENCE_API_KEY"] = environ.get("OPENAI_API_KEY", "")
+    # Do not forward an unrelated OpenAI secret to another provider (especially
+    # anonymous local inference). Legacy aliases are child-only and selected.
+    environ.pop("MONEY_NATIVE_INFERENCE_API_KEY", None)
+    selections = [
+        output.get("manifest_fields", {}).get(role)
+        for output in outputs
+        for role in ("tradingagents", "ai_hedge_fund", "crewai")
+        if role in output.get("manifest_fields", {})
+    ]
+    if selections:
+        chosen = [InferenceSelection.model_validate(item) for item in selections]
+        if all(item == chosen[0] for item in chosen):
+            variable = chosen[0].credential_environment_variable
+            if chosen[0].authentication != "none" and variable:
+                secret = ctx.environ.get(variable)
+                if secret:
+                    environ["MONEY_NATIVE_INFERENCE_API_KEY"] = secret
     return environ
 
 
@@ -336,7 +353,7 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
         if ctx.environ.get(name, "").lower() != value:
             ctx.block(
                 "PRODUCTION_CONFIGURATION_REQUIRED",
-                "Run through the existing production Money service. The runner will not change production/hosted/live or synthetic-demo settings.",
+                "Production bundle completion requires production/hosted/live with synthetic demo disabled. Local inference probes can run without satisfying this gate; the runner will not change production settings.",
             )
     providers = _execute(ctx, "providers", lambda: run_provider_stages(ctx))
     inference = _execute(ctx, "inference", lambda: run_inference_stage(ctx))
@@ -423,13 +440,26 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None, *, environment: Mapping[str, str] | None = None) -> int:
     parser = SafeArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("data/qualified/live"))
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        environ = dict(os.environ if environment is None else environment)
+        repo = Path(__file__).resolve().parents[3]
+        output = args.output
+        if output is None:
+            local_inference = bool(environ.get("MONEY_INFERENCE_CONFIG")) and any(
+                selection.is_local
+                for selection in load_inference_selections(repo, environ).values()
+            )
+            # Local experiments must not overwrite production review templates,
+            # status or the last admitted bundle simply by selecting a config.
+            output = Path(
+                "data/qualified/local-inference" if local_inference else "data/qualified/live"
+            )
         ctx = QualificationContext(
-            root=args.output,
-            repo=Path(__file__).resolve().parents[3],
-            environ=dict(os.environ if environment is None else environment),
+            root=output,
+            repo=repo,
+            environ=environ,
             now=utc_now(),
         )
         with ctx.locked():

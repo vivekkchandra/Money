@@ -28,10 +28,11 @@ def scripted_probe(monkeypatch: pytest.MonkeyPatch) -> list:
 
     def complete(self, system, user):
         calls.append(self.configuration)
+        self.last_response_model = self.model
         emit_calls(
             (
                 InferenceReceipt(
-                    provider="openai",
+                    provider=self.provider,
                     model=self.model,
                     duration_seconds=0.1,
                     status="SUCCEEDED",
@@ -40,7 +41,7 @@ def scripted_probe(monkeypatch: pytest.MonkeyPatch) -> list:
                 ),
             )
         )
-        return "READY"
+        return "OK"
 
     monkeypatch.setattr(native.HTTPInference, "complete", complete)
     return calls
@@ -118,6 +119,83 @@ def test_missing_credential_never_uses_cached_success(ctx, monkeypatch):
     result = native.run_inference_stage(ctx)
     assert not result["complete"] and len(calls) == 3
     assert any(item["code"] == "OPENAI_CREDENTIAL_REQUIRED" for item in ctx.blockers)
+
+
+def local_configuration(ctx):
+    ctx.environ = {"MONEY_INFERENCE_CONFIG": "data/configuration/ollama-inference.json"}
+
+
+def test_local_ollama_access_needs_no_credential_and_never_qualifies_hosted(ctx, monkeypatch):
+    local_configuration(ctx)
+    calls = scripted_probe(monkeypatch)
+    monkeypatch.setattr(native.HTTPInference, "available_models", lambda self: (self.model,))
+    result = native.run_inference_stage(ctx)
+    assert len(calls) == 3 and all(call.api_key is None for call in calls)
+    assert result["access_verified"] is True and result["complete"] is False
+    assert result["scope"] == "LOCAL_INFERENCE_ONLY"
+    codes = {item["code"] for item in ctx.blockers}
+    assert "LOCAL_INFERENCE_NOT_HOSTED_QUALIFIED" in codes
+    assert "REVIEWED_INFERENCE_SELECTIONS_REQUIRED" in codes
+    assert "OPENAI_CREDENTIAL_REQUIRED" not in codes
+    assert not any(code.startswith("INFERENCE_PROBE_FAILED") for code in codes)
+    assert "production_environment" not in result
+    assert not (ctx.root / "outputs/native-inference.json").exists()
+    approve(ctx)
+    reviewed = native.run_inference_stage(ctx)
+    assert reviewed["access_verified"] is True and reviewed["complete"] is False
+    assert len(calls) == 3
+
+
+def test_hosted_environment_can_probe_local_but_cannot_admit_it(ctx, monkeypatch):
+    local_configuration(ctx)
+    ctx.environ = dict(ctx.environ) | {"MONEY_ENV": "production", "MONEY_DEPLOYMENT_ENV": "hosted"}
+    scripted_probe(monkeypatch)
+    monkeypatch.setattr(native.HTTPInference, "available_models", lambda self: (self.model,))
+    result = native.run_inference_stage(ctx)
+    assert result["access_verified"] and not result["complete"]
+    assert result["hosted_compatible"] is False
+
+
+def test_cached_remote_receipt_cannot_attest_new_local_selection(ctx, monkeypatch):
+    calls = scripted_probe(monkeypatch)
+    native.run_inference_stage(ctx)
+    local_configuration(ctx)
+    monkeypatch.setattr(native.HTTPInference, "available_models", lambda self: (self.model,))
+    result = native.run_inference_stage(ctx)
+    assert len(calls) == 6 and result["access_verified"]
+    assert all(call.provider == "ollama" for call in calls[3:])
+    assert not result["complete"]
+
+
+def test_changed_receipt_scope_is_reprobed_even_with_valid_new_artifact_hash(ctx, monkeypatch):
+    calls = scripted_probe(monkeypatch)
+    result = native.run_inference_stage(ctx)
+    receipt = ctx.read_json(result["artifacts"][0][1])
+    receipt["scope"] = "LOCAL_INFERENCE_ONLY"
+    altered = ctx.artifact(receipt)
+    ctx.checkpoint(
+        "inference-tradingagents",
+        receipt["selection_sha256"],
+        {"artifacts": [altered]},
+        artifacts=(altered,),
+    )
+    native.run_inference_stage(ctx)
+    assert len(calls) == 4
+
+
+def test_local_cached_access_flags_cannot_authorize_native_execution(ctx, monkeypatch):
+    local_configuration(ctx)
+    scripted_probe(monkeypatch)
+    monkeypatch.setattr(native.HTTPInference, "available_models", lambda self: (self.model,))
+    native.run_inference_stage(ctx)
+    approve(ctx)
+    result = native.run_inference_stage(ctx)
+    result["complete"] = True  # Mutable convenience JSON is not deployment authority.
+    ctx.write_json("outputs/inference.json", result)
+    ctx.write_json("outputs/native-preflight.json", {"complete": True})
+    ctx.write_json("outputs/snapshot.json", {"not": "a production snapshot"})
+    with pytest.raises(ValueError, match="HOSTED_LOCAL_INFERENCE_DENIED"):
+        native.run_first_pass_stage(ctx)
 
 
 def test_exception_and_provider_output_secrets_never_persist(ctx, monkeypatch):
@@ -239,6 +317,43 @@ def test_python_guard_or_operator_boolean_is_never_os_egress_proof(ctx):
     ctx.write_json("reviews/native-egress.json", {"native_egress_policy_verified": True})
     result = native._egress(ctx, "1" * 64, ("api.openai.com",))
     assert result["complete"] is False and not result["manifest_fields"]
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_native_egress_tracks_selected_remote_hosts_and_never_local(ctx, monkeypatch, local):
+    from money.research.inference_config import InferenceSelection
+
+    selection = InferenceSelection(
+        provider="ollama" if local else "hosted-compatible",
+        model="qwen3:14b" if local else "pinned-revision-20260917",
+        endpoint="http://127.0.0.1:11434/v1/chat/completions"
+        if local
+        else "https://inference.example.com/v1/chat/completions",
+        endpoint_scope="local" if local else "public",
+        authentication="none" if local else "bearer",
+        credential_environment_variable=None if local else "MODEL_API_KEY",
+    )
+    monkeypatch.setattr(
+        native, "_selections", lambda context: dict.fromkeys(native.FIRMS, selection)
+    )
+    monkeypatch.setattr(native, "_inventory", lambda: [("test-package", "1.0")])
+    monkeypatch.setattr(native, "require_pinned_source", lambda package: None)
+    monkeypatch.setattr(
+        native, "_resolve_native_closure", lambda context: {"resolved": True, "artifacts": []}
+    )
+    monkeypatch.setattr(native, "_security", lambda *args: {"passed": True, "artifacts": []})
+    observed = []
+
+    def egress(context, identity, hosts):
+        observed.append(hosts)
+        return {"complete": False, "artifacts": [], "manifest_fields": {}}
+
+    monkeypatch.setattr(native, "_egress", egress)
+    result = native.run_native_preflight_stage(ctx)
+    assert not result["complete"]
+    assert observed == [() if local else ("inference.example.com",)]
+    if local:
+        assert "HOST_EGRESS_REMOTE_INFERENCE_REQUIRED" in {item["code"] for item in ctx.blockers}
 
 
 def test_no_native_calls_without_prerequisites(ctx, monkeypatch):

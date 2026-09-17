@@ -132,9 +132,11 @@ class LiveCorrespondence:
         settings = NativeRunSettings(timeout_seconds=self.manifest.native_timeout_seconds, max_calls=2)
 
         def bounded(runner: Any, schema: Any, selection: InferenceSelection) -> BoundedNativeRunner:
+            inference = selection.inference()
             return BoundedNativeRunner(runner, schema, NativeProcessPolicy(
                 timeout_seconds=self.manifest.native_timeout_seconds,
-                gateway_hosts=selection.inference().allowed_network_hosts,
+                gateway_hosts=inference.allowed_network_hosts,
+                gateway_port=inference.allowed_network_port,
             ))
 
         def response_for(firm: str, selection: InferenceSelection) -> ResponseCapability:

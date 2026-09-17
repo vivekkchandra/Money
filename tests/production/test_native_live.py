@@ -33,7 +33,8 @@ from money.backtest.lean import (
     LeanStudyQualification,
 )
 from money.crews.cio import CIOResult, CrewAINativeRunner
-from money.research.inference import HTTPInference, InferenceConfiguration
+from money.research.inference import HTTPInference
+from money.research.inference_config import InferenceSelection
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
     FirmReport,
@@ -82,11 +83,16 @@ def live_snapshot(live_selector) -> ResearchSnapshot:
 
 
 def _inference() -> HTTPInference:
-    key = os.getenv("MONEY_NATIVE_INFERENCE_API_KEY")
-    if not key:
-        pytest.skip("SKIPPED_MISSING_CREDENTIAL: MONEY_NATIVE_INFERENCE_API_KEY")
     config = json.loads(_file("MONEY_NATIVE_INFERENCE_CONFIG").read_bytes())
-    return HTTPInference(InferenceConfiguration(**config, api_key=key))
+    # Legacy bundles used the child-only alias. New bundles specify the real
+    # environment-variable name, never a key or an invented anonymous token.
+    config.setdefault("credential_environment_variable", "MONEY_NATIVE_INFERENCE_API_KEY")
+    selection = InferenceSelection.model_validate(config)
+    selection.require_hosted()  # A local smoke can never satisfy this suite.
+    variable = selection.credential_environment_variable
+    if selection.authentication != "none" and (not variable or not os.getenv(variable)):
+        pytest.skip("SKIPPED_MISSING_CREDENTIAL: configured inference credential")
+    return selection.inference()
 
 
 def _runtime(package: str) -> None:
@@ -108,7 +114,11 @@ def test_native_qualitative_live(firm: str, package: str, live_snapshot: Researc
     bounded = BoundedNativeRunner(
         runner_type(inference, NativeRunSettings(timeout_seconds=600)),
         report_type,
-        NativeProcessPolicy(gateway_hosts=inference.allowed_network_hosts, timeout_seconds=600),
+        NativeProcessPolicy(
+            gateway_hosts=inference.allowed_network_hosts,
+            gateway_port=inference.allowed_network_port,
+            timeout_seconds=600,
+        ),
     )
     report = adapter_type(bounded).research(ResearchMandate(), live_snapshot)
     assert report.runtime == "live" and report.claims and report.usage.input_tokens is not None
@@ -160,7 +170,11 @@ def test_crewai_native_live(live_snapshot: ResearchSnapshot) -> None:
     runner = BoundedNativeRunner(
         CrewAINativeRunner(inference, NativeRunSettings(timeout_seconds=600)),
         CIOResult,
-        NativeProcessPolicy(gateway_hosts=inference.allowed_network_hosts, timeout_seconds=600),
+        NativeProcessPolicy(
+            gateway_hosts=inference.allowed_network_hosts,
+            gateway_port=inference.allowed_network_port,
+            timeout_seconds=600,
+        ),
     )
     result = runner(live_snapshot, _reports(), lean)
     assert result.audit.completed and result.audit.findings

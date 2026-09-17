@@ -172,12 +172,69 @@ def test_legacy_credential_aliases_are_only_in_memory(context):
         "TRADING212_API_SECRET": "fixture-secret",
         "OPENAI_API_KEY": "fixture-inference",
     }
+    selection = {
+        "provider": "openai",
+        "model": "gpt-5.4-2026-03-05",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "credential_environment_variable": "OPENAI_API_KEY",
+    }
     environment = runner.production_environment(
-        context, context.root / "manifest.json", "test-hash", []
+        context,
+        context.root / "manifest.json",
+        "test-hash",
+        [
+            {
+                "manifest_fields": {
+                    role: selection for role in ("tradingagents", "ai_hedge_fund", "crewai")
+                }
+            }
+        ],
     )
     assert environment["TRADING212_METADATA_API_KEY"] == "fixture-key"
     assert environment["MONEY_NATIVE_INFERENCE_API_KEY"] == "fixture-inference"
     assert not list(context.root.iterdir())
+
+
+def test_local_selection_does_not_receive_an_openai_or_legacy_credential(context):
+    context.environ = {
+        "OPENAI_API_KEY": "unrelated-unit-test-secret",
+        "MONEY_NATIVE_INFERENCE_API_KEY": "old-unit-test-alias",
+    }
+    selection = {
+        "provider": "ollama",
+        "model": "qwen3:14b",
+        "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+        "authentication": "none",
+        "endpoint_scope": "local",
+    }
+    environment = runner.production_environment(
+        context,
+        context.root / "manifest.json",
+        "test-hash",
+        [{"manifest_fields": {"tradingagents": selection}}],
+    )
+    assert "MONEY_NATIVE_INFERENCE_API_KEY" not in environment
+    assert not list(context.root.iterdir())
+
+
+def test_local_runner_default_preserves_production_bundle(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda ctx: {
+            "status": "QUALIFICATION BLOCKED",
+            "blockers": [],
+        },
+    )
+    assert (
+        runner.main(
+            [], environment={"MONEY_INFERENCE_CONFIG": "data/configuration/ollama-inference.json"}
+        )
+        == 2
+    )
+    assert (tmp_path / "data/qualified/local-inference/.runner.lock").is_file()
+    assert not (tmp_path / "data/qualified/live").exists()
 
 
 def test_captured_commands_are_bounded_and_do_not_write_raw_logs(tmp_path):

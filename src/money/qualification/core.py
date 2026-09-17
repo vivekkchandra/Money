@@ -48,6 +48,34 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json_bytes(value)).hexdigest()
 
 
+def assert_secret_free(raw: bytes, environ: Mapping[str, str]) -> None:
+    """Reject known credentials and encoded authentication before any output."""
+    values = {
+        value
+        for name, value in environ.items()
+        if value
+        and (
+            name in SECRET_NAMES
+            or any(part in name.upper() for part in ("TOKEN", "SECRET", "PASSWORD", "API_KEY"))
+        )
+    }
+    key, secret = environ.get("TRADING212_API_KEY"), environ.get("TRADING212_API_SECRET")
+    if key and secret:
+        values.add(f"{key}:{secret}")
+    company = environ.get("COMPANIES_HOUSE_API_KEY")
+    if company:
+        values.add(company + ":")
+    for value in values:
+        encodings = (
+            value.encode(),
+            json.dumps(value)[1:-1].encode(),
+            quote(value, safe="").encode(),
+            base64.b64encode(value.encode()),
+        )
+        if any(encoded and encoded in raw for encoded in encodings):
+            raise ValueError("QUALIFICATION_SECRET_DETECTED")
+
+
 @dataclass
 class QualificationContext:
     root: Path
@@ -92,33 +120,7 @@ class QualificationContext:
 
     def check_secrets(self, raw: bytes) -> None:
         """Reject known credentials and encoded header forms before any write."""
-        values = {
-            value
-            for name, value in self.environ.items()
-            if value
-            and (
-                name in SECRET_NAMES
-                or any(part in name.upper() for part in ("TOKEN", "SECRET", "PASSWORD", "API_KEY"))
-            )
-        }
-        key, secret = (
-            self.environ.get("TRADING212_API_KEY"),
-            self.environ.get("TRADING212_API_SECRET"),
-        )
-        if key and secret:
-            values.add(f"{key}:{secret}")
-        company = self.environ.get("COMPANIES_HOUSE_API_KEY")
-        if company:
-            values.add(company + ":")
-        for value in values:
-            encodings = (
-                value.encode(),
-                json.dumps(value)[1:-1].encode(),
-                quote(value, safe="").encode(),
-                base64.b64encode(value.encode()),
-            )
-            if any(encoded and encoded in raw for encoded in encodings):
-                raise ValueError("QUALIFICATION_SECRET_DETECTED")
+        assert_secret_free(raw, self.environ)
 
     def read_bytes(self, relative: str, maximum: int = MAXIMUM_BYTES) -> bytes | None:
         target = self._path(relative)

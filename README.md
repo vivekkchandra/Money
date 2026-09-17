@@ -78,6 +78,18 @@ npm run dev --prefix apps/web
 Open `http://localhost:3000`, sign in with your configured workspace password and
 request research for `DEMO.L`. All completed reports remain available after refresh.
 
+For local **real inference** with the already-running Ollama server, see
+[Ollama inference](docs/OLLAMA_INFERENCE.md). The explicit local selection is:
+
+```sh
+MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/probe_inference.py
+```
+
+No OpenAI key or fake credential is needed. This probes each LLM role without
+converting the demonstration into qualified native research. **Local Ollama is
+not Railway production inference**; existing live evidence, native-runtime,
+first-pass, review and release gates remain mandatory.
+
 ## Verification and deployment
 
 For live production admission, use the [resumable qualification runner](docs/LIVE_QUALIFICATION_RUNNER.md):

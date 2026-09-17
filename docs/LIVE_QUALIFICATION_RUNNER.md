@@ -11,12 +11,29 @@ railway run --service Money --environment production uv run python scripts/build
 No keys are copied into configuration, passed as command arguments, printed, or
 written to evidence. The runner does not change production settings, create a
 Railway project/database, trade, or contact broker account/order endpoints. It
-does make bounded paid OpenAI requests and read-only provider requests. Explicit
+does make bounded requests to the explicitly selected inference provider (paid
+OpenAI by default) and read-only data-provider requests. Explicit
 manual model approval can authorize registry writes in the existing database.
+
+For local Ollama functionality evidence, select the separate configuration;
+do not change the production/OpenAI file:
+
+```bash
+MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/build_live_qualification.py
+```
+
+`MONEY_INFERENCE_CONFIG` takes precedence over the default
+`data/configuration/live-inference.json`; an invalid explicit file is an error,
+not a fallback. Local inference needs no credential and cannot qualify a hosted
+production manifest. **LOCAL OLLAMA != RAILWAY PRODUCTION INFERENCE.** See the
+[local Ollama guide](OLLAMA_INFERENCE.md) for exact service/model/probe commands
+and the review/native/egress gates that remain in force.
 
 ## Resuming
 
-Every invocation resumes `data/qualified/live/`. It creates missing templates,
+By default, public inference resumes `data/qualified/live/` and a selected local
+endpoint resumes `data/qualified/local-inference/`. `--output` explicitly selects
+another qualification directory. It creates missing templates,
 preserves operator edits, validates linked bytes and freshness again, and reuses
 applicable observations/training/runtime receipts. Changed inputs invalidate
 dependent work. A failed/stale observation cannot become a PASS through caching.
@@ -38,7 +55,7 @@ You do not write a manifest or calculate proof hashes yourself.
 | `inputs/supplemental-sources.json` | Independently reviewed source identity, actual source bytes, dataset coverage and rights for supplied spread/archive records. Historical observations require original-publication evidence. |
 | `inputs/provider-rights/*.json` | Actual permitted use, storage and redistribution terms plus the rights evidence bytes. API success is not a licence. |
 | `inputs/financial-documents.json` | Actual accounts filing selection, accounting-currency/content-hash review, approved storage hosts and document rights. Filing history alone never qualifies financial extraction. |
-| `reviews/inference.json` | Approval of the three checked-in exact OpenAI selections and sufficient bounded native invocation budgets. Optional GBP prices need pricing/FX evidence. |
+| `reviews/inference.json` | Independent approval of the exact selected three-role inference configuration and sufficient bounded native invocation budgets. A local inference probe never supplies that approval or permits a local production manifest. Optional GBP prices need pricing/FX evidence. |
 | `reviews/qlib-inputs.json` | Genuine archived evidence, historical universe/actions, explicit training cutoff and predeclared walk-forward/OOS acceptance criteria. |
 | `reviews/qlib-source-*.json` | Independent source/PIT/untouched-holdout review bound to the actual unpromoted training result. |
 | `reviews/qlib-approval-*.json` | Independent approval of all actual validation hashes and explicit manual promotion. A failed study stays failed. |
@@ -59,6 +76,12 @@ tests each exact inference selection, and inspects native source/dependency/secu
 status. EODHD must actually supply OHLCV, corporate actions and news. Companies
 House company/filing access and machine-readable financial conversion are separate
 observations. An empty event feed cannot attest a parser's successful conversion.
+
+For Ollama the model catalogue and three final-content `OK` responses establish
+only local endpoint functionality. The probe does not incorporate private
+reasoning into reports. It cannot discharge reviewed selection, target worker,
+OS egress, native-engine or release-approval requirements. Qlib and LEAN do not
+become LLM workflows when the selected inference provider changes.
 
 It freezes genuine admitted evidence using the same `LiveSnapshotBuilder` and
 market-quality checks as production. Only provider circuit-breaker state uses an

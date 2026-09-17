@@ -1,0 +1,38 @@
+{
+  "tradingagents": {
+    "provider": "ollama",
+    "model": "qwen3:14b",
+    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+    "protocol": "openai-compatible",
+    "authentication": "none",
+    "endpoint_scope": "local",
+    "temperature": 0,
+    "max_output_tokens": 8000,
+    "maximum_prompt_bytes": 100000,
+    "timeout_seconds": 180
+  },
+  "ai_hedge_fund": {
+    "provider": "ollama",
+    "model": "qwen3:14b",
+    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+    "protocol": "openai-compatible",
+    "authentication": "none",
+    "endpoint_scope": "local",
+    "temperature": 0,
+    "max_output_tokens": 8000,
+    "maximum_prompt_bytes": 100000,
+    "timeout_seconds": 180
+  },
+  "crewai": {
+    "provider": "ollama",
+    "model": "qwen3:14b",
+    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+    "protocol": "openai-compatible",
+    "authentication": "none",
+    "endpoint_scope": "local",
+    "temperature": 0,
+    "max_output_tokens": 8000,
+    "maximum_prompt_bytes": 100000,
+    "timeout_seconds": 180
+  }
+}

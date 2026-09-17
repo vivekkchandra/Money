@@ -75,10 +75,12 @@ def deployment_preflight(role: Literal["api", "worker"]) -> dict[str, Any]:
             "filings": manifest.filings_credential_environment_variable if manifest else "COMPANIES_HOUSE_API_KEY",
         }
         if manifest:
-            credential_names.update({
-                name: getattr(manifest, name).credential_environment_variable
-                for name in ("tradingagents", "ai_hedge_fund", "crewai")
-            })
+            for name in ("tradingagents", "ai_hedge_fund", "crewai"):
+                selection = getattr(manifest, name)
+                if getattr(selection, "authentication", "bearer") == "none":
+                    check(name + "_credential", "NOT_REQUIRED", "INFERENCE_AUTHENTICATION_NONE")
+                else:
+                    credential_names[name] = selection.credential_environment_variable
         else:
             check("inference", "BLOCKED_CONFIGURATION", "REVIEWED_INFERENCE_SELECTIONS_REQUIRED")
         for component, name in credential_names.items():
