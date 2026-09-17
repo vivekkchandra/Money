@@ -52,6 +52,39 @@ function render(artifact: unknown, path = evidenceHref) {
 }
 
 describe("bounded post-lock correspondence presentation", () => {
+  it("accepts exactly two sealed firms only when Qlib is explicitly disabled", () => {
+    const packet = fixture();
+    const html = render({ ...packet, qlib_enabled: false, report_hashes: packet.report_hashes.slice(0, 2) });
+    expect(html).not.toContain('role="alert"');
+    expect(html).toContain("Qlib was disabled for this snapshot");
+    expect(html).toContain("No Qlib report or quantitative qualification is claimed");
+    expect(html).toContain("LEAN validation remains mandatory");
+    expect(html).toContain("Material disagreement remains");
+  });
+
+  it.each([
+    { qlib_enabled: "false" }, { qlib_enabled: null }, { qlib_enabled: 0 },
+    { qlib_enabled: false },
+    { qlib_enabled: true, report_hashes: fixture().report_hashes.slice(0, 2) },
+    { report_hashes: fixture().report_hashes.slice(0, 2) },
+    { qlib_enabled: false, report_hashes: [["tradingagents", hash], ["tradingagents", hash]] },
+    { qlib_enabled: false, report_hashes: fixture().report_hashes.slice(0, 2), lean_hash: undefined },
+  ])("preserves mode, exact report identities and mandatory LEAN validation %#", change => {
+    const html = render({ ...fixture(), ...change });
+    expect(html).toContain('role="alert"');
+    expect(html).not.toContain("Qlib was disabled");
+  });
+
+  it("rejects correspondence attributed to a disabled Qlib firm", () => {
+    const packet = fixture();
+    const challenge = { ...packet.challenges[0], respondent: "qlib" };
+    const html = render({
+      ...packet, qlib_enabled: false, report_hashes: packet.report_hashes.slice(0, 2),
+      challenges: [challenge], rounds: [],
+    });
+    expect(html).toContain('role="alert"');
+  });
+
   it.each([null, undefined])("renders an honest empty state for %s", (artifact) => {
     const html = render(artifact);
     expect(html).toContain("<h2>Cross-examination</h2>");

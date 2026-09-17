@@ -56,7 +56,8 @@ const exchange = z.object({
 });
 const packetSchema = z.object({
   snapshot_id: identity, snapshot_hash: digest,
-  report_hashes: z.array(z.tuple([z.enum(["tradingagents", "ai_hedge_fund", "qlib"]), digest])).length(3),
+  qlib_enabled: z.boolean().default(true),
+  report_hashes: z.array(z.tuple([z.enum(["tradingagents", "ai_hedge_fund", "qlib"]), digest])).min(2).max(3),
   lean_hash: digest, initial_audit_hash: digest, hash: digest,
   issued_at: z.iso.datetime({ offset: true }),
   challenges: z.array(challenge).max(24),
@@ -65,7 +66,9 @@ const packetSchema = z.object({
 }).refine((packet) => {
   // Display consistency only: cryptographic integrity remains a server responsibility.
   const originals = new Map<string, string>(packet.report_hashes);
-  if (originals.size !== 3) return false;
+  const required = packet.qlib_enabled ? ["tradingagents", "ai_hedge_fund", "qlib"] : ["tradingagents", "ai_hedge_fund"];
+  if (packet.report_hashes.length !== required.length || originals.size !== required.length
+    || required.some((firm) => !originals.has(firm))) return false;
   originals.set("lean", packet.lean_hash).set("cio", packet.initial_audit_hash);
   const pending = new Map(packet.challenges.map((item) => [item.challenge_id, item]));
   if (pending.size !== packet.challenges.length) return false;
@@ -157,6 +160,7 @@ export function CrossExamination({ artifact, evidenceHref }: { artifact: unknown
   const packet = result.data;
   return <section className="panel"><SectionHeading kicker="POST-LOCK · EVIDENCE-BASED CHALLENGE" title="Cross-examination" />
     <p>Original reports remain sealed. Correspondence is a later audit artifact, not a replacement report or an agent vote.</p>
+    {!packet.qlib_enabled && <p className="notice">Qlib was disabled for this snapshot. No Qlib report or quantitative qualification is claimed. LEAN validation remains mandatory.</p>}
     <p role="status"><strong>{packet.material_disagreement ? `Material disagreement remains · ${packet.unresolved_challenge_ids.length} unresolved challenge(s)` : "No unresolved challenges recorded"}</strong></p>
     <p className="small-print">At most two rounds. A recorded resolution is not investment approval and cannot override a hard research gate.</p>
     <details className="evidence-item"><summary>Recorded packet provenance</summary><dl className="data-record"><div><dt>Packet hash (recorded)</dt><dd className="data-text"><code>{packet.hash}</code></dd></div><div><dt>Snapshot</dt><dd>{packet.snapshot_id}</dd></div><div><dt>Snapshot hash</dt><dd className="data-text"><code>{packet.snapshot_hash}</code></dd></div><div><dt>Issued at</dt><dd><time dateTime={packet.issued_at}>{packet.issued_at}</time></dd></div></dl><p className="small-print">The browser displays the server-recorded hash; it does not recalculate or independently verify cryptographic integrity.</p></details>
