@@ -92,8 +92,9 @@ def deterministic_audit(
     qualified_model: QualifiedLinearModel | None = None,
 ) -> tuple[AuditFinding, ...]:
     findings: list[AuditFinding] = []
-    if len(reports) != 3 or {r.firm for r in reports} != {"tradingagents", "ai_hedge_fund", "qlib"}:
-        raise InvalidUpstreamReport("CIO requires three sealed report identities")
+    required = snapshot.required_first_pass_firms
+    if len(reports) != len(required) or {r.firm for r in reports} != required:
+        raise InvalidUpstreamReport("CIO requires configured sealed report identities")
     if lean.snapshot_id != snapshot.snapshot_id or any(
         r.snapshot_id != snapshot.snapshot_id or r.snapshot_hash != snapshot.hash for r in reports
     ):

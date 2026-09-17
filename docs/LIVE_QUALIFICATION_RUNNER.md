@@ -29,6 +29,33 @@ production manifest. **LOCAL OLLAMA != RAILWAY PRODUCTION INFERENCE.** See the
 [local Ollama guide](OLLAMA_INFERENCE.md) for exact service/model/probe commands
 and the review/native/egress gates that remain in force.
 
+## Optional Qlib, mandatory LEAN
+
+Qlib remains enabled by default. An operator may explicitly select
+`MONEY_QLIB_ENABLED=false` (only exact `true` or `false` values are accepted):
+
+```bash
+railway run --service Money --environment production sh -c 'MONEY_QLIB_ENABLED=false MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/build_live_qualification.py'
+```
+
+This records `status: DISABLED` for Qlib, skips only its source/dependency,
+training, PIT/OOS/model-registration and manual-promotion requirements, and emits
+no Qlib model identifiers or substitute report. Existing Qlib evidence/reviews
+remain unchanged. Enabled Qlib failures never trigger this mode automatically.
+
+The selected mode is bound into the frozen snapshot, native execution/cache
+identities and release-reviewed manifest. Changing it requires matching fresh
+stage evidence; a three-report checkpoint cannot silently become a two-report
+qualification. Disabled mode seals independent TradingAgents and AI-Hedge-Fund
+reports before mandatory LEAN, then CrewAI CIO/Red Team and bounded
+cross-examination. There is no majority-vote substitute.
+
+Disabling Qlib does **not** qualify providers, ISA/buy availability, ethics,
+spread/cost/PIT evidence, LEAN, the remaining native engines, hosted inference,
+OS egress, security or release approval. The installed dependency inventory is
+still audited in full: disabling a component does not suppress advisories for
+packages that remain installed. Local Ollama is still not hosted inference.
+
 ## Resuming
 
 By default, public inference resumes `data/qualified/live/` and a selected local
@@ -56,9 +83,9 @@ You do not write a manifest or calculate proof hashes yourself.
 | `inputs/provider-rights/*.json` | Actual permitted use, storage and redistribution terms plus the rights evidence bytes. API success is not a licence. |
 | `inputs/financial-documents.json` | Actual accounts filing selection, accounting-currency/content-hash review, approved storage hosts and document rights. Filing history alone never qualifies financial extraction. |
 | `reviews/inference.json` | Independent approval of the exact selected three-role inference configuration and sufficient bounded native invocation budgets. A local inference probe never supplies that approval or permits a local production manifest. Optional GBP prices need pricing/FX evidence. |
-| `reviews/qlib-inputs.json` | Genuine archived evidence, historical universe/actions, explicit training cutoff and predeclared walk-forward/OOS acceptance criteria. |
-| `reviews/qlib-source-*.json` | Independent source/PIT/untouched-holdout review bound to the actual unpromoted training result. |
-| `reviews/qlib-approval-*.json` | Independent approval of all actual validation hashes and explicit manual promotion. A failed study stays failed. |
+| `reviews/qlib-inputs.json` | When Qlib is enabled: genuine archived evidence, historical universe/actions, explicit training cutoff and predeclared walk-forward/OOS acceptance criteria. |
+| `reviews/qlib-source-*.json` | When Qlib is enabled: independent source/PIT/untouched-holdout review bound to the actual unpromoted training result. |
+| `reviews/qlib-approval-*.json` | When Qlib is enabled: independent approval of all actual validation hashes and explicit manual promotion. A failed study stays failed. |
 | `reviews/lean-inputs.json` and `reviews/lean-*.json` | Real digest-pinned LEAN image, historical eligibility/survivorship/action audits, observed cost/slippage and predeclared study. Approval must precede the frozen snapshot; never backdate it. |
 | `reviews/native-egress.json` | Actual target Linux worker enforcement and independent policy/probe evidence, bound to its current network namespace and exact native runtime. |
 | `reviews/release.json` | Final independent approval of the generated `outputs/release-inputs.json` hash, with real approval bytes. |
@@ -70,7 +97,7 @@ actual independently reviewed bytes and a matching current broker row.
 
 ## Automated work and boundaries
 
-The runner discovers the current Trading 212 STOCK/GBP/GBX catalogue and joins it
+The runner discovers the current Trading 212 STOCK/GBX catalogue and joins it
 to fresh reviews, reuses the `qualify_providers.py` probe/admission functions,
 tests each exact inference selection, and inspects native source/dependency/security
 status. EODHD must actually supply OHLCV, corporate actions and news. Companies
@@ -99,7 +126,7 @@ calls manual promotion when explicitly approved. It rechecks active registry sta
 on resume and does not silently reactivate a withdrawn model.
 
 Native execution preserves the independent TradingAgents and AI-Hedge-Fund
-workflows and numeric Qlib first pass. Only their sealed reports go to LEAN, then
+workflows and, when enabled, numeric Qlib first pass. Only their sealed reports go to LEAN, then
 the real central CrewAI CIO evidence/contradiction assessment and Red Team. This
 is not a majority vote. Existing bounded cross-examination controls remain intact.
 

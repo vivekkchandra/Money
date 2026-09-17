@@ -24,7 +24,7 @@ qualification**: live web/backend, SMTP, payment lifecycle, PostgreSQL recovery,
 monitoring, legal approval and licensed native research must pass acceptance.
 
 - Immutable mandates, objective snapshots and provider provenance with point-in-time checks.
-- ISA/ethics/currency gates, isolated first-pass inputs, write-once reports and a durable three-firm barrier.
+- ISA/ethics/currency gates, isolated first-pass inputs, write-once reports and a durable barrier for all snapshot-selected firms.
 - Workspace-scoped submission, durable sessions/rate limits/idempotency, bounded retries, leased/fenced workers, checkpoint recovery and immutable decision packets.
 - Bounded UK data fetchers, provider qualification, explicit identifiers/GBP/GBX, TA-Lib/catalyst/fundamental/qualified-Qlib discovery and archived-publication PIT controls.
 - Native snapshot-only firm assemblies, isolated LEAN runner, actual CrewAI Flow, independent verification, bounded cross-examination and deterministic signal gates.
@@ -111,6 +111,13 @@ scope is one credential/source-bound universe review, not a per-stock task.
 See the linked guide for the safe `--rebuild-universe` option and hash-verified
 `--replay-saved` diagnostic mode, which cannot grant eligibility or production
 approval.
+
+Qlib is enabled by default; explicitly selecting `MONEY_QLIB_ENABLED=false`
+omits only its numeric report/model qualification. Independent TradingAgents and
+AI-Hedge-Fund reports must still lock before mandatory LEAN and CrewAI CIO/Red
+Team. The mode is snapshot- and release-bound; enabled Qlib failures never
+silently disable it. See the [qualification guide](docs/LIVE_QUALIFICATION_RUNNER.md)
+for the exact command and unchanged security, egress and production gates.
 
 For live production admission, use the [resumable qualification runner](docs/LIVE_QUALIFICATION_RUNNER.md):
 

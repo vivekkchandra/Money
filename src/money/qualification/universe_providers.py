@@ -60,6 +60,16 @@ def _name(value: Any) -> str:
 
 def _error(error: Exception) -> str:
     if isinstance(error, ProviderFailure):
+        if error.http_status is not None:
+            if error.http_status in {401, 403, 404, 429}:
+                return {
+                    401: "PROVIDER_AUTHENTICATION_REJECTED",
+                    403: "PROVIDER_ACCESS_DENIED",
+                    404: "PROVIDER_RESOURCE_NOT_FOUND",
+                    429: "PROVIDER_RATE_LIMITED",
+                }[error.http_status]
+            if error.http_status >= 500:
+                return "PROVIDER_UPSTREAM_UNAVAILABLE"
         return (
             error.code
             if error.code
@@ -72,6 +82,11 @@ def _error(error: Exception) -> str:
                 "PROVIDER_CREDENTIAL_REQUIRED_FOR_LIVE_PROBE",
                 "PROVIDER_RESPONSE_INVALID",
                 "PROVIDER_SOURCE_REJECTED",
+                "PROVIDER_AUTHENTICATION_REJECTED",
+                "PROVIDER_ACCESS_DENIED",
+                "PROVIDER_RESOURCE_NOT_FOUND",
+                "PROVIDER_RATE_LIMITED",
+                "PROVIDER_UPSTREAM_UNAVAILABLE",
             }
             else "PROVIDER_FAILED"
         )
@@ -172,6 +187,40 @@ class _CachedFetcher(SafeFetcher):
         self.refs: set[tuple[str, str]] = set()
         self.observations: list[datetime] = []
         self.backoff: set[str] = set()
+        self.diagnostics: list[dict[str, Any]] = []
+
+    def _diagnostic(
+        self,
+        host: str,
+        path: str,
+        outcome: str,
+        *,
+        error_code: str | None = None,
+        http_status: int | None = None,
+        original_error_code: str | None = None,
+    ) -> None:
+        http_status = (
+            http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        )
+        if original_error_code is not None:
+            original_error_code = _error(ProviderFailure(str(original_error_code)))
+        if host == "eodhd.com":
+            endpoint = path.split("/")[2]
+        elif path == "/search/companies":
+            endpoint = "company-search"
+        else:
+            endpoint = "filing-history" if path.endswith("/filing-history") else "company-profile"
+        self.diagnostics.append(
+            {
+                "provider": "eodhd" if host == "eodhd.com" else "companies-house",
+                "endpoint": endpoint,
+                "outcome": outcome,
+                "error_code": error_code,
+                "http_status": http_status,
+                "original_error_code": original_error_code,
+                "checked_at": self.ctx.now.isoformat(),
+            }
+        )
 
     @property
     def offline(self) -> bool:
@@ -238,15 +287,31 @@ class _CachedFetcher(SafeFetcher):
                 if observed <= self.ctx.now < observed + timedelta(days=1):
                     self.refs.add((cache["sha256"], cache["path"]))
                     self.observations.append(observed)
+                    self._diagnostic(host, parts.path, "CACHE_HIT")
                     return envelope["response"]
         if self.offline or self.cache_only:
+            self._diagnostic(
+                host, parts.path, "NOT_REQUESTED", error_code="PROVIDER_CACHED_OBSERVATION_REQUIRED"
+            )
             raise ProviderFailure("PROVIDER_CACHED_OBSERVATION_REQUIRED")
         failed = self.ctx.cache("bulk-failure-" + key, key, 300)
         if failed:
+            self._diagnostic(
+                host,
+                parts.path,
+                "BACKOFF",
+                error_code="PROVIDER_BACKOFF_ACTIVE",
+                http_status=failed.get("http_status"),
+                original_error_code=failed.get("error"),
+            )
             raise ProviderFailure("PROVIDER_BACKOFF_ACTIVE")
         if host in self.backoff:
+            self._diagnostic(host, parts.path, "BACKOFF", error_code="PROVIDER_BACKOFF_ACTIVE")
             raise ProviderFailure("PROVIDER_BACKOFF_ACTIVE")
         if self.used >= self.maximum:
+            self._diagnostic(
+                host, parts.path, "NOT_REQUESTED", error_code="PROVIDER_REQUEST_BUDGET_EXHAUSTED"
+            )
             raise ProviderFailure("PROVIDER_REQUEST_BUDGET_EXHAUSTED")
         if self.last_call is not None:
             remaining = self.interval - (self.monotonic() - self.last_call)
@@ -268,13 +333,24 @@ class _CachedFetcher(SafeFetcher):
                 }
             )
         except Exception as error:
-            self.ctx.checkpoint("bulk-failure-" + key, key, {"error": _error(error)})
+            http_status = error.http_status if isinstance(error, ProviderFailure) else None
+            self._diagnostic(
+                host, parts.path, "FAILED", error_code=_error(error), http_status=http_status
+            )
+            self.ctx.checkpoint(
+                "bulk-failure-" + key, key, {"error": _error(error), "http_status": http_status}
+            )
             if isinstance(error, ProviderFailure) and error.retryable:
                 self.backoff.add(host)
-            raise ProviderFailure(_error(error)) from None
+            raise ProviderFailure(
+                _error(error),
+                retryable=isinstance(error, ProviderFailure) and error.retryable,
+                http_status=http_status,
+            ) from None
         self.ctx.checkpoint("bulk-http-" + key, key, _ref(digest, path), [(digest, path)])
         self.refs.add((digest, path))
         self.observations.append(observed)
+        self._diagnostic(host, parts.path, "NETWORK_SUCCESS")
         return response
 
 
@@ -317,6 +393,11 @@ class BulkProviderEnricher:
     def requests_used(self) -> int:
         return self.fetcher.used
 
+    @property
+    def requests_remaining(self) -> int:
+        """Remaining actual network request budget; cache hits cost no requests."""
+        return max(0, self.fetcher.maximum - self.fetcher.used)
+
     def _eodhd(self, path: str, **query: str) -> Any:
         parameters = dict(query, fmt="json")
         if not self.fetcher.offline:
@@ -358,6 +439,23 @@ class BulkProviderEnricher:
             raise ValueError("EODHD_SEARCH_INCOMPLETE")
         if any(not isinstance(item, dict) for item in rows):
             raise ValueError("EODHD_SEARCH_INVALID")
+        same_isin = [item for item in rows if item.get("ISIN") == isin]
+        row["eodhd_mapping_diagnostics"] = {
+            "response_count": len(rows),
+            "exact_isin_count": len(same_isin),
+            "returned_currencies": sorted(
+                {
+                    item["Currency"]
+                    for item in same_isin
+                    if isinstance(item.get("Currency"), str)
+                    and re.fullmatch(r"[A-Z]{3}", item["Currency"])
+                }
+            ),
+            "exact_quote_count": sum(
+                item.get("Currency") == row["quote_currency"] for item in same_isin
+            ),
+            "quote_unit_conversion_applied": False,
+        }
         matches: dict[str, dict[str, Any]] = {}
         for item in rows:
             if (
@@ -463,6 +561,7 @@ class BulkProviderEnricher:
             row["companies_house_state"] = "UNRESOLVED_APPLICABILITY"
             row["provider_reasons"].append("ISSUER_REGISTRATION_COUNTRY_UNVERIFIED")
             return
+        row["companies_house_state"] = "UNRESOLVED"
         if not self.fetcher.offline and not self.ctx.environ.get("COMPANIES_HOUSE_API_KEY"):
             row["provider_reasons"].append("COMPANIES_HOUSE_CREDENTIAL_MISSING")
             return
@@ -694,8 +793,19 @@ class BulkProviderEnricher:
             eodhd_mapping_state="UNRESOLVED",
             eodhd_mapping_attempted=False,
             eodhd_lookup_origin="NOT_PERFORMED",
+            eodhd_mapping_diagnostics={},
             companies_house_number=None,
-            companies_house_state="UNRESOLVED",
+            companies_house_state="UNRESOLVED_APPLICABILITY",
+            companies_house_mapping_attempted=False,
+            issuer_jurisdiction_state="UNRESOLVED",
+            provider_stage_status={
+                "eodhd_identity": {"status": "NOT_ATTEMPTED"},
+                "issuer_profile": {"status": "NOT_ATTEMPTED", "code": "EODHD_IDENTITY_REQUIRED"},
+                "companies_house": {
+                    "status": "NOT_ATTEMPTED",
+                    "code": "VERIFIED_ISSUER_JURISDICTION_REQUIRED",
+                },
+            },
             provider_reasons=[],
             provider_evidence=[],
             provider_reports={},
@@ -707,12 +817,21 @@ class BulkProviderEnricher:
         )
         self.fetcher.refs = set()
         self.fetcher.observations = []
+        self.fetcher.diagnostics = []
         self.fetcher.integrity_failed = False
+        requests_before = self.requests_used
         if not self.fetcher.offline and not self.ctx.environ.get("EODHD_API_KEY"):
             row["provider_reasons"].append("EODHD_CREDENTIAL_MISSING")
+            row["provider_stage_status"]["eodhd_identity"] = {
+                "status": "BLOCKED",
+                "code": "EODHD_CREDENTIAL_MISSING",
+            }
+            row["provider_request_diagnostics"] = []
+            row["provider_network_requests_used"] = 0
             return row
         try:
             self._mapping(row)
+            row["provider_stage_status"]["eodhd_identity"] = {"status": "MAPPED"}
         except Exception as error:
             code = (
                 str(error)
@@ -720,10 +839,20 @@ class BulkProviderEnricher:
                 else _error(error)
             )
             row["provider_reasons"].append(code)
+            row["provider_stage_status"]["eodhd_identity"] = {"status": "BLOCKED", "code": code}
         if row["eodhd_mapping_state"] == "MAPPED":
             try:
                 general = self._general(row)
-                self._companies_house(row, general)
+                country = general.get("CountryISO")
+                row["issuer_jurisdiction_state"] = (
+                    "VERIFIED_PROVIDER_OBSERVATION"
+                    if isinstance(country, str) and re.fullmatch(r"[A-Z]{2}", country)
+                    else "UNRESOLVED"
+                )
+                row["provider_stage_status"]["issuer_profile"] = {
+                    "status": "RETRIEVED",
+                    "jurisdiction": row["issuer_jurisdiction_state"],
+                }
             except Exception as error:
                 code = (
                     str(error)
@@ -731,6 +860,33 @@ class BulkProviderEnricher:
                     else _error(error)
                 )
                 row["provider_reasons"].append(code)
+                row["provider_stage_status"]["issuer_profile"] = {"status": "BLOCKED", "code": code}
+            else:
+                company_requests, company_observations = (
+                    self.requests_used,
+                    len(self.fetcher.observations),
+                )
+                try:
+                    self._companies_house(row, general)
+                    row["provider_stage_status"]["companies_house"] = {
+                        "status": row["companies_house_state"]
+                    }
+                except Exception as error:
+                    code = (
+                        str(error)
+                        if isinstance(error, ValueError) and str(error) in _JOIN_ERRORS
+                        else _error(error)
+                    )
+                    row["provider_reasons"].append(code)
+                    row["provider_stage_status"]["companies_house"] = {
+                        "status": "BLOCKED",
+                        "code": code,
+                    }
+                finally:
+                    row["companies_house_mapping_attempted"] = (
+                        self.requests_used > company_requests
+                        or len(self.fetcher.observations) > company_observations
+                    )
             try:
                 identifiers = self._identifiers(row)
                 identifiers.require_current(self.ctx.now)
@@ -769,6 +925,8 @@ class BulkProviderEnricher:
         row["provider_evidence_valid_until"] = (
             min(self.fetcher.observations, default=self.ctx.now) + timedelta(days=1)
         ).isoformat()
+        row["provider_request_diagnostics"] = list(self.fetcher.diagnostics)
+        row["provider_network_requests_used"] = self.requests_used - requests_before
         # Output is observations only; the caller retains every rights, ethics,
         # ISA, review and production gate before changing qualification_state.
         self.ctx.check_secrets(json.dumps(row, allow_nan=False).encode())

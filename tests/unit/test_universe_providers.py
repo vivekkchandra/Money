@@ -333,7 +333,12 @@ def test_successful_unchanged_joins_are_resumed_without_network(ctx):
     fetcher = Fetcher()
     fetcher.fail = AssertionError("Must not hit network")
     second = enricher(ctx, fetcher).enrich(row())
-    assert second == first | {"eodhd_lookup_origin": "CACHE"}
+    assert second == first | {
+        "eodhd_lookup_origin": "CACHE",
+        "provider_request_diagnostics": second["provider_request_diagnostics"],
+        "provider_network_requests_used": 0,
+    }
+    assert all(item["outcome"] == "CACHE_HIT" for item in second["provider_request_diagnostics"])
     assert second["eodhd_mapping_attempted"]
     assert fetcher.calls == []
 
@@ -594,6 +599,119 @@ def test_no_credentials_means_no_requests_and_no_fake_failures(ctx):
     assert not result["eodhd_mapping_attempted"]
     assert fetcher.calls == []
     assert json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        (401, "PROVIDER_AUTHENTICATION_REJECTED"),
+        (403, "PROVIDER_ACCESS_DENIED"),
+        (404, "PROVIDER_RESOURCE_NOT_FOUND"),
+        (429, "PROVIDER_RATE_LIMITED"),
+        (503, "PROVIDER_UPSTREAM_UNAVAILABLE"),
+    ],
+)
+def test_safe_http_diagnostics_preserve_actual_status_not_secret_body(ctx, status, code):
+    fetcher = Fetcher()
+    fetcher.fail = ProviderFailure(
+        ctx.environ["EODHD_API_KEY"], retryable=status in {429, 503}, http_status=status
+    )
+    worker = enricher(ctx, fetcher, max_requests=5)
+    result = worker.enrich(row())
+    assert result["provider_reasons"] == [code]
+    assert result["provider_stage_status"]["eodhd_identity"] == {"status": "BLOCKED", "code": code}
+    assert result["provider_network_requests_used"] == 1
+    assert worker.requests_used == 1
+    assert worker.requests_remaining == 4
+    diagnostic = result["provider_request_diagnostics"][0]
+    assert diagnostic["provider"] == "eodhd"
+    assert diagnostic["endpoint"] == "search"
+    assert diagnostic["http_status"] == status
+    assert diagnostic["error_code"] == code
+    assert diagnostic["outcome"] == "FAILED"
+    assert ctx.environ["EODHD_API_KEY"] not in json.dumps(result)
+    for path in ctx.root.rglob("*.json"):
+        assert ctx.environ["EODHD_API_KEY"].encode() not in path.read_bytes()
+
+
+def test_general_access_failure_does_not_claim_companies_house_mapping_failed(ctx):
+    class FundamentalsDenied(Fetcher):
+        def json(self, url, *, headers=None):
+            if urlsplit(url).path.startswith("/api/fundamentals/"):
+                self.calls.append((urlsplit(url).path, {}))
+                raise ProviderFailure("PROVIDER_UNAVAILABLE", http_status=403)
+            return super().json(url, headers=headers)
+
+    fetcher = FundamentalsDenied()
+    first = enricher(ctx, fetcher).enrich(row())
+    assert first["eodhd_mapping_state"] == "MAPPED"
+    assert first["provider_stage_status"]["issuer_profile"] == {
+        "status": "BLOCKED", "code": "PROVIDER_ACCESS_DENIED",
+    }
+    assert first["companies_house_state"] == "UNRESOLVED_APPLICABILITY"
+    assert not first["companies_house_mapping_attempted"]
+    assert first["issuer_jurisdiction_state"] == "UNRESOLVED"
+    assert first["provider_stage_status"]["companies_house"]["status"] == "NOT_ATTEMPTED"
+    assert first["provider_datasets"]["eodhd:ohlcv"]["status"] == "RETRIEVED"
+    assert first["provider_datasets"]["eodhd:news"]["status"] == "RETRIEVED"
+    assert not any(path.startswith("/company/") for path, _ in fetcher.calls)
+
+    fetcher.calls.clear()
+    second = enricher(ctx, fetcher).enrich(row())
+    diagnostic = next(item for item in second["provider_request_diagnostics"] if item["endpoint"] == "fundamentals")
+    assert diagnostic["outcome"] == "BACKOFF"
+    assert diagnostic["http_status"] == 403
+    assert diagnostic["original_error_code"] == "PROVIDER_ACCESS_DENIED"
+    assert fetcher.calls == []
+
+
+def test_no_http_status_does_not_invent_entitlement_diagnosis(ctx):
+    fetcher = Fetcher()
+    fetcher.fail = ProviderFailure("PROVIDER_UNAVAILABLE")
+    result = enricher(ctx, fetcher).enrich(row())
+    assert result["provider_reasons"] == ["PROVIDER_UNAVAILABLE"]
+    assert result["provider_request_diagnostics"][0]["http_status"] is None
+    assert "entitlement" not in json.dumps(result).lower()
+
+
+def test_currency_mismatch_diagnostics_never_guess_gbp_is_pence(ctx):
+    fetcher = Fetcher()
+    fetcher.search[0]["Currency"] = "GBP"
+    result = enricher(ctx, fetcher).enrich(row())
+    assert result["eodhd_symbol"] is None
+    assert result["eodhd_mapping_diagnostics"] == {
+        "response_count": 1,
+        "exact_isin_count": 1,
+        "returned_currencies": ["GBP"],
+        "exact_quote_count": 0,
+        "quote_unit_conversion_applied": False,
+    }
+
+
+def test_authoritative_foreign_jurisdiction_is_not_a_failed_ch_request(ctx):
+    fetcher = Fetcher()
+    fetcher.general["CountryISO"] = "IE"
+    result = enricher(ctx, fetcher).enrich(row())
+    assert result["issuer_jurisdiction_state"] == "VERIFIED_PROVIDER_OBSERVATION"
+    assert result["provider_stage_status"]["companies_house"] == {"status": "NOT_APPLICABLE"}
+    assert not result["companies_house_mapping_attempted"]
+
+
+def test_companies_house_search_failure_is_distinct_from_issuer_profile(ctx):
+    class CompanySearchFailure(Fetcher):
+        def json(self, url, *, headers=None):
+            if urlsplit(url).path == "/search/companies":
+                raise ProviderFailure("PROVIDER_UNAVAILABLE", http_status=401)
+            return super().json(url, headers=headers)
+
+    result = enricher(ctx, CompanySearchFailure()).enrich(row())
+    assert result["issuer_jurisdiction_state"] == "VERIFIED_PROVIDER_OBSERVATION"
+    assert result["companies_house_state"] == "UNRESOLVED"
+    assert result["companies_house_mapping_attempted"]
+    assert result["provider_stage_status"]["issuer_profile"]["status"] == "RETRIEVED"
+    assert result["provider_stage_status"]["companies_house"] == {
+        "status": "BLOCKED", "code": "PROVIDER_AUTHENTICATION_REJECTED",
+    }
 
 
 def rights_review(ctx, provider="eodhd"):

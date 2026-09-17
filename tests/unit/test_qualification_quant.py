@@ -798,7 +798,14 @@ def test_lean_cannot_rebind_valid_report_bytes_to_a_different_request(
         "parameters": first["manifest_fields"]["lean_parameters"],
         "qualification": first["manifest_fields"]["lean_qualification"],
     }
-    new_key = content_hash({"configuration": config, "snapshot": changed.hash, "reports": []})
+    new_key = content_hash(
+        {
+            "configuration": config,
+            "qlib_enabled": changed.qlib_enabled,
+            "snapshot": changed.hash,
+            "reports": [],
+        }
+    )
     ctx.write_json(f"outputs/lean-{new_key}.json", original_checkpoint)
     monkeypatch.setattr(
         quant,

@@ -178,8 +178,9 @@ class LiveManifest(Contract):
     native_max_calls: int = Field(default=16, ge=4, le=32)
     native_egress_policy_verified: Literal[True]
     native_egress_verification_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    qlib_registry_id: str
-    qlib_artifact_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    qlib_enabled: bool = Field(default=True, strict=True, exclude_if=lambda value: value is True)
+    qlib_registry_id: str | None = Field(default=None, min_length=1)
+    qlib_artifact_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     lean: LeanContainerSettings
     lean_costs: LeanCostAssumptions
     lean_parameters: LeanStudyParameters
@@ -226,6 +227,11 @@ class LiveManifest(Contract):
 
     @model_validator(mode="after")
     def qualification_consistency(self) -> LiveManifest:
+        if self.qlib_enabled:
+            if self.qlib_registry_id is None or self.qlib_artifact_hash is None:
+                raise ValueError("QLIB_ENABLED_REQUIRES_PROMOTED_MODEL")
+        elif self.qlib_registry_id is not None or self.qlib_artifact_hash is not None:
+            raise ValueError("QLIB_DISABLED_CANNOT_REFERENCE_MODEL")
         # A local transport is useful for development, never a public worker
         # qualification. This gate is independent of ambient environment flags.
         for selection in (self.tradingagents, self.ai_hedge_fund, self.crewai):
@@ -272,8 +278,9 @@ class LiveManifest(Contract):
 class LiveProvenance(Contract):
     manifest_hash: str
     provider_qualifications: tuple[ProviderQualification, ...]
-    qlib_artifact_hash: str
-    qlib_registry_id: str
+    qlib_enabled: bool = Field(default=True, strict=True, exclude_if=lambda value: value is True)
+    qlib_artifact_hash: str | None
+    qlib_registry_id: str | None
     lean_image: str
     cost_version: str
     native_egress_verification_hash: str
@@ -524,8 +531,11 @@ class SnapshotSources(Protocol):
 
 
 class LiveSnapshotBuilder:
-    def __init__(self, manifest: SnapshotSources, store: ResearchStore) -> None:
+    def __init__(
+        self, manifest: SnapshotSources, store: ResearchStore, *, qlib_enabled: bool = True
+    ) -> None:
         self.manifest = manifest
+        self.qlib_enabled = qlib_enabled
         self.circuit = ProviderCircuit(store)
 
     def __call__(self, instrument: InstrumentMetadata) -> ResearchSnapshot:
@@ -648,6 +658,7 @@ class LiveSnapshotBuilder:
             fundamental_cutoff=created,
             instrument=instrument,
             evidence=tuple(records),
+            qlib_enabled=self.qlib_enabled,
         )
         quality = evaluate_market_quality(
             snapshot,
@@ -684,11 +695,18 @@ class DiscoveryQuantFirm:
 def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> ResearchRuntime:
     from money.flows.research import ResearchRuntime
     from money.research.correspondence import LiveCorrespondence
+    from money.research.qlib_mode import qlib_enabled
     from money.scanner.universe import UniverseSnapshotBuilder
 
-    model = ModelRegistry(store).load_active(
-        manifest.qlib_registry_id, manifest.qlib_artifact_hash, utc_now()
-    )
+    if "MONEY_QLIB_ENABLED" in os.environ and qlib_enabled(os.environ) != manifest.qlib_enabled:
+        raise ValueError("LIVE_QLIB_MODE_DIFFERS_FROM_PINNED_MANIFEST")
+    model = None
+    if manifest.qlib_enabled:
+        if manifest.qlib_registry_id is None or manifest.qlib_artifact_hash is None:
+            raise ValueError("QLIB_ENABLED_REQUIRES_PROMOTED_MODEL")
+        model = ModelRegistry(store).load_active(
+            manifest.qlib_registry_id, manifest.qlib_artifact_hash, utc_now()
+        )
     settings = NativeRunSettings(
         timeout_seconds=manifest.native_timeout_seconds, max_calls=manifest.native_max_calls
     )
@@ -736,7 +754,7 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
                 ),
             )
         )
-    )
+    ) if model is not None else None
     cio = CrewAICioAdapter(
         wrapped(
             CrewAINativeRunner(manifest.crewai.inference(), settings, qualified_model=model),
@@ -793,7 +811,8 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
 
     def discover(mandate: ResearchMandate, snapshot: ResearchSnapshot) -> Candidate:
         return discover_snapshot(
-            snapshot, quant=quant.research(mandate, snapshot), policy=manifest.discovery_policy
+            snapshot, quant=quant.research(mandate, snapshot) if quant else None,
+            policy=manifest.discovery_policy
         )
 
     def bound_reviews() -> tuple[EligibilityReview, ...]:
@@ -822,14 +841,16 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
 
     snapshots = UniverseSnapshotBuilder(
         eligibility.get_isa_universe, bound_reviews,
-        LiveSnapshotBuilder(manifest, store), validate_sources=validate_sources,
+        LiveSnapshotBuilder(manifest, store, qlib_enabled=manifest.qlib_enabled),
+        validate_sources=validate_sources,
     )
     return ResearchRuntime(
         mode="live",
+        qlib_enabled=manifest.qlib_enabled,
         eligibility=eligibility,
         snapshot_builder=snapshots,
         universe_context=snapshots.context_for,
-        firms=(trading, hedge, quant),
+        firms=(trading, hedge, quant) if quant is not None else (trading, hedge),
         validate=validator.validate,
         audit=cio.audit,
         red_team=cio.red_team,
@@ -856,6 +877,7 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
         provenance=LiveProvenance(
             manifest_hash=content_hash(manifest),
             provider_qualifications=manifest.provider_qualifications,
+            qlib_enabled=manifest.qlib_enabled,
             qlib_artifact_hash=manifest.qlib_artifact_hash,
             qlib_registry_id=manifest.qlib_registry_id,
             lean_image=manifest.lean.image,

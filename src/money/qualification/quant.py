@@ -48,6 +48,7 @@ from money.offline_research.promotion import (
     ValidationKind,
     assess_promotion,
 )
+from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
     Contract,
@@ -555,7 +556,17 @@ def _registry_activate(
 
 
 def run_qlib_stage(ctx: QualificationContext) -> dict[str, Any]:
+    if not qlib_enabled(ctx.environ):
+        return {
+            "complete": True,
+            "status": "DISABLED",
+            "qlib_enabled": False,
+            "manifest_fields": {"qlib_enabled": False},
+            "production_environment": {},
+            "artifacts": [],
+        }
     output = _empty()
+    output["qlib_enabled"] = True
     ctx.template(
         "reviews/qlib-inputs.json",
         {
@@ -743,10 +754,13 @@ def _lean_reports(ctx: QualificationContext, snapshot: ResearchSnapshot) -> tupl
     }
     if not isinstance(raw, list):
         raise ValueError("sealed first-pass reports are absent")
+    if snapshot.qlib_enabled != qlib_enabled(ctx.environ):
+        raise ValueError("QLIB_MODE_SNAPSHOT_MISMATCH")
+    required = snapshot.required_first_pass_firms
     reports = tuple(types[row["firm"]].model_validate(row) for row in raw)
     if (
-        len(reports) != 3
-        or {report.firm for report in reports} != set(types)
+        len(reports) != len(required)
+        or {report.firm for report in reports} != required
         or any(
             report.snapshot_id != snapshot.snapshot_id
             or report.snapshot_hash != snapshot.hash
@@ -754,7 +768,7 @@ def _lean_reports(ctx: QualificationContext, snapshot: ResearchSnapshot) -> tupl
             for report in reports
         )
     ):
-        raise ValueError("LEAN requires all three independently sealed live first-pass reports")
+        raise ValueError("LEAN requires every snapshot-selected independently sealed live report")
     return reports
 
 
@@ -921,7 +935,7 @@ def run_lean_stage(ctx: QualificationContext) -> dict[str, Any]:
     except (ValueError, OSError, KeyError, TypeError):
         ctx.block(
             "LEAN_FIRST_PASS_REQUIRED",
-            "Complete the three independent native first-pass "
+            "Complete all snapshot-selected independent native first-pass "
             "reports for this exact snapshot before LEAN; no fixture reports are accepted.",
         )
         return output
@@ -934,6 +948,7 @@ def run_lean_stage(ctx: QualificationContext) -> dict[str, Any]:
     run_key = content_hash(
         {
             "configuration": config,
+            "qlib_enabled": snapshot.qlib_enabled,
             "snapshot": snapshot.hash,
             "reports": [content_hash(report) for report in reports],
         }

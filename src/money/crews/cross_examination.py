@@ -102,6 +102,7 @@ class CrossExaminationPacket(Contract):
     unresolved_challenge_ids: tuple[str, ...]
     material_disagreement: bool
     issued_at: AwareDatetime
+    qlib_enabled: bool = Field(default=True, strict=True, exclude_if=lambda value: value is True)
     hash: str = ""
 
     @model_validator(mode="after")
@@ -114,8 +115,11 @@ class CrossExaminationPacket(Contract):
         if len(pending) != len(self.challenges):
             raise ValueError("cross-examination challenge identities must be unique")
         originals = dict(self.report_hashes)
-        if len(self.report_hashes) != 3 or set(originals) != {"tradingagents", "ai_hedge_fund", "qlib"}:
-            raise ValueError("cross-examination requires exactly three original firm hashes")
+        from money.schemas.contracts import required_first_pass_firms
+
+        required = required_first_pass_firms(self.qlib_enabled)
+        if len(self.report_hashes) != len(required) or set(originals) != required:
+            raise ValueError("cross-examination requires exactly the configured original firm hashes")
         originals.update({"lean": self.lean_hash, "cio": self.initial_audit_hash})
         if any(originals.get(challenge.respondent) != challenge.original_report_hash for challenge in self.challenges):
             raise ValueError("challenge original report hash differs from sealed provenance")
@@ -195,8 +199,9 @@ def run_cross_examination(
         raise ValueError("cross-examination allows at most two rounds")
     if not 1 <= maximum_challenges <= 24:
         raise ValueError("cross-examination allows at most 24 challenges")
-    if len(reports) != 3 or {r.firm for r in reports} != {"tradingagents", "ai_hedge_fund", "qlib"}:
-        raise InvalidUpstreamReport("cross-examination requires all three sealed first-pass reports")
+    required = snapshot.required_first_pass_firms
+    if len(reports) != len(required) or {r.firm for r in reports} != required:
+        raise InvalidUpstreamReport("cross-examination requires all configured sealed first-pass reports")
     if lean.snapshot_id != snapshot.snapshot_id or audit.snapshot_id != snapshot.snapshot_id or any(
         report.snapshot_id != snapshot.snapshot_id or report.snapshot_hash != snapshot.hash for report in reports
     ):
@@ -306,6 +311,7 @@ def run_cross_examination(
         if not any_response:
             break  # no fake second round when every respondent is unavailable
     return CrossExaminationPacket(snapshot_id=facts.snapshot_id, snapshot_hash=facts.hash,
+        qlib_enabled=facts.qlib_enabled,
         report_hashes=tuple(sorted((name, content_hash(report)) for name, report in by_firm.items())),
         lean_hash=content_hash(lean), initial_audit_hash=content_hash(audit),
         challenges=tuple(challenges.values()), rounds=tuple(rounds),

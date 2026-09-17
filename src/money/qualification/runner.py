@@ -20,6 +20,7 @@ from money.qualification.core import MAXIMUM_BYTES, QualificationContext, json_b
 from money.qualification.snapshot import run_snapshot_stage
 from money.research.inference_config import InferenceSelection, load_inference_selections
 from money.research.live import LiveManifest, load_manifest
+from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import Contract, ResearchSnapshot, utc_now
 
 EXPECTED_ENVIRONMENT = {
@@ -124,7 +125,7 @@ def assemble_manifest(
     ctx: QualificationContext, outputs: Sequence[dict[str, Any]]
 ) -> tuple[Path, str] | None:
     """Assemble only successful stage fields; never accept an operator manifest."""
-    fields: dict[str, Any] = {}
+    fields: dict[str, Any] = {"qlib_enabled": qlib_enabled(ctx.environ)}
     for output in outputs:
         for key, value in output.get("manifest_fields", {}).items():
             if key in fields and fields[key] != value:
@@ -194,7 +195,11 @@ def assemble_manifest(
     for provider in manifest.provider_qualifications:
         for dataset in provider.datasets:
             provider.require(dataset, ctx.now)
-    raw = json_bytes(manifest.model_dump(mode="json"))
+    payload = manifest.model_dump(mode="json")
+    if not manifest.qlib_enabled:
+        payload.pop("qlib_registry_id", None)
+        payload.pop("qlib_artifact_hash", None)
+    raw = json_bytes(payload)
     digest = hashlib.sha256(raw).hexdigest()
     # Validate a staging filename first. A failed admission never replaces the
     # last manifest; all referenced artifact bytes are already inventoried.
@@ -215,6 +220,10 @@ def production_environment(
 ) -> dict[str, str]:
     """Legacy acceptance aliases live only in subprocess memory, never JSON."""
     environ = dict(ctx.environ)
+    environ["MONEY_QLIB_ENABLED"] = "true" if qlib_enabled(ctx.environ) else "false"
+    if not qlib_enabled(ctx.environ):
+        environ.pop("MONEY_QLIB_QUALIFIED_MODEL", None)
+        environ.pop("MONEY_QLIB_ARTIFACT_HASH", None)
     environ.update(
         {
             "MONEY_RUN_PRODUCTION_INTEGRATION": "1",
@@ -237,6 +246,11 @@ def production_environment(
         for name, value in output.get("production_environment", {}).items():
             if name not in allowed or not isinstance(value, str):
                 raise ValueError("QUALIFICATION_CHILD_ENVIRONMENT_INVALID")
+            if not qlib_enabled(ctx.environ) and name in {
+                "MONEY_QLIB_QUALIFIED_MODEL",
+                "MONEY_QLIB_ARTIFACT_HASH",
+            }:
+                raise ValueError("QLIB_DISABLED_CANNOT_REFERENCE_MODEL")
             ctx.check_secrets(value.encode())
             environ[name] = value if name == "MONEY_QLIB_ARTIFACT_HASH" else str(ctx.root / value)
     # Do not forward an unrelated OpenAI secret to another provider (especially
@@ -360,6 +374,8 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
         run_qlib_stage,
     )
 
+    enabled = qlib_enabled(ctx.environ)
+    ctx.write_json("outputs/research-mode.json", {"qlib_enabled": enabled})
     for name, value in EXPECTED_ENVIRONMENT.items():
         if ctx.environ.get(name, "").lower() != value:
             ctx.block(
@@ -394,7 +410,7 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
     else:
         ctx.block(
             "FIRST_PASS_CURRENT_PREREQUISITES_REQUIRED",
-            "Resolve this run's inference, native/security/egress, active Qlib and frozen-evidence blockers before any paid native first-pass execution.",
+            "Resolve this run's inference, native/security/egress, enabled quantitative stages and frozen-evidence blockers before any paid native first-pass execution.",
         )
     prepare_lean_inputs(ctx)
     if firms.get("complete") is True:
@@ -402,7 +418,7 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
     else:
         ctx.block(
             "LEAN_FIRST_PASS_REQUIRED",
-            "Review reviews/lean-inputs.json; execution waits for three current independently sealed reports.",
+            "Review reviews/lean-inputs.json; execution waits for every report selected by the frozen snapshot mode.",
         )
     if lean.get("complete") is True:
         cio = _execute(ctx, "cio", lambda: run_cio_stage(ctx))

@@ -49,6 +49,7 @@ from money.research.inference import HTTPInference
 from money.research.inference_config import InferenceSelection, load_inference_selections
 from money.research.inference_probe import InferenceProbeEvidence, probe_selection, safe_probe_error
 from money.research.live import validate_invocation_budgets
+from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
     Contract,
@@ -500,11 +501,11 @@ def _resolve_native_closure(ctx: QualificationContext) -> dict[str, Any]:
     overriding upstream constraints. A successful solve is only build input;
     installed source, ABI, import, live execution and security gates still apply.
     """
+    enabled = qlib_enabled(ctx.environ)
     paths = [
         "pyproject.toml",
         "upstreams/tradingagents/pyproject.toml",
         "upstreams/ai-hedge-fund/pyproject.toml",
-        "upstreams/qlib/pyproject.toml",
         "upstreams/crewai/lib/crewai/pyproject.toml",
         "upstreams/crewai/lib/crewai-core/pyproject.toml",
         "upstreams/crewai/lib/cli/pyproject.toml",
@@ -512,9 +513,11 @@ def _resolve_native_closure(ctx: QualificationContext) -> dict[str, Any]:
     roots = {
         "tradingagents": "upstreams/tradingagents/tradingagents",
         "hedge_fund": "upstreams/ai-hedge-fund/hedge_fund",
-        "qlib": "upstreams/qlib/qlib",
         "crewai": "upstreams/crewai/lib/crewai/src/crewai",
     }
+    if enabled:
+        paths.append("upstreams/qlib/pyproject.toml")
+        roots["qlib"] = "upstreams/qlib/qlib"
     for package, relative in roots.items():
         if source_fingerprint(ctx.repo / relative, package) != SOURCE_DIGESTS[package]:
             raise ValueError("NATIVE_RESOLVER_SOURCE_PIN_MISMATCH")
@@ -524,7 +527,7 @@ def _resolve_native_closure(ctx: QualificationContext) -> dict[str, Any]:
         if path.is_symlink() or path.stat().st_size > 5_000_000:
             raise ValueError("NATIVE_RESOLVER_INPUT_INVALID")
         inputs[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    identity = content_hash(inputs)
+    identity = content_hash({"inputs": inputs, "qlib_enabled": enabled})
     cached = ctx.cache("native-dependency-resolution", identity, 3600)
     if cached is not None:
         try:
@@ -537,6 +540,7 @@ def _resolve_native_closure(ctx: QualificationContext) -> dict[str, Any]:
             observed = TypeAdapter(AwareDatetime).validate_python(receipt["observed_at"])
             if (
                 receipt["input_sha256"] != inputs
+                or receipt.get("qlib_enabled") is not enabled
                 or not observed <= ctx.now < observed + timedelta(hours=1)
                 or [tuple(item) for item in receipt["artifacts"]] != references[:2]
                 or type(receipt["exit_code"]) is not int
@@ -605,6 +609,7 @@ def _resolve_native_closure(ctx: QualificationContext) -> dict[str, Any]:
     diagnostics = ctx.artifact(attempted.output)
     resolved = attempted.returncode == 0
     result: dict[str, Any] = {
+        "qlib_enabled": enabled,
         "resolved": resolved,
         "observed_at": ctx.now.isoformat(),
         "exit_code": attempted.returncode,
@@ -929,9 +934,12 @@ def _egress(ctx: QualificationContext, identity: str, hosts: tuple[str, ...]) ->
 
 def run_native_preflight_stage(ctx: QualificationContext) -> dict[str, Any]:
     """Observe installed closure; preserve source, missing dependency and CVE failures."""
+    enabled = qlib_enabled(ctx.environ)
     inventory = _inventory()
     pins: dict[str, str | None] = {}
     for package, expected in SOURCE_DIGESTS.items():
+        if package == "qlib" and not enabled:
+            continue
         try:
             require_pinned_source(package)
             pins[package] = expected
@@ -945,6 +953,7 @@ def run_native_preflight_stage(ctx: QualificationContext) -> dict[str, Any]:
     identity = content_hash(
         {
             "inventory": inventory,
+            "qlib_enabled": enabled,
             "pins": pins,
             "system": platform.system(),
             "machine": platform.machine(),
@@ -955,6 +964,7 @@ def run_native_preflight_stage(ctx: QualificationContext) -> dict[str, Any]:
         "inputs/native-runtime-facts.json",
         {
             "execution_identity": identity,
+            "qlib_enabled": enabled,
             "source_pins": pins,
             "inventory": inventory,
             "platform": platform.system(),
@@ -1014,6 +1024,7 @@ def run_native_preflight_stage(ctx: QualificationContext) -> dict[str, Any]:
     egress = _egress(ctx, identity, hosts)
     refs.extend(egress["artifacts"])
     result = {
+        "qlib_enabled": enabled,
         "complete": all(pins.values())
         and closure["resolved"]
         and security_passed
@@ -1054,6 +1065,9 @@ def _execution_inputs(
     if not verified <= ctx.now < verified + timedelta(hours=1):
         raise ValueError("NATIVE_PREFLIGHT_STALE")
     snapshot = ResearchSnapshot.model_validate_json(snapshot_raw)
+    enabled = qlib_enabled(ctx.environ)
+    if snapshot.qlib_enabled is not enabled or preflight.get("qlib_enabled", True) is not enabled:
+        raise ValueError("QLIB_MODE_EXECUTION_INPUT_MISMATCH")
     if (
         snapshot.created_at > ctx.now
         or eligibility_failures(snapshot.instrument, ResearchMandate(), ctx.now)
@@ -1089,24 +1103,28 @@ def _active_model(ctx: QualificationContext, qlib: dict[str, Any]) -> QualifiedL
 
 
 def run_first_pass_stage(ctx: QualificationContext) -> dict[str, Any]:
-    """Execute two isolated independent firms and promoted numeric Qlib, then seal."""
+    """Seal two independent firms, adding promoted numeric Qlib only when selected."""
     inputs = _execution_inputs(ctx)
     if inputs is None:
         return {"complete": False, "artifacts": []}
     inference, preflight, snapshot = inputs
     config = inference["manifest_fields"]
-    qlib = ctx.read_json("outputs/qlib-state.json")
-    if not qlib:
+    enabled = qlib_enabled(ctx.environ)
+    if snapshot.qlib_enabled is not enabled:
+        raise ValueError("QLIB_MODE_SNAPSHOT_MISMATCH")
+    qlib = ctx.read_json("outputs/qlib-state.json") if enabled else None
+    if enabled and not qlib:
         ctx.block(
             "NATIVE_QLIB_PROMOTION_REQUIRED",
             "Complete independent/manual Qlib promotion before sealing three first-pass reports.",
         )
         return {"complete": False, "artifacts": []}
-    model_hash = qlib["qlib_artifact_hash"]
-    model = _active_model(ctx, qlib)
+    model_hash = qlib["qlib_artifact_hash"] if qlib else None
+    model = _active_model(ctx, qlib) if qlib else None
     identity = content_hash(
         {
             "snapshot": snapshot.hash,
+            "qlib_enabled": enabled,
             "runtime": preflight["execution_identity"],
             "config": config,
             "qlib_artifact_hash": model_hash,
@@ -1117,7 +1135,11 @@ def run_first_pass_stage(ctx: QualificationContext) -> dict[str, Any]:
     cached = ctx.cache("native-first-pass", identity, 3600)
     if cached is not None:
         sealed = json.loads(_reference(ctx, tuple(cached["artifacts"][0])))
-        if sealed["input_identity"] != identity or sealed["state"] != "FIRST_PASS_LOCKED":
+        if (
+            sealed["input_identity"] != identity
+            or sealed["state"] != "FIRST_PASS_LOCKED"
+            or sealed.get("qlib_enabled", True) is not enabled
+        ):
             raise ValueError("NATIVE_FIRST_PASS_CACHE_INVALID")
         schemas: dict[str, type[FirmReport]] = {
             "tradingagents": TradingAgentsResearchReport,
@@ -1125,7 +1147,10 @@ def run_first_pass_stage(ctx: QualificationContext) -> dict[str, Any]:
             "qlib": QlibQuantResearchReport,
         }
         cached_reports = sealed["reports"]
-        if len(cached_reports) != 3 or {item["firm"] for item in cached_reports} != set(schemas):
+        if (
+            len(cached_reports) != len(snapshot.required_first_pass_firms)
+            or {item["firm"] for item in cached_reports} != snapshot.required_first_pass_firms
+        ):
             raise ValueError("NATIVE_FIRST_PASS_CACHE_INVALID")
         for item in cached_reports:
             schema = schemas[item["firm"]]
@@ -1170,16 +1195,20 @@ def run_first_pass_stage(ctx: QualificationContext) -> dict[str, Any]:
         ctx.checkpoint(
             "native-firm-" + firm, identity, {"artifact": reference}, artifacts=(reference,)
         )
-    quant_runner = BoundedNativeRunner(
-        QlibNativeRunner(model),
-        QlibQuantResearchReport,
-        NativeProcessPolicy(timeout_seconds=settings.timeout_seconds),
-    )
-    reports.append(QlibAdapter(cast(Any, quant_runner)).research(ResearchMandate(), snapshot))
+    if enabled:
+        if model is None:
+            raise ValueError("NATIVE_QLIB_PROMOTION_REQUIRED")
+        quant_runner = BoundedNativeRunner(
+            QlibNativeRunner(model),
+            QlibQuantResearchReport,
+            NativeProcessPolicy(timeout_seconds=settings.timeout_seconds),
+        )
+        reports.append(QlibAdapter(cast(Any, quant_runner)).research(ResearchMandate(), snapshot))
     raw_reports = [report.model_dump(mode="json") for report in reports]
     ref = ctx.artifact(
         {
             "state": "FIRST_PASS_LOCKED",
+            "qlib_enabled": enabled,
             "snapshot_hash": snapshot.hash,
             "input_identity": identity,
             "execution_identity": preflight["execution_identity"],
@@ -1188,6 +1217,7 @@ def run_first_pass_stage(ctx: QualificationContext) -> dict[str, Any]:
     )
     result = {
         "complete": True,
+        "qlib_enabled": enabled,
         "artifacts": [ref],
         "reports": raw_reports,
         "production_environment": {
@@ -1211,7 +1241,7 @@ def run_cio_stage(ctx: QualificationContext) -> dict[str, Any]:
     if raw_reports is None or lean_raw is None:
         ctx.block(
             "CIO_LOCKED_REPORTS_AND_LEAN_REQUIRED",
-            "Complete the three sealed first-pass reports and genuine LEAN validation before CrewAI CIO/Red Team.",
+            "Complete every snapshot-selected sealed first-pass report and genuine LEAN validation before CrewAI CIO/Red Team.",
         )
         return {"complete": False, "artifacts": []}
     schemas: dict[str, type[FirmReport]] = {
@@ -1220,27 +1250,34 @@ def run_cio_stage(ctx: QualificationContext) -> dict[str, Any]:
         "qlib": QlibQuantResearchReport,
     }
     reports = tuple(schemas[report["firm"]].model_validate(report) for report in raw_reports)
-    if len(reports) != 3 or {report.firm for report in reports} != set(schemas):
+    if (
+        len(reports) != len(snapshot.required_first_pass_firms)
+        or {report.firm for report in reports} != snapshot.required_first_pass_firms
+    ):
         raise ValueError("NATIVE_FIRST_PASS_INCOMPLETE")
     lean = LeanValidationReport.model_validate_json(lean_raw)
     config = inference["manifest_fields"]
-    qlib = ctx.read_json("outputs/qlib-state.json")
-    if not qlib:
+    enabled = qlib_enabled(ctx.environ)
+    if snapshot.qlib_enabled is not enabled:
+        raise ValueError("QLIB_MODE_SNAPSHOT_MISMATCH")
+    qlib = ctx.read_json("outputs/qlib-state.json") if enabled else None
+    if enabled and not qlib:
         ctx.block(
             "CIO_ACTIVE_QLIB_MODEL_REQUIRED",
             "Restore the currently active qualified Qlib model for the CIO's independent numeric verification.",
         )
         return {"complete": False, "artifacts": []}
-    model = _active_model(ctx, qlib)
+    model = _active_model(ctx, qlib) if qlib else None
     identity = content_hash(
         {
             "snapshot": snapshot.hash,
+            "qlib_enabled": enabled,
             "runtime": preflight["execution_identity"],
             "reports": raw_reports,
             "lean": lean.model_dump(mode="json"),
             "config": config,
-            "qlib_registry_id": qlib["qlib_registry_id"],
-            "qlib_artifact_hash": qlib["qlib_artifact_hash"],
+            "qlib_registry_id": qlib["qlib_registry_id"] if qlib else None,
+            "qlib_artifact_hash": qlib["qlib_artifact_hash"] if qlib else None,
             "security": preflight["security"]["artifacts"],
             "egress": preflight["manifest_fields"],
         }

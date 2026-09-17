@@ -163,6 +163,8 @@ class QlibAdapter:
     def research(
         self, mandate: ResearchMandate, snapshot: ResearchSnapshot
     ) -> QlibQuantResearchReport:
+        if not snapshot.qlib_enabled:
+            raise UpstreamUnavailable("QLIB_EXPLICITLY_DISABLED_BY_FROZEN_SNAPSHOT")
         if self._runner is None:
             raise UpstreamUnavailable("approved Qlib inference runner is not configured")
         facts = _snapshot_copy(snapshot)
@@ -250,8 +252,10 @@ class LeanAdapter:
         if self._runner is None:
             raise UpstreamUnavailable("LEAN validation runner is not configured")
         facts = _snapshot_copy(snapshot)
-        if len(reports) != 3 or {r.firm for r in reports} != set(UPSTREAM_SHAS):
-            raise InvalidUpstreamReport("LEAN requires all three independent firm reports")
+        required = facts.required_first_pass_firms
+        if len(reports) != len(required) or {r.firm for r in reports} != required:
+            count = "three" if facts.qlib_enabled else "two"
+            raise InvalidUpstreamReport(f"LEAN requires all {count} configured independent firm reports")
         report_types: dict[str, type[FirmReport]] = {
             "tradingagents": TradingAgentsResearchReport,
             "ai_hedge_fund": AIHedgeFundResearchReport,

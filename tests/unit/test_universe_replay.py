@@ -246,6 +246,38 @@ def test_replay_falls_back_to_archived_source_metadata_without_copying_classific
     assert all("VENUE_COUNTRY_NOT_VERIFIED" not in json.dumps(row) for row in result["stocks"])
 
 
+def test_replay_prefers_last_successful_provenance_over_older_migration_source(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_old(ctx)
+    universe.finalize_universe(ctx, replay_saved=True)
+    current = ctx.read_json("outputs/universe-provenance.json")
+    current["retrieved_at"] = (NOW - timedelta(minutes=1)).isoformat()
+    ctx.write_json("outputs/universe-provenance.json", current)
+    old = ctx.read_json("state/universe-rebuild-source.json")
+    old["source"]["retrieved_at"] = (NOW - timedelta(hours=3)).isoformat()
+    ctx.write_json("state/universe-rebuild-source.json", old)
+    ctx.write_json("state/bulk-broker-metadata.json", {"status": "ATTEMPTED"})
+    forbid_network(monkeypatch)
+    result = universe.finalize_universe(ctx, replay_saved=True)
+    assert result["observed_at"] == current["retrieved_at"]
+    assert result["provenance"]["instrument_response_hash"] == current["instrument_response_hash"]
+    assert result["eligibility_reviews"] == []
+
+
+def test_credential_free_run_preserves_genuine_broker_cache_but_invalidates_membership(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_old(ctx)
+    before = ctx.read_bytes("state/bulk-broker-metadata.json")
+    forbid_network(monkeypatch)
+    result = universe.finalize_universe(ctx)
+    assert result["status"] == "REFRESH_FAILED"
+    assert result["stocks"] == []
+    assert ctx.read_bytes("state/bulk-broker-metadata.json") == before
+    assert ctx.read_json("outputs/universe-review-work.json")["status"] == "REFRESH_FAILED"
+
+
 @pytest.mark.parametrize("marker", [None, b"invalid stale marker"])
 def test_provider_entrypoint_never_routes_existing_bulk_universe_to_legacy_gbp_policy(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, marker: bytes | None

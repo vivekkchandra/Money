@@ -53,7 +53,8 @@ def replay_decision(store: ResearchStore, job_id: str, *, money_version: str, gi
             or len(cross.rounds) != packet.cross_examination_rounds
             or cross.snapshot_id != snapshot.snapshot_id
             or cross.snapshot_hash != snapshot.hash
-            or len(cross.report_hashes) != 3
+            or cross.qlib_enabled != snapshot.qlib_enabled
+            or len(cross.report_hashes) != len(snapshot.required_first_pass_firms)
             or dict(cross.report_hashes)
             != {report.firm: content_hash(report) for report in packet.reports}
             or cross.lean_hash != content_hash(packet.lean)

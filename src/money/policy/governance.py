@@ -116,7 +116,7 @@ def consensus(
     )
     if failures:
         return ResearchState.REJECT, failures
-    if Counter(r.firm for r in reports) != Counter(("tradingagents", "ai_hedge_fund", "qlib")):
+    if Counter(r.firm for r in reports) != Counter(snapshot.required_first_pass_firms):
         return ResearchState.INSUFFICIENT_EVIDENCE, ("FIRST_PASS_INCOMPLETE",)
     if any(
         r.snapshot_hash != snapshot.hash or r.snapshot_id != snapshot.snapshot_id for r in reports

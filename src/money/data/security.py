@@ -29,10 +29,16 @@ class SourceSecurityError(ValueError):
 
 
 class ProviderFailure(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self, code: str, *, retryable: bool = False, http_status: int | None = None
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        # Numeric transport evidence only: never response bodies or credential URLs.
+        self.http_status = (
+            http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        )
 
 
 def validate_url(url: str, allowed_hosts: frozenset[str]) -> tuple[str, str]:
@@ -217,6 +223,7 @@ class SafeFetcher:
                         raise ProviderFailure(
                             "PROVIDER_UNAVAILABLE",
                             retryable=response.status >= 500 or response.status == 429,
+                            http_status=response.status,
                         )
                     encoding = response.getheader("Content-Encoding", "identity").lower()
                     if encoding != "identity":

@@ -73,6 +73,7 @@ class ResearchRuntime:
         [ResearchSnapshot, tuple[FirmReport, ...], LeanValidationReport], CIOAuditReport
     ]
     red_team: Callable[[ResearchSnapshot, tuple[FirmReport, ...]], RedTeamReport]
+    qlib_enabled: bool = True
     budget_limits: BudgetLimits | None = None
     invocation_budgets: tuple[tuple[str, str, str, int], ...] = ()
     cio_runtime: Callable[[], Contract | None] | None = None
@@ -123,9 +124,10 @@ def run_first_pass(
     reservations: dict[str, str] | None = None,
 ) -> None:
     """Each firm capability is only two immutable contracts, never a report reader."""
-    if len(firms) != 3:
-        raise ValueError("all three independent firms are required")
-    if not sealed_firms <= FIRST_PASS_FIRMS:
+    required = snapshot.required_first_pass_firms
+    if len(firms) != len(required):
+        raise ValueError("all configured independent firms are required")
+    if not sealed_firms <= required:
         raise ValueError("unknown sealed firm")
 
     def invoke(firm: FirstPassFirm) -> FirmReport:
@@ -149,7 +151,7 @@ def run_first_pass(
         for future in as_completed(futures):
             report = future.result()
             if (
-                report.firm not in FIRST_PASS_FIRMS
+                report.firm not in required
                 or report.snapshot_id != snapshot.snapshot_id
                 or report.snapshot_hash != snapshot.hash
             ):
@@ -166,11 +168,13 @@ def run_first_pass(
 
 def locked_reports(job_id: str, store: ResearchStore) -> tuple[FirstPassReport, ...]:
     content = store.get_reports(job_id)  # Raises before the persistent barrier.
-    return (
+    reports: tuple[FirstPassReport, ...] = (
         TradingAgentsResearchReport.model_validate(content["tradingagents"]),
         AIHedgeFundResearchReport.model_validate(content["ai_hedge_fund"]),
-        QlibQuantResearchReport.model_validate(content["qlib"]),
     )
+    if "qlib" in content:
+        reports += (QlibQuantResearchReport.model_validate(content["qlib"]),)
+    return reports
 
 
 def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) -> None:
@@ -230,6 +234,12 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
             snapshot = bind_universe_snapshot(source, context.universe)
         else:
             snapshot = runtime.snapshot_builder(instrument)
+            if snapshot.qlib_enabled != runtime.qlib_enabled:
+                if snapshot.universe_hash is not None:
+                    raise ValueError("RESEARCH_QLIB_POLICY_CHANGED")
+                snapshot = ResearchSnapshot.model_validate(
+                    snapshot.model_dump() | {"qlib_enabled": runtime.qlib_enabled, "hash": ""}
+                )
             if runtime.universe_context is not None:
                 context_artifact = runtime.universe_context(snapshot)
                 store.save_artifact(job_id, "universe_context", context_artifact)
@@ -237,6 +247,8 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         store.save_snapshot(job_id, snapshot)
     else:
         snapshot = ResearchSnapshot.model_validate(checkpoint["snapshot"])
+    if snapshot.qlib_enabled != runtime.qlib_enabled:
+        raise ValueError("RESEARCH_QLIB_POLICY_CHANGED")
     if snapshot.ticker != job["ticker"]:
         raise ValueError("snapshot ticker mismatch")
     if snapshot.universe_hash is not None or runtime.universe_context is not None:
@@ -467,6 +479,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         issued_at=utc_now(),
         signal=signal,
         runtime="demo" if runtime.mode == "demo" else "live",
+        qlib_enabled=snapshot.qlib_enabled,
         money_version=version("money"),
         git_commit=os.environ.get("MONEY_GIT_SHA", "unknown"),
         frozen_snapshot=snapshot,

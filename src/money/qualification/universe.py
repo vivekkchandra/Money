@@ -36,6 +36,7 @@ from money.data.uk.live import Trading212MetadataProvider
 from money.qualification.core import QualificationContext, json_bytes
 from money.qualification.universe_policy import UNIVERSE_POLICY_VERSION, ensure_universe_policy
 from money.research.inference_config import load_inference_selections
+from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import (
     EXCLUDED_ACTIVITIES,
     Contract,
@@ -415,7 +416,8 @@ def classify_row(
         state = "UNRESOLVED_ISA_SCOPE"
         reasons.append("ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED")
     required = {"eodhd"}
-    if row.get("companies_house_state") != "NOT_APPLICABLE":
+    jurisdiction = row.get("issuer_facts", {}).get("CountryISO")
+    if jurisdiction == "GB":
         required.add("companies-house")
         if (
             row.get("companies_house_state") != "MAPPED"
@@ -425,6 +427,17 @@ def classify_row(
             if state == "QUALIFIED":
                 state = "UNRESOLVED_PROVIDER_MAPPING"
             reasons.append("VERIFIED_ISSUER_JURISDICTION_AND_COMPANY_IDENTITY_REQUIRED")
+    elif not (
+        row.get("companies_house_state") == "NOT_APPLICABLE"
+        and isinstance(jurisdiction, str)
+        and re.fullmatch(r"[A-Z]{2}", jurisdiction)
+    ):
+        # Unknown incorporation is a real blocker, but is not evidence that a
+        # Companies House identity or UK filing exists. Do not manufacture
+        # thousands of UK company/filing tasks before applicability is known.
+        if state == "QUALIFIED":
+            state = "UNRESOLVED_PROVIDER_MAPPING"
+        reasons.append("VERIFIED_ISSUER_JURISDICTION_REQUIRED")
     if not required <= rights.keys():
         if state == "QUALIFIED":
             state = "UNRESOLVED_PROVIDER_MAPPING"
@@ -561,6 +574,17 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
     relevant = [r for r in rows if r.get("universe_member") is True]
     states = Counter(row["qualification_state"] for row in relevant)
 
+    def provider_failures(row: dict[str, Any]) -> set[str]:
+        # Dataset probes preserve partial failures in their request diagnostics
+        # instead of raising them through the identity join. Count those too,
+        # once per stock, so bounded unfinished work is never reported as zero.
+        failures = set(row.get("provider_reasons", []))
+        failures.update(
+            item["error_code"] for item in row.get("provider_request_diagnostics", [])
+            if isinstance(item, dict) and isinstance(item.get("error_code"), str)
+        )
+        return failures
+
     def current_dataset(row: dict[str, Any], name: str) -> bool:
         from money.data.quality.market import MarketQualityPolicy
 
@@ -613,10 +637,18 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
             r.get("issuer_facts", {}).get("CountryISO") == "GB" for r in relevant
         ),
         "companies_house_applicability_unknown": sum(
-            r.get("issuer_facts", {}).get("CountryISO") != "GB"
+            r.get("identity_valid") is True
+            and r.get("issuer_facts", {}).get("CountryISO") != "GB"
             and r.get("companies_house_state") != "NOT_APPLICABLE"
             for r in relevant
         ),
+        "provider_deferred": sum(
+            "PROVIDER_REQUEST_BUDGET_EXHAUSTED" in provider_failures(r)
+            for r in relevant
+        ),
+        "provider_failure_counts": dict(sorted(Counter(
+            reason for row in relevant for reason in provider_failures(row)
+        ).items())),
         "ethical_review_required": sum(
             r.get("ethical_state") == "ETHICAL_REVIEW_REQUIRED" for r in relevant
         ),
@@ -673,6 +705,59 @@ def _csv(rows: list[dict[str, Any]]) -> bytes:
     return output.getvalue().encode()
 
 
+def _review_work(
+    rows: list[dict[str, Any]], provenance: dict[str, Any], scope_required: bool
+) -> dict[str, Any]:
+    """Bulk factual dossiers and distinct global reviews, never signed inputs."""
+    return {
+        "version": "money-bulk-review-work-v1",
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "scope": provenance["scope"],
+        "source_provenance": provenance,
+        "review_status": "UNREVIEWED_MACHINE_FACTS",
+        "global_reviews": {
+            "account_scope": {
+                "required": scope_required,
+                "review_file": "inputs/universe/account-scope.json",
+                "facts_file": "outputs/universe-account-facts.json",
+                "action": "Verify ISA credential ownership, account-specific membership and current buy availability against genuine evidence. Metadata listing alone is insufficient.",
+            },
+            "provider_rights": {
+                "review_files": [
+                    "inputs/provider-rights/eodhd.json",
+                    "inputs/provider-rights/companies-house.json",
+                ],
+                "action": "Independently substantiate permitted use, retention and redistribution. API success is not permission; no per-stock rights signatures are requested.",
+            },
+            "ethical_evidence": {
+                "review_file": "inputs/universe/ethics.json",
+                "schema_file": "inputs/universe/ethical-entry.schema.json",
+                "required_exclusions": list(EXCLUDED_ACTIVITIES),
+                "action": "One independent review may cover multiple instruments. Assess all material activities using rights-approved evidence; descriptions or absent keywords are not clearance.",
+            },
+        },
+        "instruments": [
+            {
+                **{
+                    field: row.get(field)
+                    for field in (
+                        "trading212_id", "isin", "name", "quote_currency",
+                        "identity_valid", "eodhd_identity", "eodhd_symbol",
+                        "issuer_facts", "issuer_facts_source", "companies_house_state",
+                        "companies_house_number", "legal_company_name", "company_status",
+                        "recent_accounts_filings", "provider_evidence", "provider_datasets",
+                        "provider_stage_status", "provider_request_diagnostics",
+                        "provider_reasons", "ethical_state",
+                        "provider_evidence_observed_at", "provider_evidence_valid_until",
+                    )
+                },
+                "human_approval_supplied": False,
+            }
+            for row in rows if row.get("universe_member") is True
+        ],
+    }
+
+
 def _optional_exchanges(
     ctx: QualificationContext, provider: Any
 ) -> tuple[bytes | None, tuple[Any, ...]]:
@@ -722,6 +807,10 @@ def _broker_metadata(
     exchanges request per 30 seconds. Successful unchanged metadata is reused
     under the existing ten-minute refresh policy, bound to this exact ISA key.
     """
+    if binding is None:
+        # A credential-free diagnostic run cannot perform a live refresh, but
+        # must not erase the last genuine raw response's retrieval provenance.
+        raise ValueError("TRADING212_CREDENTIALS_REQUIRED")
     cache_path = "state/bulk-broker-metadata.json"
     state = ctx.read_json(cache_path)
     if isinstance(state, dict) and state.get("credential_binding_sha256") == binding:
@@ -752,6 +841,8 @@ def _broker_metadata(
         "status": "ATTEMPTED",
         "attempted_at": attempted.isoformat(),
         "credential_binding_sha256": binding,
+        "last_success": state if isinstance(state, dict) and state.get("status") == "CURRENT"
+        else state.get("last_success") if isinstance(state, dict) else None,
     }
     ctx.write_json(cache_path, state)
     provider = Trading212MetadataProvider(
@@ -776,6 +867,7 @@ def _broker_metadata(
         if raw_exchanges is not None
         else "UNAVAILABLE_OR_INVALID",
     )
+    state.pop("last_success", None)
     ctx.write_json(cache_path, state)
     return raw_instruments, instruments, raw_exchanges, exchanges, observed
 
@@ -790,16 +882,21 @@ def _saved_broker_metadata(
     A future timestamp, corrupted response or missing source is never accepted.
     """
     state = ctx.read_json("state/bulk-broker-metadata.json")
+    if isinstance(state, dict) and state.get("status") != "CURRENT":
+        state = state.get("last_success")
     source: dict[str, Any] | None
     if isinstance(state, dict) and state.get("status") == "CURRENT":
         source = state
         responses = state["responses"]
         observed = _time(state["observed_at"])
     else:
-        preserved = ctx.read_json("state/universe-rebuild-source.json")
-        source = preserved.get("source") if isinstance(preserved, dict) else None
+        # A migration archive may be much older than the last successful run.
+        # Prefer its current provenance view; archive metadata is a fallback,
+        # never a reason to silently replay older broker bytes.
+        source = ctx.read_json("outputs/universe-provenance.json")
         if not isinstance(source, dict):
-            source = ctx.read_json("outputs/universe-provenance.json")
+            preserved = ctx.read_json("state/universe-rebuild-source.json")
+            source = preserved.get("source") if isinstance(preserved, dict) else None
         if not isinstance(source, dict) or source.get("retrieval_environment") != "live":
             raise ValueError("SAVED_LIVE_BROKER_RESPONSE_REQUIRED")
         responses = source["response_artifacts"]
@@ -894,6 +991,7 @@ def finalize_universe(
 ) -> dict[str, Any]:
     """Refresh live membership, optionally enrich venues, and isolate bad rows."""
     from money.qualification.universe_normalize import normalize_universe
+    from money.qualification.universe_progress import enrichment_order, record_network_progress
     from money.qualification.universe_providers import BulkProviderEnricher
 
     migration = ensure_universe_policy(ctx, force=rebuild_universe)
@@ -957,6 +1055,16 @@ def finalize_universe(
             },
         )
         _write_provider_projection(ctx, _provider_projection(failed))
+        for path in ("outputs/universe-review-work.json", "outputs/universe-account-facts.json"):
+            ctx.write_json(
+                path,
+                {
+                    "universe_policy_version": UNIVERSE_POLICY_VERSION,
+                    "scope": scope_label,
+                    "status": "REFRESH_FAILED",
+                    "errors": failed["errors"],
+                },
+            )
         ctx.block(
             "TRADING212_LIVE_METADATA_REQUIRED",
             "Fetch live accessible instruments using the ISA credential; no old membership was served. Exchanges are optional enrichment.",
@@ -971,15 +1079,19 @@ def finalize_universe(
         requests_per_minute=requests_per_minute,
         offline=replay_saved,
     )
-    for index, row in enumerate(rows):
+    for row in rows:
         row["broker_response_refs"] = responses
         row["provider_enrichment_input"] = row["universe_member"] and row["identity_valid"]
-        if not row["provider_enrichment_input"]:
-            continue
+    for index in enrichment_order(ctx, rows, binding, replay=replay_saved):
+        row = rows[index]
+        before = getattr(enricher, "requests_used", 0)
         try:
             rows[index] = enricher.enrich(row)
         except Exception:
             row["provider_reasons"] = ["PROVIDER_ROW_FAILED"]
+        finally:
+            if not replay_saved and getattr(enricher, "requests_used", 0) > before:
+                record_network_progress(ctx, row, binding)
     ctx.now = utc_now()
     # A long provider batch must not extend any review or membership lifetime.
     scope, ethics = None if replay_saved else _scope(ctx, binding), _ethics(ctx)
@@ -1028,6 +1140,7 @@ def finalize_universe(
         "response_artifacts": responses,
     }
     summary = _summary(rows, ctx.now)
+    summary["provider_requests_this_run"] = getattr(enricher, "requests_used", 0)
     provenance.update(
         {
             key: summary[key]
@@ -1087,6 +1200,17 @@ def finalize_universe(
             "retrieved_at": provenance["retrieved_at"],
         },
         "credential_binding_sha256": binding,
+        "bulk_evidence_work_file": "outputs/universe-review-work.json",
+        "provider_rights_reviews": [
+            "inputs/provider-rights/eodhd.json",
+            "inputs/provider-rights/companies-house.json",
+        ],
+        "machine_enrichment": {
+            "requests_this_run": summary["provider_requests_this_run"],
+            "deferred": summary["provider_deferred"],
+            "failure_counts": summary["provider_failure_counts"],
+            "action": "Rerun the finalizer to resume bounded provider enrichment; these are not human identity approvals.",
+        },
         "venue_review_required": False,
         "venue_information": list(
             {
@@ -1124,6 +1248,7 @@ def finalize_universe(
                     not in {
                         "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED",
                         "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED",
+                        "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED",
                     }
                 ],
             }
@@ -1138,6 +1263,21 @@ def finalize_universe(
     _large_write(ctx, MASTER, json_bytes(result))
     _large_write(ctx, "outputs/uk-isa-stock-universe.csv", _csv(rows))
     _large_write(ctx, "outputs/universe-review-queue.json", json_bytes(queue))
+    _large_write(
+        ctx, "outputs/universe-review-work.json", json_bytes(_review_work(rows, provenance, scope is None))
+    )
+    ctx.write_json(
+        "outputs/universe-account-facts.json",
+        {
+            "universe_policy_version": UNIVERSE_POLICY_VERSION,
+            "status": "UNREVIEWED_MACHINE_FACTS",
+            "provenance": provenance,
+            "account_type_returned_by_api": False,
+            "accessible_response_is_account_scoped": None,
+            "accessible_response_confirms_current_buy_availability": None,
+            "instruction": "Use the recorded credential binding when preparing account-scope.json. This file proves retrieval, not account type, endpoint scope or purchase availability. Existing operator inputs have not been overwritten.",
+        },
+    )
     ctx.write_json("outputs/universe-provenance.json", provenance)
     _write_provider_projection(ctx, _provider_projection(result))
     return result
@@ -1255,6 +1395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not 1 <= args.max_provider_requests <= 100000 or not 1 <= args.requests_per_minute <= 60:
             raise ValueError("PROVIDER_BUDGET_INVALID")
         repo = Path(__file__).resolve().parents[3]
+        selected_qlib = qlib_enabled(os.environ)
         selections = load_inference_selections(repo, os.environ)
         root = args.output or Path(
             "data/qualified/local-inference"
@@ -1302,6 +1443,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"\nPROVIDERS\nEODHD mappings attempted: {s['eodhd_mapping_attempted']}/{s['gbx_stocks']} (network: {s['eodhd_lookups_network']}; cached: {s['eodhd_lookups_cached']})"
         )
         print(f"EODHD mapped: {s['eodhd_mapped']}/{s['gbx_stocks']}")
+        print(f"Provider requests this run: {s['provider_requests_this_run']}; deferred: {s['provider_deferred']}")
         print(
             f"Companies House mapped: {s['companies_house_mapped']}/{s['companies_house_applicable']} applicable; applicability unknown: {s['companies_house_applicability_unknown']}"
         )
@@ -1312,13 +1454,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             print(f"{label}: {s['datasets'][name]}/{s['gbx_stocks']}")
         print("Universe qualification is not production/native/release qualification.")
+        print("Bulk evidence and remaining reviews: outputs/universe-review-work.json")
         if args.replay_saved:
             print(
                 "Saved-response replay only; original retrieval time preserved. No network access or eligibility approval."
             )
         print("After resolving bulk review inputs, continue with:")
+        mode_prefix = "" if selected_qlib else "MONEY_QLIB_ENABLED=false "
         print(
-            "railway run --service Money --environment production sh -c 'MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/build_live_qualification.py'"
+            f"railway run --service Money --environment production sh -c '{mode_prefix}MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/build_live_qualification.py'"
         )
         return 0 if s["qualified"] else 2
     except Exception:

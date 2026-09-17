@@ -29,6 +29,11 @@ class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
+def required_first_pass_firms(qlib_enabled: bool = True) -> frozenset[str]:
+    """The explicitly selected mode, never an unavailable-runtime fallback."""
+    return frozenset({"tradingagents", "ai_hedge_fund", *({"qlib"} if qlib_enabled else set())})
+
+
 EXCLUDED_ACTIVITIES = (
     "defence",
     "weapons",
@@ -192,12 +197,19 @@ class ResearchSnapshot(Contract):
     instrument: InstrumentMetadata
     evidence: tuple[EvidenceRecord, ...]
     historical: bool = False
+    # Legacy snapshots required Qlib. Omit that default to preserve archived
+    # hashes; explicit disabled mode is frozen into every new snapshot hash.
+    qlib_enabled: bool = Field(default=True, strict=True, exclude_if=lambda value: value is True)
     # Live bulk discovery binds each candidate to the complete pre-screen
     # universe. Omit absent bindings to retain existing archived hash contracts.
     universe_hash: str | None = Field(
         default=None, pattern=r"^[a-f0-9]{64}$", exclude_if=lambda value: value is None
     )
     hash: str = ""
+
+    @property
+    def required_first_pass_firms(self) -> frozenset[str]:
+        return required_first_pass_firms(self.qlib_enabled)
 
     @model_validator(mode="after")
     def freeze_facts(self) -> Self:
@@ -429,6 +441,7 @@ class DecisionPacket(Contract):
     signal: ResearchSignal | None = None
     cross_examination_rounds: int = Field(default=0, ge=0, le=2)
     runtime: Literal["live", "demo"]
+    qlib_enabled: bool = Field(default=True, strict=True, exclude_if=lambda value: value is True)
     # Optional/omitted for old packets: existing immutable hashes remain valid.
     money_version: str | None = Field(default=None, exclude_if=lambda value: value is None)
     git_commit: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -441,16 +454,20 @@ class DecisionPacket(Contract):
 
     @model_validator(mode="after")
     def consistent_packet(self) -> Self:
+        if not self.qlib_enabled and self.frozen_snapshot is None:
+            raise ValueError("disabled Qlib requires explicit frozen snapshot provenance")
         if self.frozen_snapshot is not None and (
             self.frozen_snapshot.hash != self.snapshot_hash
             or self.frozen_snapshot.snapshot_id != self.snapshot_id
             or self.frozen_snapshot.evidence != self.sources
+            or self.frozen_snapshot.qlib_enabled != self.qlib_enabled
         ):
             raise ValueError("packet frozen snapshot mismatch")
-        if {r.firm for r in self.reports} != {"tradingagents", "ai_hedge_fund", "qlib"}:
+        required = required_first_pass_firms(self.qlib_enabled)
+        if {r.firm for r in self.reports} != required:
             raise ValueError("packet requires all independent firms")
-        if len(self.reports) != 3:
-            raise ValueError("packet requires exactly three reports")
+        if len(self.reports) != len(required):
+            raise ValueError("packet requires exactly the configured independent reports")
         if any(report.runtime != self.runtime for report in self.reports):
             raise ValueError("packet runtime must match all report runtimes")
         if any(

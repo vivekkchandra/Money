@@ -47,7 +47,7 @@ class LiveCorrespondence:
     """Own persistence/budgets outside restricted native response capabilities."""
 
     def __init__(self, store: ResearchStore, manifest: LiveManifest,
-                 model: QualifiedLinearModel) -> None:
+                 model: QualifiedLinearModel | None) -> None:
         self.store, self.manifest, self.model = store, manifest, model
         self.budget = TokenBudgetManager(store, manifest.budgets)
 
@@ -120,6 +120,8 @@ class LiveCorrespondence:
 
         if not self.manifest.enable_native_cross_examination:
             raise ValueError("NATIVE_CORRESPONDENCE_DISABLED")
+        if snapshot.qlib_enabled != self.manifest.qlib_enabled:
+            raise ValueError("RESEARCH_QLIB_POLICY_CHANGED")
         checkpoint = self.store.get_checkpoint(job_id)
         saved = checkpoint["artifacts"]
         if (checkpoint["stage"] != "CROSS_EXAMINATION"
@@ -158,8 +160,10 @@ class LiveCorrespondence:
         responders: dict[str, ResponseCapability] = {
             "tradingagents": response_for("tradingagents", self.manifest.tradingagents),
             "ai_hedge_fund": response_for("ai_hedge_fund", self.manifest.ai_hedge_fund),
-            "qlib": deterministic, "lean": deterministic,
+            "lean": deterministic,
         }
+        if snapshot.qlib_enabled:
+            responders["qlib"] = deterministic
         selection = self.manifest.crewai
         runner = bounded(CrewAIChallengeVerifier(
             selection.inference(), settings, self.model, reports, lean,

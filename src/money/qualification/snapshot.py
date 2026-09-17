@@ -14,6 +14,7 @@ from money.data.security import ProviderFailure
 from money.data.uk.filing_documents import ReviewedStorageHost
 from money.qualification.core import QualificationContext, fingerprint
 from money.research.live import LiveSnapshotBuilder, VerifiedInstrument
+from money.research.qlib_mode import qlib_enabled
 from money.scanner.universe import (
     bind_universe_snapshot,
     freeze_qualified_universe,
@@ -86,6 +87,7 @@ def _instrument_snapshot(
     source_key = fingerprint(
         {
             "instrument": selected.model_dump(mode="json"),
+            "qlib_enabled": qlib_enabled(ctx.environ),
             "providers": [item.model_dump(mode="json") for item in sources.provider_qualifications],
             "storage_hosts": [
                 item.model_dump(mode="json") for item in sources.filing_document_storage_hosts
@@ -97,8 +99,13 @@ def _instrument_snapshot(
     cached = _cached_snapshot(ctx, ctx.cache(namespace, key, 3600))
     if cached is not None:
         snapshot = cached
-        if snapshot.instrument == selected.metadata and all(
-            item.available_at(ctx.now) and item.fresh_until > ctx.now for item in snapshot.evidence
+        if (
+            snapshot.qlib_enabled == qlib_enabled(ctx.environ)
+            and snapshot.instrument == selected.metadata
+            and all(
+                item.available_at(ctx.now) and item.fresh_until > ctx.now
+                for item in snapshot.evidence
+            )
         ):
             return snapshot
     original = _cached_snapshot(ctx, ctx.cache(namespace + "-source", source_key, 3600))
@@ -140,6 +147,10 @@ def _instrument_snapshot(
         snapshot = LiveSnapshotBuilder(sources, store)(selected.metadata)
     finally:
         store.engine.dispose()
+    if snapshot.qlib_enabled != qlib_enabled(ctx.environ):
+        snapshot = ResearchSnapshot.model_validate(
+            {**snapshot.model_dump(), "qlib_enabled": qlib_enabled(ctx.environ), "hash": ""}
+        )
     if snapshot.instrument.provider == "money-demo" or any(
         item.provider == "money-demo" for item in snapshot.evidence
     ):

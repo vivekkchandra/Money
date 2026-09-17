@@ -217,6 +217,126 @@ def rights_fixture(ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+def test_unknown_incorporation_blocks_without_inventing_uk_filing_requirements(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewed_scope(ctx)
+    reviewed_ethics(ctx, [instrument()])
+    rights_fixture(ctx, monkeypatch)
+
+    class UnknownIssuer(Enricher):
+        def enrich(self, source: dict[str, Any]) -> dict[str, Any]:
+            row = super().enrich(source)
+            row["issuer_facts"] = {}
+            row["companies_house_state"] = "UNRESOLVED_APPLICABILITY"
+            return row
+
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=UnknownIssuer())
+    row = result["stocks"][0]
+    assert result["eligibility_reviews"] == []
+    assert row["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
+    assert "VERIFIED_ISSUER_JURISDICTION_REQUIRED" in row["reasons"]
+    assert not any("CURRENT_COMPANIES-HOUSE" in reason for reason in row["reasons"])
+    assert result["summary"]["companies_house_applicability_unknown"] == 1
+
+
+def test_confirmed_uk_issuer_still_requires_real_company_and_filing_evidence(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewed_scope(ctx)
+    reviewed_ethics(ctx, [instrument()])
+    rights_fixture(ctx, monkeypatch)
+
+    class UKIssuer(Enricher):
+        def enrich(self, source: dict[str, Any]) -> dict[str, Any]:
+            row = super().enrich(source)
+            row["issuer_facts"] = {"CountryISO": "GB"}
+            row["companies_house_state"] = "UNRESOLVED"
+            return row
+
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=UKIssuer())
+    row = result["stocks"][0]
+    assert result["eligibility_reviews"] == []
+    assert "CURRENT_COMPANIES-HOUSE_COMPANY_OBSERVATION_REQUIRED" in row["reasons"]
+    assert "CURRENT_COMPANIES-HOUSE_FILING_OBSERVATION_REQUIRED" in row["reasons"]
+    assert "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED" in row["reasons"]
+
+
+def test_bulk_work_prepares_facts_without_overwriting_or_signing_reviews(
+    ctx: QualificationContext,
+) -> None:
+    universe.prepare_bulk_inputs(ctx, None)
+    before = {
+        path: ctx.read_bytes(path)
+        for path in ("inputs/universe/account-scope.json", "inputs/universe/ethics.json")
+    }
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
+    for path, raw in before.items():
+        assert ctx.read_bytes(path) == raw
+    facts = ctx.read_json("outputs/universe-account-facts.json")
+    assert facts["provenance"]["credential_binding_sha256"] == universe.credential_binding(ctx.environ)
+    assert facts["account_type_returned_by_api"] is False
+    assert facts["accessible_response_is_account_scoped"] is None
+    assert facts["accessible_response_confirms_current_buy_availability"] is None
+    work = ctx.read_json("outputs/universe-review-work.json")
+    assert work["review_status"] == "UNREVIEWED_MACHINE_FACTS"
+    assert work["instruments"][0]["eodhd_symbol"] == "TEST.TESTVENUE"
+    assert work["instruments"][0]["human_approval_supplied"] is False
+    queue = ctx.read_json("outputs/universe-review-queue.json")
+    assert len(queue["provider_rights_reviews"]) == 2
+    assert not any("PROVIDER_RIGHTS" in item for item in queue["instruments"][0]["reasons"])
+    assert "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED" in result["stocks"][0]["reasons"]
+    assert result["eligibility_reviews"] == []
+
+
+def test_network_budget_resumes_after_last_serviced_stock_not_start_of_list(
+    ctx: QualificationContext,
+) -> None:
+    rows = [instrument(), instrument(ticker="ZZZl_EQ", shortName="ZZZ", isin="US0378331005")]
+
+    class Budgeted(Enricher):
+        requests_used = 0
+
+        def enrich(self, source: dict[str, Any]) -> dict[str, Any]:
+            if self.requests_used == 0:
+                self.requests_used += 1
+                self.serviced = source["trading212_id"]
+                return super().enrich(source)
+            self.calls.append(source["trading212_id"])
+            return {**source, "provider_reasons": ["PROVIDER_REQUEST_BUDGET_EXHAUSTED"]}
+
+    first, second = Budgeted(), Budgeted()
+    initial = universe.finalize_universe(ctx, broker=Broker(rows), enricher=first)
+    resumed = universe.finalize_universe(ctx, broker=Broker(rows), enricher=second)
+    assert first.serviced == "TESTl_EQ"
+    assert second.serviced == "ZZZl_EQ"
+    assert len(first.calls) == len(second.calls) == 2
+    assert initial["summary"]["provider_requests_this_run"] == 1
+    assert resumed["summary"]["provider_deferred"] == 1
+    assert initial["summary"]["provider_stage_input_count"] == 2
+    assert resumed["eligibility_reviews"] == []
+
+
+def test_dataset_probe_budget_failures_are_counted_once_per_stock(
+    ctx: QualificationContext,
+) -> None:
+    class DeferredDatasets(Enricher):
+        def enrich(self, source: dict[str, Any]) -> dict[str, Any]:
+            row = super().enrich(source)
+            row["provider_datasets"] = {}
+            row["provider_reasons"] = []
+            row["provider_request_diagnostics"] = [
+                {"endpoint": name, "error_code": "PROVIDER_REQUEST_BUDGET_EXHAUSTED"}
+                for name in ("eod", "splits", "news")
+            ]
+            return row
+
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=DeferredDatasets())
+    assert result["summary"]["provider_deferred"] == 1
+    assert result["summary"]["provider_failure_counts"]["PROVIDER_REQUEST_BUDGET_EXHAUSTED"] == 1
+    assert result["eligibility_reviews"] == []
+
+
 def test_review_with_unknown_activities_never_displays_ethically_cleared(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,7 +422,7 @@ def test_every_gbx_stock_reaches_provider_lookup_without_uk_venue(
     broker.raw["exchanges"] = json.dumps(exchanges).encode()
     enricher = Enricher()
     result = universe.finalize_universe(ctx, broker=broker, enricher=enricher)
-    assert enricher.calls == ["TESTl_EQ", "FOREIGNl_EQ"]
+    assert sorted(enricher.calls) == ["FOREIGNl_EQ", "TESTl_EQ"]
     assert result["summary"]["gbx_stocks"] == 2
     assert result["summary"]["eodhd_mapping_attempted"] == 2
     assert result["summary"]["eodhd_mapped"] == 2
@@ -763,6 +883,9 @@ def test_expired_cache_and_failed_refresh_clear_live_membership(
     assert failed["status"] == "REFRESH_FAILED"
     assert ctx.read_json(universe.MASTER)["stocks"] == []
     assert ctx.read_json("state/bulk-broker-metadata.json")["status"] == "ATTEMPTED"
+    saved = universe._saved_broker_metadata(ctx)
+    assert saved[0] == broker.raw["instruments"]
+    assert saved[4].isoformat() == first["observed_at"]
 
 
 def test_broker_failure_backoff_prevents_retries_within_fifty_seconds(

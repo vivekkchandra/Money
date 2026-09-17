@@ -37,6 +37,21 @@ against actual artifact bytes, and do not consume the new-request budget.
 Failures have a short five-minute backoff; an unavailable provider or ambiguous
 stock does not turn other stock results into failures.
 
+New network work uses an account-bound, policy-versioned round-robin cursor in
+`state/universe-enrichment-cursor.json`. Each run starts after the last identity
+that consumed network budget, so repeated failures at the head of the catalogue
+cannot starve the remaining stocks. All identity-valid members still receive
+an enrichment attempt, including cache reuse after the budget is exhausted.
+The cursor contains no approvals; replay does not advance it, and a changed
+policy or account binding invalidates its ordering. Partial evidence still has
+its original expiry, and incomplete observations never become qualified.
+
+Safe provider diagnostics distinguish numeric HTTP failures (authentication,
+access denied, not found, rate limit, upstream failure) from transport failure
+when that information is actually available. They never contain raw URLs,
+headers, bodies or secrets, and an HTTP denial alone does not establish the
+account's subscription entitlements.
+
 After resolving required review inputs, continue with the one additional command
 printed by the finalizer:
 
@@ -110,6 +125,10 @@ mapping must distinguish the issuer from similarly named operating companies.
 A genuinely foreign-incorporated issuer can be `NOT_APPLICABLE` for Companies
 House; unknown incorporation or identity is unresolved, not assumed foreign.
 Foreign companies still need independently admitted financial evidence.
+Unknown issuer jurisdiction creates an applicability-resolution task, **not**
+a demand for Companies House filings that might not exist. Once UK issuer
+identity is established, company/profile, filing and rights requirements remain
+mandatory. Neither venue nor ISIN prefix establishes incorporation.
 
 The finalizer refreshes both `outputs/providers-result.json` and
 `state/provider-stage.json`. Their `provider_stage_inputs` and
@@ -136,6 +155,17 @@ credential HMAC and source-response hashes/retrieval evidence in provenance.
 It is identified as an operator attestation, never as account type returned by
 the metadata API. The review queue carries this requirement once at its top
 level while individual entries describe their remaining instrument issues.
+
+`outputs/universe-account-facts.json` supplies the actual non-secret credential
+binding and hash-bound retrieval facts, without changing an existing operator
+review. `outputs/universe-review-work.json` groups the global account/rights
+reviews and provides one bulk factual dossier of returned provider identities,
+issuer descriptions, profile facts, recent accounts metadata and evidence
+references. It is explicitly unreviewed and is never an approval input.
+The review queue separates automated enrichment failures/deferred requests from
+human decisions; global provider-rights reviews are not duplicated as thousands
+of individual signatures. Working APIs, a company description or missing
+exclusion keywords cannot clear the ethical gate.
 
 An existing `inputs/universe/venues.json` may enrich venue information, but it is
 optional. Neither an unresolved venue review nor missing country/MIC metadata
@@ -185,12 +215,17 @@ candidate membership and reproducible screening. Native qualification's
 `outputs/snapshot.json` is a screened compatibility sample, not the definition
 of the universe.
 
-Only screened candidates enter independent TradingAgents, AI-Hedge-Fund and
-numeric Qlib research. The three reports remain independent and sealed until
-`FIRST_PASS_LOCKED`; LEAN then validates, followed by CrewAI CIO, evidence and
-contradiction checks, Red Team and at most two cross-examination rounds. Qlib
-training/manual promotion, LEAN, native security, release and first-pass gates
-are unchanged. A qualified subset does not qualify those independent stages.
+Only screened candidates enter independent TradingAgents, AI-Hedge-Fund and,
+when enabled, numeric Qlib research. Qlib is enabled by default; explicit
+`MONEY_QLIB_ENABLED=false` selects two-firm mode without creating a substitute
+Qlib report. The mode is frozen into snapshot hashes and the reviewed manifest.
+All selected reports remain independent and sealed until `FIRST_PASS_LOCKED`;
+LEAN is mandatory in both modes, followed by CrewAI CIO, evidence and
+contradiction checks, Red Team and at most two cross-examination rounds.
+Enabled Qlib still requires genuine training/manual promotion. LEAN, native
+security, release and first-pass gates are unchanged. A qualified subset does
+not qualify those independent stages. See [the runner guide](LIVE_QUALIFICATION_RUNNER.md#optional-qlib-mandatory-lean)
+for the exact opt-out command.
 
 ## Local Ollama is not Railway production inference
 

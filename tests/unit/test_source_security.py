@@ -121,6 +121,29 @@ def test_network_response_boundaries(response):
         assert connection.closed == 1
 
 
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500, 503])
+def test_provider_failure_records_only_numeric_http_status(status):
+    response = Response(status, body=b"private-provider-error-body")
+    connection = Connection([response])
+    with (
+        patch("money.data.security.public_addresses", return_value=("8.8.8.8",)),
+        patch("money.data.security._PinnedHTTPS", return_value=connection),
+        pytest.raises(ProviderFailure) as caught,
+    ):
+        SafeFetcher(frozenset({"api.example.com"})).json(
+            "https://api.example.com/data?api_token=synthetic-secret"
+        )
+    assert caught.value.code == "PROVIDER_UNAVAILABLE"
+    assert caught.value.http_status == status
+    assert caught.value.retryable is (status >= 500 or status == 429)
+    assert str(caught.value) == "PROVIDER_UNAVAILABLE"
+    assert "synthetic-secret" not in str(caught.value)
+    assert "private-provider-error-body" not in str(caught.value)
+    assert response.stream.tell() == 0
+    assert [request[0] for request in connection.requests] == ["GET"]
+    assert connection.closed == 1
+
+
 def test_redirect_limits_and_duplicate_json():
     for responses in (
         [Response(302, headers={"Location": "/again"})] * 3,

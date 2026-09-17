@@ -711,6 +711,8 @@ class ResearchStore:
             )
             if frozen is None or data["snapshot_hash"] != frozen["hash"]:
                 raise StoreError("A firm report must match the frozen snapshot hash")
+            if firm not in ResearchSnapshot.model_validate(frozen).required_first_pass_firms:
+                raise StoreError("Firm is disabled by the frozen research policy")
             evidence_ids = {item["evidence_id"] for item in frozen["evidence"]}
             if any(not set(claim["evidence_ids"]) <= evidence_ids for claim in data["claims"]):
                 raise StoreError("A firm report references evidence outside the frozen snapshot")
@@ -732,14 +734,21 @@ class ResearchStore:
     def lock_first_pass(self, job_id: str) -> None:
         with self.transaction() as connection:
             row = self._owned_job(connection, job_id)
+            frozen = connection.scalar(
+                select(db.snapshots.c.payload).where(db.snapshots.c.id == row["snapshot_id"])
+            )
+            required = (
+                ResearchSnapshot.model_validate(frozen).required_first_pass_firms
+                if frozen is not None else FIRST_PASS_FIRMS
+            )
             firms = frozenset(
                 connection.scalars(
                     select(db.firm_reports.c.firm).where(db.firm_reports.c.job_id == job_id)
                 )
             )
-            if row["status"] != "FIRST_PASS_RESEARCH" or firms != FIRST_PASS_FIRMS:
+            if row["status"] != "FIRST_PASS_RESEARCH" or frozen is None or firms != required:
                 raise BarrierNotLocked(
-                    "All three independent reports must be persisted before locking"
+                    "All configured independent reports must be persisted before locking"
                 )
             connection.execute(
                 db.jobs.update()
@@ -774,6 +783,13 @@ class ResearchStore:
         if self.get_job(job_id) is None:
             raise StoreError("Research job does not exist")
         with self.engine.connect() as connection:
+            frozen = connection.scalar(
+                select(db.snapshots.c.payload).where(db.snapshots.c.job_id == job_id)
+            )
+            required = (
+                ResearchSnapshot.model_validate(frozen).required_first_pass_firms
+                if frozen is not None else FIRST_PASS_FIRMS
+            )
             locked = (
                 connection.scalar(select(db.jobs.c.locked_at).where(db.jobs.c.id == job_id))
                 is not None
@@ -796,7 +812,7 @@ class ResearchStore:
             if locked
             else {
                 firm: {"status": "SEALED" if firm in firms else "PENDING"}
-                for firm in sorted(FIRST_PASS_FIRMS)
+                for firm in sorted(required)
             },
             "artifacts": extras,
         }
@@ -1030,7 +1046,9 @@ class ResearchStore:
                     if (
                         cross.snapshot_id != authoritative_snapshot.snapshot_id
                         or cross.snapshot_hash != authoritative_snapshot.hash
-                        or len(cross.report_hashes) != 3
+                        or cross.qlib_enabled != authoritative_snapshot.qlib_enabled
+                        or len(cross.report_hashes)
+                        != len(authoritative_snapshot.required_first_pass_firms)
                         or dict(cross.report_hashes)
                         != {
                             report.firm: content_hash(report) for report in validated_packet.reports

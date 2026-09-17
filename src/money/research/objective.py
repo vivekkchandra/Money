@@ -137,7 +137,7 @@ class AsymmetryAnalyzer:
             allocation * (design.targets_gbp[0] / design.entry_high_gbp - 1)
             - design.costs.total_round_trip_gbp
         )
-        quant = next(report for report in packet.reports if report.firm == "qlib")
+        quant = next((report for report in packet.reports if report.firm == "qlib"), None)
         return OpportunityAssessment(
             research_id=packet.research_id, ticker=signal.ticker,
             company=packet.eligibility.company, packet_hash=packet.hash,

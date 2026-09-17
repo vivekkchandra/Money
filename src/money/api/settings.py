@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     money_live_manifest: Path | None = None
     money_live_manifest_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     money_inference_config: Path | None = None
+    money_qlib_enabled: bool | None = None
     database_url: SecretStr
     research_api_token: SecretStr | None = None
     money_allow_unauthenticated_dev: bool = False
@@ -71,6 +72,17 @@ class Settings(BaseSettings):
     money_db_pool_size: int = Field(default=5, ge=1, le=30)
     money_db_pool_timeout_seconds: int = Field(default=10, ge=1, le=60)
     money_db_statement_timeout_ms: int = Field(default=15000, ge=1000, le=60000)
+
+    @field_validator("money_qlib_enabled", mode="before")
+    @classmethod
+    def explicit_qlib_selection(cls, value: object) -> bool | None:
+        if value is None or isinstance(value, bool):
+            return value
+        from money.research.qlib_mode import qlib_enabled
+
+        if not isinstance(value, str):
+            raise ValueError("MONEY_QLIB_ENABLED_REQUIRES_TRUE_OR_FALSE")
+        return qlib_enabled({"MONEY_QLIB_ENABLED": value})
 
     @model_validator(mode="after")
     def secure_configuration(self) -> Self:
@@ -132,6 +144,8 @@ class Settings(BaseSettings):
             assert self.money_live_manifest is not None
             assert self.money_live_manifest_sha256 is not None
             manifest = load_manifest(self.money_live_manifest, self.money_live_manifest_sha256)
+            if self.money_qlib_enabled is not None and self.money_qlib_enabled != manifest.qlib_enabled:
+                raise ValueError("LIVE_QLIB_MODE_DIFFERS_FROM_PINNED_MANIFEST")
             if selected_inference is not None and any(
                 selection != getattr(manifest, role)
                 for role, selection in selected_inference.items()

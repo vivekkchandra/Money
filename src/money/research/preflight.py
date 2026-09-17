@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from money.api.settings import Settings
 from money.research.live import load_manifest
+from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import utc_now
 
 
@@ -93,7 +94,16 @@ def deployment_preflight(role: Literal["api", "worker"]) -> dict[str, Any]:
     # Only a live metadata refresh joined to fresh reviewed proofs can establish
     # the current admitted universe. Offline presence never establishes coverage.
     check("current_isa_universe", "NOT_VERIFIED", "LIVE_METADATA_AND_FRESH_REVIEW_JOIN_NOT_RUN")
-    for component in ("postgresql", "promoted_qlib_model", "native_firms", "lean", "host_egress", "hosted_e2e"):
+    try:
+        enabled = getattr(manifest, "qlib_enabled", True) if manifest is not None else qlib_enabled(os.environ)
+    except ValueError:
+        enabled = True
+        check("qlib_mode", "BLOCKED_CONFIGURATION", "MONEY_QLIB_ENABLED_REQUIRES_TRUE_OR_FALSE")
+    check(
+        "promoted_qlib_model", "NOT_VERIFIED" if enabled else "NOT_REQUIRED",
+        "LIVE_ACCEPTANCE_NOT_RUN" if enabled else "QLIB_EXPLICITLY_DISABLED",
+    )
+    for component in ("postgresql", "native_firms", "lean", "host_egress", "hosted_e2e"):
         check(component, "NOT_VERIFIED", "LIVE_ACCEPTANCE_NOT_RUN")
     return {
         "schema": "money-live-preflight-v1",
