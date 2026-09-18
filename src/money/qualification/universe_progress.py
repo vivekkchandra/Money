@@ -251,7 +251,9 @@ def build_enrichment_progress(
     )
     counts = {
         "universe_rows": len(rows),
-        "gbx_stocks": sum(row.get("universe_member") is True for row in rows),
+        "gbp_gbx_stocks": sum(row.get("universe_member") is True for row in rows),
+        "gbx_stocks": sum(row.get("universe_member") is True and row.get("quote_currency") == "GBX" for row in rows),
+        "gbp_stocks": sum(row.get("universe_member") is True and row.get("quote_currency") == "GBP" for row in rows),
         "identity_valid": len(candidates),
         "identity_unresolved": sum(
             row.get("universe_member") is True and row.get("identity_valid") is not True

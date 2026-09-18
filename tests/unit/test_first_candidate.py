@@ -7,9 +7,10 @@ import pytest
 from test_bulk_universe import NOW, Broker, instrument
 from test_universe_providers import Fetcher
 
-from money.data.security import ProviderFailure, SafeFetcher
+from money.data.security import FetchResult, ProviderFailure, SafeFetcher
 from money.qualification import first_candidate, universe
 from money.qualification.core import QualificationContext, json_bytes
+from money.qualification.issuer_sources import IssuerSourceSelection, prepare_issuer_evidence
 from money.qualification.universe_progress import CURSOR
 from money.qualification.universe_providers import BulkProviderEnricher
 
@@ -207,13 +208,13 @@ def test_corrupt_saved_evidence_never_produces_preparation(ctx, monkeypatch, tar
     assert not (ctx.root / first_candidate.OUTPUT).exists()
 
 
-@pytest.mark.parametrize("case", ["duplicate", "gbp", "etf", "absent"])
-def test_only_unambiguous_raw_gbx_stock_can_be_prepared(ctx, monkeypatch, case):
+@pytest.mark.parametrize("case", ["duplicate", "usd", "etf", "absent"])
+def test_only_unambiguous_raw_gbp_gbx_stock_can_be_prepared(ctx, monkeypatch, case):
     source = [instrument(ticker="FIXl_EQ", shortName="FIX", name="Fixture PLC")]
     if case == "duplicate":
         source.append(dict(source[0], ticker="OTHERl_EQ"))
-    elif case == "gbp":
-        source[0]["currencyCode"] = "GBP"
+    elif case == "usd":
+        source[0]["currencyCode"] = "USD"
     elif case == "etf":
         source[0]["type"] = "ETF"
     prepare(ctx, instruments=source)
@@ -254,6 +255,28 @@ def test_expired_live_membership_blocks_even_requested_provider_refresh(ctx, mon
     deny_network(monkeypatch)
     with pytest.raises(ValueError, match="CURRENT_LIVE_MEMBERSHIP_REQUIRED"):
         first_candidate.prepare_first_candidate(ctx, refresh_providers=True)
+
+
+def test_membership_failure_replaces_stale_instructions_without_approving_evidence(ctx, monkeypatch):
+    prepare(ctx)
+    first_candidate.prepare_first_candidate(ctx)
+    old = ctx.read_bytes(first_candidate.OUTPUT)
+    old_doc = ctx.read_bytes("outputs/FIRST_STOCK_NEXT.md")
+    review = ctx.read_bytes("inputs/provider-rights/eodhd.json")
+    ctx.now = NOW + timedelta(hours=24)
+    deny_network(monkeypatch)
+    first_candidate._record_membership_block(ctx)
+    blocked = ctx.read_json(first_candidate.OUTPUT)
+    assert blocked["status"] == "BLOCKED_CURRENT_MEMBERSHIP_REQUIRED"
+    assert not blocked["membership"]["current"]
+    assert not blocked["eligibility_granted"]
+    assert not blocked["production_qualified"]
+    assert blocked["available_evidence"] is None
+    assert ctx.verify_artifact(*blocked["previous_preparation"]) == old
+    assert ctx.verify_artifact(*blocked["previous_instructions"]) == old_doc
+    assert ctx.read_bytes("inputs/provider-rights/eodhd.json") == review
+    assert b"FIRST_CANDIDATE_CURRENT_LIVE_MEMBERSHIP_REQUIRED" in ctx.read_bytes("outputs/FIRST_STOCK_NEXT.md")
+    assert not (ctx.root / "manifest.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -497,3 +520,83 @@ def test_failed_current_provider_retry_never_reuses_old_current_ready_evidence(c
     assert result["available_evidence"] is None
     assert result["verified_provider_identity"] is None
     assert not result["eligibility_granted"]
+
+
+def authoritative_fallback(ctx, monkeypatch):
+    class NoFundamentals(Fetcher):
+        def json(self, url, *, headers=None):
+            if "/api/fundamentals/" in url:
+                raise ProviderFailure("PROVIDER_ACCESS_DENIED", http_status=403)
+            return super().json(url, headers=headers)
+
+    master, transport = prepare(ctx, fetcher=NoFundamentals())
+    original = master["stocks"][0]
+    original_ref = original["provider_reports"]["eodhd"]["report_ref"]
+    original_bytes = ctx.read_bytes(original_ref["path"])
+    selection = IssuerSourceSelection(
+        isin=original["isin"], company_number="00000001", legal_name="FIXTURE PLC", ticker="FIX",
+        official_issuer_host="issuer.example", issuer_identity_urls=("https://issuer.example/investors",),
+        security_identity_url="https://www.londonstockexchange.com/stock/FIX/fixture-plc/company-page",
+    )
+
+    class Official(SafeFetcher):
+        def __init__(self):
+            pass
+
+        def get(self, url, *, headers=None, mime_types=()):
+            responses = {
+                selection.issuer_identity_urls[0]: b"FIXTURE PLC 00000001 FIX Registered in England and Wales",
+                selection.security_identity_url: b"FIXTURE PLC FIX ISIN GB00BH4HKS39",
+                "https://api.company-information.service.gov.uk/company/00000001": json_bytes({
+                    "company_name": "FIXTURE PLC", "company_number": "00000001",
+                    "company_status": "active", "type": "plc", "jurisdiction": "england-wales",
+                }),
+                "https://api.company-information.service.gov.uk/company/00000001/filing-history?category=accounts&items_per_page=4": b'{"items":[]}',
+            }
+            return FetchResult(responses[url], mime_types[0])
+
+    monkeypatch.setattr("money.qualification.issuer_sources.utc_now", lambda: NOW)
+    receipt = prepare_issuer_evidence(ctx, selection, fetcher=Official())
+    enricher = BulkProviderEnricher(ctx, fetcher=transport, sleep=lambda _: None, clock=lambda: ctx.now)
+    enriched = enricher.enrich(original)
+    assert enriched["identifiers"]["companies_house_number"] == "00000001"
+    assert enriched["identifiers"]["company_name"] == "FIXTURE PLC"
+    assert enriched["provider_reports"]["eodhd"]["report_ref"] == original_ref
+    assert ctx.read_bytes(original_ref["path"]) == original_bytes
+    return master, enriched, receipt, original_ref, original_bytes
+
+
+def test_first_candidate_accepts_exact_issuer_enrichment_without_rewriting_original_eodhd_report(ctx, monkeypatch):
+    master, enriched, _, original_ref, original_bytes = authoritative_fallback(ctx, monkeypatch)
+    master["stocks"][0] = enriched
+    ctx.write_json(universe.MASTER, master)
+    result = first_candidate.prepare_first_candidate(ctx)
+    evidence = result["available_evidence"]
+    assert evidence["current"]
+    assert evidence["identifiers"]["company_name"] == "FIXTURE PLC"
+    assert evidence["original_provider_identifiers"]["company_name"] == "Fixture PLC"
+    assert evidence["original_provider_identifiers"]["companies_house_number"] is None
+    assert evidence["issuer_identity_evidence"]
+    assert ctx.read_bytes(original_ref["path"]) == original_bytes
+    assert not result["eligibility_granted"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("ticker", "OTHER"), ("isin", "GB00B63QSB39"), ("exchange_ticker", "OTHER"),
+    ("provider_symbols", [["eodhd", "FIX.US"]]), ("companies_house_number", "00000002"),
+    ("company_name", "DIFFERENT PLC"),
+])
+def test_authoritative_issuer_enrichment_cannot_change_report_security_or_legal_identity(
+    ctx, monkeypatch, field, value,
+):
+    _, row, _, _, _ = authoritative_fallback(ctx, monkeypatch)
+    row["identifiers"][field] = value
+    with pytest.raises(ValueError, match="FIRST_CANDIDATE_(REPORT|IDENTITY)_MISMATCH"):
+        first_candidate._saved_evidence(ctx, row)
+
+
+def test_authoritative_issuer_enrichment_revalidates_actual_receipt_bytes(ctx, monkeypatch):
+    _, row, receipt, _, _ = authoritative_fallback(ctx, monkeypatch)
+    ctx.write_bytes(receipt["company_source"]["path"], b"tampered authoritative test source")
+    with pytest.raises(ValueError, match="FIRST_CANDIDATE_REPORT_MISMATCH"):
+        first_candidate._saved_evidence(ctx, row)

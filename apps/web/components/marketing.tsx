@@ -88,7 +88,7 @@ const pages: Record<string, {
       "No orders, brokerage account control or automatic rebalancing. Money's role ends at research."
     ], [
       "A focused initial mandate",
-      "Individual GBP/GBX stocks, an eligibility constraint based on the Trading 212 Stocks & Shares ISA universe, and deterministic exclusions for defence, weapons and oil activities."
+      "Individual GBX stocks from the current live Trading 212 accessible universe, and deterministic exclusions for defence, weapons and oil activities."
     ], [
       "No promised performance",
       "Models and research can be wrong. Historical validation and independent challenge are tools for investigation, not guarantees of future returns."

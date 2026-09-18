@@ -1,4 +1,6 @@
 .venv/
+.venv-tradingagents/
+.venv-ai-hedge-fund/
 __pycache__/
 *.py[cod]
 .pytest_cache/

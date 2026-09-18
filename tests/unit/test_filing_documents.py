@@ -840,7 +840,7 @@ def prepare_snapshot_builder(monkeypatch, *, failing_document=False):
             return operation()
 
     class Market:
-        def __init__(self, *args):
+        def __init__(self, *args, usage_mode=None):
             pass
 
         def fetch(self, identifiers, dataset, snapshot_id, now):
@@ -872,7 +872,7 @@ def prepare_snapshot_builder(monkeypatch, *, failing_document=False):
         def filings(self, *args):
             return ()
 
-    def document_factory(key, admission, *, storage_hosts):
+    def document_factory(key, admission, *, storage_hosts, usage_mode=None):
         assert key == "synthetic-key" and storage_hosts == (REVIEW,)
         transport = FixtureTransport()
         if failing_document:

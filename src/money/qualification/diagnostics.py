@@ -9,11 +9,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.qualification.core import QualificationContext, fingerprint
 from money.qualification.universe_policy import RETIRED_BLOCKERS, UNIVERSE_POLICY_VERSION
 from money.qualification.universe_status import live_metadata_state
 from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import utc_now
+from money.usage_policy import USAGE_POLICY_VERSION, UsageMode, usage_mode
 
 # Dependency edges describe prerequisites, not unconditional future success.
 STAGES = {
@@ -43,6 +45,8 @@ STAGES = {
 BLOCKER_STAGE = {
     "TRADING212_LIVE_METADATA_REQUIRED": "live_metadata",
     "CH_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED": "supplemental_evidence",
+    "OFFICIAL_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED": "supplemental_evidence",
+    "AUTHORITATIVE_ISSUER_IDENTITY_AND_JURISDICTION_REQUIRED": "identity",
     "BULK_UNIVERSE_NO_QUALIFIED_MEMBERS": "eligibility",
     "QUALIFIED_INSTRUMENT_EVIDENCE_REQUIRED": "supplemental_evidence",
     "LOCAL_INFERENCE_NOT_HOSTED_QUALIFIED": "remote_inference",
@@ -58,6 +62,8 @@ BLOCKER_STAGE = {
     "BUNDLE_OR_ACCEPTANCE_FAILED": "manifest",
     "RELEASE_APPROVAL_REQUIRED": "release",
     "QUALIFICATION_STAGE_RESULTS_STALE": "manifest",
+    "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED": "provider_rights",
+    "PROVIDER_DATASET_QUALIFICATION_REQUIRED": "provider_enrichment",
 }
 
 CATEGORIES = {
@@ -102,6 +108,10 @@ def write_qualification_diagnostics(
     """Read saved state without network, advancing stages, or mutating approvals."""
     saved, source_hash = read_master(ctx)
     master = saved if master is None else master
+    if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+        from money.qualification.research_testing import write_research_diagnostics
+
+        return write_research_diagnostics(ctx, master, report)
     report = report if report is not None else ctx.read_json("status.json") or {}
     # Historical runner reports are audit records. Retired policy requirements
     # are not nodes in the current DAG and are never translated into approvals.
@@ -109,6 +119,27 @@ def write_qualification_diagnostics(
         item for item in report.get("blockers", [])
         if item.get("code") not in RETIRED_BLOCKERS
     ]}
+    personal = usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH
+    official = issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+    if official:
+        report = {**report, "blockers": [
+            {**item, "code": "OFFICIAL_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED",
+             "action": "Qualify replacement official filing/financial documents through SupplementalReview and source admission; Companies House is not selected."}
+            if item.get("code") == "CH_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED" else item
+            for item in report["blockers"]
+        ]}
+    rights_warnings = []
+    if personal:
+        remaining = []
+        for item in report["blockers"]:
+            code = item.get("code", "")
+            if code.startswith(("PROVIDER_RIGHTS_REVIEW_REQUIRED", "ETHICAL_SOURCE_RIGHTS_REVIEW_REQUIRED")):
+                rights_warnings.append(item)
+            elif code == "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED":
+                remaining.append({**item, "code": "PROVIDER_DATASET_QUALIFICATION_REQUIRED"})
+            else:
+                remaining.append(item)
+        report = {**report, "blockers": remaining}
     metadata = live_metadata_state(ctx, master)
     summary = master.get("summary") or {}
     progress = ctx.read_json("outputs/universe-enrichment-progress.json") or {}
@@ -120,6 +151,11 @@ def write_qualification_diagnostics(
         else recorded_mode
     )
     stages = dict(STAGES)
+    if personal:
+        for name in ("ethical_evidence", "eligibility", "supplemental_evidence"):
+            stages[name] = tuple(item for item in stages[name] if item != "provider_rights")
+        # Strict rights review is still a commercial/public release dependency.
+        stages["release"] = (*stages["release"], "provider_rights")
     if enabled:
         stages["qlib"] = ("supplemental_evidence",)
         stages["first_pass"] = (*stages["first_pass"], "qlib")
@@ -160,10 +196,21 @@ def write_qualification_diagnostics(
                 if ethical_counts["UNKNOWN"] else ["AUTOMATIC_RETRY"]
             )
             nodes[-1]["action"] = (
-                "Run one machine screening per verified issuer using globally rights-approved evidence. "
+                "Run one machine screening per verified issuer using source-use-admissible evidence. "
                 "Reuse PASS; exclude FAIL. Human evidence resolution is only required for UNKNOWN/conflicts, "
                 "not a second ethical approval."
             )
+        if name == "provider_rights" and personal:
+            nodes[-1].update({
+                "state": "UNVERIFIED_PERSONAL_USE_AUDIT_ONLY",
+                "classification": ["DOWNSTREAM/DERIVED"],
+                "blocking_for_personal_research": False,
+                "commercial_public_release_blocked": True,
+                "reported_warnings": rights_warnings,
+                "action": "Retain provider/dataset/endpoint attribution and usage audit. "
+                "No manual signature is required for local personal research. "
+                "Obtain strict reviewed rights before commercial/public release; no raw-data redistribution.",
+            })
     mapped_codes = {code for node in nodes for code in node["reported_blockers"]}
     for item in report.get("blockers", []):
         if item.get("code") not in mapped_codes:
@@ -184,6 +231,8 @@ def write_qualification_diagnostics(
     result = {
         "version": "money-qualification-causality-v2",
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "usage_policy_version": USAGE_POLICY_VERSION,
+        "usage_mode": usage_mode(ctx.environ).value,
         "scope": "DIAGNOSTICS_ONLY",
         "generated_at": ctx.now.isoformat(),
         "universe_sha256": source_hash,
@@ -251,6 +300,33 @@ def write_qualification_diagnostics(
         f"Provider progress is recorded in outputs/universe-enrichment-progress.json (remaining unserviced: {progress.get('remaining_unserviced', 'not computed')}). Budget estimates are lower bounds, not a promise of access or qualification.",
         "No approval, trade, deployment change or production manifest is created by these diagnostics.",
     ]
+    if personal:
+        lines = [
+            "2. Explicit PERSONAL_RESEARCH uses UNVERIFIED_PERSONAL_USE audit metadata, not licence approval. "
+            "Unsigned provider-rights reviews are non-blocking locally. Keep provider/endpoint/dataset "
+            "attribution and source references; no redistribution, public raw display, resale or external sharing. "
+            "Commercial/public release and production manifests still require strict reviewed rights."
+            if line.startswith("2. Complete global provider-rights") else line
+            for line in lines
+        ]
+        lines = [
+            line.replace("sh -c '", "sh -c 'MONEY_USAGE_MODE=personal_research ")
+            for line in lines
+        ]
+    if official:
+        lines = [
+            line.replace("{eodhd,companies-house}", "{eodhd,official-issuer}")
+            .replace("CH_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED", "OFFICIAL_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED")
+            .replace("up to four relevant accounts filing documents in inputs/financial-documents.json where applicable",
+                     "exact official_disclosures proofs and actual filing/financial observations admitted through inputs/supplemental-sources.json")
+            .replace("sh -c '", "sh -c 'MONEY_ISSUER_SOURCE_POLICY=official_disclosures ")
+            for line in lines
+        ]
+        lines[5:5] = [
+            "Issuer source policy: official_disclosures. No Companies House API, key or review is required. "
+            "Exact official issuer identity/jurisdiction, qualified filing/financial facts, currency, "
+            "technical extraction and PIT evidence still are. Capturing a document does not qualify it.", "",
+        ]
     selected = ctx.read_json("outputs/first-qualification-candidate.json") or {}
     if (
         selected.get("universe_policy_version") == UNIVERSE_POLICY_VERSION
@@ -296,9 +372,8 @@ def main() -> int:
             write_native_diagnosis(ctx)
             result = write_qualification_diagnostics(ctx, master=master)
         print("DIAGNOSTICS PREPARED — no qualification or approval granted")
-        print(
-            f"Recorded GBX stocks: {result['qualification_counts_as_recorded'].get('gbx_stocks', 'unknown')}"
-        )
+        counts = result["qualification_counts_as_recorded"]
+        print(f"Recorded GBP/GBX stocks: {counts.get('gbp_gbx_stocks', 'unknown')}")
         print("Review outputs/NEXT_ACTIONS.md and outputs/qualification-blocker-dag.json")
         return 0
     except Exception:

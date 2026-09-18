@@ -93,6 +93,22 @@ def test_fresh_directory_has_no_migration(ctx: QualificationContext) -> None:
     assert ctx.read_bytes(JOURNAL) is None
 
 
+def test_usage_scope_switch_rebuilds_derived_state_without_changing_raw_or_reviews(ctx):
+    seed(ctx, UNIVERSE_POLICY_VERSION)
+    ctx.write_bytes("inputs/provider-rights/eodhd.json", b'{"status":"UNRESOLVED"}')
+    raw_ref = ctx.artifact(b"synthetic raw provider bytes")
+    ctx.environ = {"MONEY_USAGE_MODE": "personal_research"}
+    first = ensure_universe_policy(ctx)
+    assert first["rebuilt"]
+    assert ctx.read_json(MODE)["usage_mode"] == "PERSONAL_RESEARCH"
+    assert not ensure_universe_policy(ctx)["rebuilt"]
+    ctx.environ = {}
+    assert ensure_universe_policy(ctx)["rebuilt"]
+    assert ctx.read_json(MODE)["usage_mode"] == "HOSTED_COMMERCIAL_PRODUCTION"
+    assert ctx.verify_artifact(*raw_ref) == b"synthetic raw provider bytes"
+    assert ctx.read_bytes("inputs/provider-rights/eodhd.json") == b'{"status":"UNRESOLVED"}'
+
+
 @pytest.mark.parametrize("location", ["outputs/universe-provenance.json", "embedded"])
 def test_preserved_replay_source_contains_no_classification_or_approvals(
     ctx: QualificationContext, location: str

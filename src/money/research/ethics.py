@@ -24,6 +24,7 @@ from money.schemas.contracts import (
     EthicalClearance,
     content_hash,
 )
+from money.usage_policy import PersonalUseAudit
 
 ETHICAL_POLICY_VERSION: Literal["money-issuer-ethical-screening-v1"] = (
     "money-issuer-ethical-screening-v1"
@@ -74,12 +75,23 @@ class EthicalEvidence(Contract):
 
 
 class GlobalSourceApproval(Contract):
-    """A reference to existing global rights approval, never a per-issuer review."""
+    """Global source-use basis; the legacy name does not imply personal approval."""
 
     provider: str = Field(min_length=1, max_length=100)
     evidence_hashes: tuple[SHA256, ...] = Field(min_length=1)
     permitted_use: Literal["ethical-research"] = "ethical-research"
     valid_until: AwareDatetime
+    rights_status: Literal["REVIEWED", "UNVERIFIED_PERSONAL_USE"] = "REVIEWED"
+    personal_use: PersonalUseAudit | None = None
+
+    @model_validator(mode="after")
+    def explicit_source_use_basis(self) -> Self:
+        if self.rights_status == "UNVERIFIED_PERSONAL_USE":
+            if self.personal_use is None or self.personal_use.provider != self.provider:
+                raise ValueError("ETHICAL_PERSONAL_USE_AUDIT_REQUIRED")
+        elif self.personal_use is not None:
+            raise ValueError("ETHICAL_PERSONAL_USE_IS_NOT_REVIEWED_APPROVAL")
+        return self
 
 
 class EthicalCitation(Contract):
@@ -334,7 +346,8 @@ def screen_issuer(
 ) -> IssuerScreening:
     """Screen once or reuse unchanged, unexpired issuer evidence; never self-sign.
 
-    Source rights must already be globally approved. Their references are checked
+    Source use must have a global reviewed or explicit restricted-personal basis.
+    Unverified personal use is not licence approval. Its references are checked
     at use time; renewing an unchanged source approval does not force the same
     ethical question to be asked again. A material document/identity/policy change
     invalidates the cache, even when no evaluator is currently available.

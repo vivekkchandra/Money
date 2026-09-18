@@ -5,6 +5,8 @@ import { Badge, DataRecord, FirmReportCard, JobList, safeSourceUrl } from "@/com
 
 describe("research mandate", () => {
   it("accepts the default and narrower capital/horizon assumptions", () => {
+    expect(DEFAULT_MANDATE.account_type).toBeNull();
+    expect(DEFAULT_MANDATE.quote_currencies).toEqual(["GBX"]);
     expect(validateJobInput({ ticker: "demo.l", mandate: DEFAULT_MANDATE })?.ticker).toBe("DEMO.L");
     expect(validateJobInput({ ticker: "DEMO.L", mandate: { ...DEFAULT_MANDATE, maximum_capital_gbp: "100", maximum_horizon_days: 10 } })).not.toBeNull();
   });

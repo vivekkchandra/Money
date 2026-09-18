@@ -12,9 +12,11 @@ import os
 from typing import Any
 from uuid import uuid4
 
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.qualification.core import QualificationContext
+from money.usage_policy import UsageMode, usage_mode
 
-UNIVERSE_POLICY_VERSION = "money-t212-gbx-stock-universe-v4"
+UNIVERSE_POLICY_VERSION = "money-t212-gbp-gbx-research-universe-v7"
 MAXIMUM_PROJECTION_BYTES = 64_000_000
 MODE = "state/bulk-universe-mode.json"
 JOURNAL = "state/universe-policy-migration.json"
@@ -26,6 +28,7 @@ RETIRED_BLOCKERS = frozenset(
 # Never derive deletion/move targets from operator input or persisted paths.
 # The marker is last so interrupted old-policy migrations remain detectable.
 DERIVED_PATHS = (
+    "outputs/research-admission.json",
     "outputs/trading212-gbx-stock-universe.json",
     "outputs/trading212-gbx-stock-universe.csv",
     "outputs/uk-isa-stock-universe.json",
@@ -118,6 +121,30 @@ def ensure_universe_policy(ctx: QualificationContext, *, force: bool = False) ->
         if relative.endswith(".json")
         and (_object(raw) or {}).get("universe_policy_version") != UNIVERSE_POLICY_VERSION
     ]
+    source_policy_paths = {
+        "outputs/trading212-gbx-stock-universe.json",
+        "outputs/uk-isa-stock-universe.json",
+        "outputs/universe-provenance.json",
+        "outputs/universe-review-queue.json",
+        "outputs/providers-result.json",
+        "state/provider-stage.json",
+    }
+    for relative in source_policy_paths.intersection(existing):
+        document = _object(existing[relative]) or {}
+        # A missing marker or a partially migrated projection cannot silently
+        # reinstate the former source choice. Raw evidence remains untouched.
+        if document.get("issuer_source_policy", IssuerSourcePolicy.COMPANIES_HOUSE) != issuer_source_policy(ctx.environ):
+            mismatches.append(relative)
+    # Raw observations are reusable across use modes, admission decisions are not.
+    marker = _object(existing.get(MODE)) or {}
+    if MODE in existing and marker.get(
+        "usage_mode", UsageMode.HOSTED_COMMERCIAL_PRODUCTION
+    ) != usage_mode(ctx.environ):
+        mismatches.append(MODE)
+    if MODE in existing and marker.get(
+        "issuer_source_policy", IssuerSourcePolicy.COMPANIES_HOUSE
+    ) != issuer_source_policy(ctx.environ):
+        mismatches.append(MODE)
     # CSV has no version field; an orphan projection cannot be authoritative.
     orphan_csv = any(
         f"outputs/{stem}.csv" in existing and f"outputs/{stem}.json" not in existing
@@ -177,7 +204,12 @@ def ensure_universe_policy(ctx: QualificationContext, *, force: bool = False) ->
     if rebuild or MODE not in existing:
         ctx.write_json(
             MODE,
-            {"mode": "bulk-universe", "universe_policy_version": UNIVERSE_POLICY_VERSION},
+            {
+                "mode": "bulk-universe",
+                "universe_policy_version": UNIVERSE_POLICY_VERSION,
+                "usage_mode": usage_mode(ctx.environ),
+                "issuer_source_policy": issuer_source_policy(ctx.environ),
+            },
         )
     if rebuild:
         receipt["status"] = "COMPLETE"

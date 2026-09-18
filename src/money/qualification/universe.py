@@ -1,4 +1,4 @@
-"""Bulk, read-only GBX stock discovery and evidence admission, never trading authority.
+"""Bulk GBP/GBX research admission, separate from strict release qualification.
 
 Metadata membership, technical credential provenance, evidence rights and ethical
 coverage are different facts. None is inferred from the others. The master file
@@ -28,6 +28,7 @@ from money.adapters.eligibility import ELIGIBILITY_MAXIMUM_AGE, eligibility_fail
 from money.data.identifiers import InstrumentIdentifiers
 from money.data.live_eligibility import EligibilityReview
 from money.data.qualification import ProviderQualification
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.data.uk.live import Trading212MetadataProvider
 from money.qualification.core import QualificationContext, json_bytes
 from money.qualification.universe_policy import UNIVERSE_POLICY_VERSION, ensure_universe_policy
@@ -40,6 +41,7 @@ from money.schemas.contracts import (
     ResearchMandate,
     utc_now,
 )
+from money.usage_policy import USAGE_POLICY_VERSION, UsageMode, usage_mode
 
 MASTER = "outputs/trading212-gbx-stock-universe.json"
 LEGACY_MASTER = "outputs/uk-isa-stock-universe.json"
@@ -49,7 +51,10 @@ MAX_MASTER_BYTES = 64_000_000
 MAX_BROKER_RESPONSE_BYTES = 20_000_000
 BROKER_RESPONSE_CHUNK_BYTES = 1_500_000
 UNIVERSE_VERSION = UNIVERSE_POLICY_VERSION
-INITIAL_FILTER = {"instrument_type": "STOCK", "quote_currency": "GBX", "venue_required": False}
+INITIAL_FILTER = {
+    "instrument_type": "STOCK", "quote_currencies": ["GBP", "GBX"],
+    "venue_required": False, "company_enrichment_required": False,
+}
 
 
 def _stamp() -> dict[str, Any]:
@@ -141,8 +146,8 @@ def prepare_bulk_inputs(ctx: QualificationContext, binding: str | None) -> None:
 These inputs are unsigned. Discovery never approves them. Existing historical
 per-stock preparation is not selected by this workflow.
 
-Initial membership requires only STOCK + GBX in the current live Trading 212
-accessible-instruments response. GBP is not admitted. Venue, MIC, country and
+Initial research membership requires STOCK + GBP/GBX in the current live Trading 212
+accessible-instruments response, a broker id and non-conflicting basic identity. Venue, MIC, country and
 ISIN prefix are not membership requirements; genuine identity conflicts still
 remain unresolved. Membership alone approves none of the reviews below.
 
@@ -157,14 +162,14 @@ remain unresolved. Membership alone approves none of the reviews below.
   exact identity, source, original dates and evidence references. Cached provider
   evidence is also consumed automatically under current global source rights.
   One machine screening per verified issuer records PASS, FAIL or UNKNOWN and
-  checks every exclusion. Only PASS proceeds. No second reviewer is required.
+  checks every exclusion. Ethics is optional research annotation; no result blocks research.
   MONEY_ETHICAL_CLEARANCE_DAYS defaults to 30; live broker freshness stays 24h.
   See outputs/ethical-screenings.json and outputs/ethics-work-queue.json.
 - `ethics.json`: legacy optional signed screening evidence, preserved unchanged.
   One actual reviewer is sufficient; new machine screening does not require it.
 - `supplemental.json`: instruments keyed by ISIN may reference existing
-  independently reviewed SupplementalReview files. Full research still needs
-  approved spread/cost/action/PIT/financial evidence. No individual template is
+  independently reviewed SupplementalReview files for strict production qualification.
+  Research/backtests require real market data only when used. No individual template is
   generated until an operator needs to resolve a genuine exception.
 
 Non-ethical independent reviews retain their existing approval contracts.
@@ -316,16 +321,17 @@ def _large_write(ctx: QualificationContext, path: str, raw: bytes) -> None:
 
 
 def _qualify_rights(ctx: QualificationContext, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Existing real probe/admission machinery, independently reviewed rights."""
+    """Technical probes remain mandatory; manual rights approval is scope-specific."""
     from money.qualification.providers import _rights_template
     from money.qualification.universe_providers import qualify_bulk_provider_reports
 
     qualified: dict[str, Any] = {}
-    for provider in ("eodhd", "companies-house"):
+    providers = ("eodhd",) if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES else ("eodhd", "companies-house")
+    for provider in providers:
         path = f"inputs/provider-rights/{provider}.json"
         ctx.template(path, _rights_template(provider))
         rights = ctx.read_json(path)
-        if not isinstance(rights, dict) or rights.get("status") != "REVIEWED":
+        if not isinstance(rights, dict):
             continue
         qualification = qualify_bulk_provider_reports(ctx, provider, rows, rights)
         if qualification is not None:
@@ -418,7 +424,16 @@ def classify_row(
             row["ethical_state"] = "PASS"
     required = {"eodhd"}
     jurisdiction = row.get("issuer_facts", {}).get("CountryISO")
-    if jurisdiction == "GB":
+    if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+        from money.qualification.issuer_sources import apply_issuer_sources
+
+        # Re-validate the actual issuer/security join and source bytes; a status
+        # copied from an old cache or another policy is not identity evidence.
+        if not apply_issuer_sources(ctx, row) or row.get("issuer_identity_state") != "VERIFIED":
+            if state == "QUALIFIED":
+                state = "UNRESOLVED_PROVIDER_MAPPING"
+            reasons.append("AUTHORITATIVE_ISSUER_IDENTITY_AND_JURISDICTION_REQUIRED")
+    elif jurisdiction == "GB":
         required.add("companies-house")
         if (
             row.get("companies_house_state") != "MAPPED"
@@ -442,7 +457,11 @@ def classify_row(
     if not required <= rights.keys():
         if state == "QUALIFIED":
             state = "UNRESOLVED_PROVIDER_MAPPING"
-        reasons.append("PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED")
+        reasons.append(
+            "PROVIDER_DATASET_QUALIFICATION_REQUIRED"
+            if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH
+            else "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED"
+        )
     provider_expiries = []
     for provider in required & rights.keys():
         try:
@@ -450,7 +469,7 @@ def classify_row(
             for dataset in (
                 ("ohlcv", "corporate_action", "news") if provider == "eodhd" else ("filing",)
             ):
-                qualification.require(dataset, ctx.now)
+                qualification.require(dataset, ctx.now, usage_mode=usage_mode(ctx.environ))
             if (
                 row["quote_currency"] not in qualification.currencies
                 or "GB" not in qualification.geography
@@ -631,9 +650,22 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
 
     return {
         "raw_instruments": len(rows),
-        "gbx_stocks": len(relevant),
-        "identity_valid": sum(r.get("identity_valid") is True for r in relevant),
-        "identity_unresolved": sum(r.get("identity_valid") is not True for r in relevant),
+        "gbp_gbx_stocks": len(relevant),
+        "gbx_stocks": sum(r.get("quote_currency") == "GBX" for r in relevant),
+        "gbp_stocks": sum(r.get("quote_currency") == "GBP" for r in relevant),
+        "research_eligible": sum(r.get("research_state") == "RESEARCH_ELIGIBLE" for r in relevant),
+        "research_identity_conflicts": sum(r.get("basic_identity_valid") is not True for r in relevant),
+        "enrichment_coverage": {
+            source: dict(sorted(Counter(
+                r.get("enrichment_status", {}).get(source, "UNAVAILABLE") for r in relevant
+            ).items()))
+            for source in (
+                "eodhd_market_data", "eodhd_fundamentals", "companies_house",
+                "official_disclosures", "news",
+            )
+        },
+        "identity_valid": sum(r.get("basic_identity_valid", r.get("identity_valid")) is True for r in relevant),
+        "identity_unresolved": sum(r.get("basic_identity_valid", r.get("identity_valid")) is not True for r in relevant),
         "provider_stage_input_count": sum(
             r.get("provider_enrichment_input") is True for r in relevant
         ),
@@ -708,6 +740,10 @@ def _csv(rows: list[dict[str, Any]]) -> bytes:
         "companies_house_number",
         "eodhd_symbol",
         "qualification_state",
+        "research_state",
+        "research_reasons",
+        "ethical_status",
+        "enrichment_status",
         "ethical_state",
         "evidence_freshness",
         "reasons",
@@ -730,6 +766,10 @@ def _csv(rows: list[dict[str, Any]]) -> bytes:
 
 def _review_work(rows: list[dict[str, Any]], provenance: dict[str, Any]) -> dict[str, Any]:
     """Bulk factual dossiers and distinct global reviews, never signed inputs."""
+    issuer_provider = (
+        "official-issuer" if provenance.get("issuer_source_policy")
+        == IssuerSourcePolicy.OFFICIAL_DISCLOSURES else "companies-house"
+    )
     return {
         "version": "money-bulk-review-work-v1",
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
@@ -740,7 +780,7 @@ def _review_work(rows: list[dict[str, Any]], provenance: dict[str, Any]) -> dict
             "provider_rights": {
                 "review_files": [
                     "inputs/provider-rights/eodhd.json",
-                    "inputs/provider-rights/companies-house.json",
+                    f"inputs/provider-rights/{issuer_provider}.json",
                 ],
                 "action": "Independently substantiate permitted use, retention and redistribution. API success is not permission; no per-stock rights signatures are requested.",
             },
@@ -965,6 +1005,8 @@ def _provider_projection(master: dict[str, Any]) -> dict[str, Any]:
     return {
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "stage": "UNIVERSE_ENRICHMENT_ONLY",
+        "usage_mode": master.get("usage_mode", UsageMode.HOSTED_COMMERCIAL_PRODUCTION),
+        "issuer_source_policy": master.get("issuer_source_policy", IssuerSourcePolicy.COMPANIES_HOUSE),
         "scope": master.get("scope", "LIVE_RETRIEVAL"),
         "status": master.get("status", "REFRESH_IN_PROGRESS"),
         "complete": False,
@@ -972,8 +1014,13 @@ def _provider_projection(master: dict[str, Any]) -> dict[str, Any]:
         "summary": summary,
         "provider_stage_inputs": candidates,
         "provider_stage_input_count": len(candidates),
-        "candidate_counts": {"GBX": summary.get("gbx_stocks", 0)},
-        "eligible_counts": {"GBX": len(reviews)},
+        "candidate_counts": {"GBX": summary.get("gbx_stocks", 0), "GBP": summary.get("gbp_stocks", 0)},
+        "eligible_counts": {
+            currency: sum(review["metadata"]["quote_currency"] == currency for review in reviews)
+            for currency in ("GBP", "GBX")
+        },
+        "research_eligible": [row for row in master.get("stocks", []) if row.get("research_state") == "RESEARCH_ELIGIBLE"],
+        "research_eligible_count": summary.get("research_eligible", 0),
         "unresolved_candidate_count": summary.get("unresolved", 0),
         "instruments": [],
         "eligibility_reviews": reviews,
@@ -1003,6 +1050,12 @@ def _update_universe_diagnostics(
     from money.qualification.universe_status import reconcile_universe_status
 
     write_enrichment_progress(ctx, master)
+    if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+        from money.qualification.research_testing import write_research_diagnostics
+
+        reconcile_universe_status(ctx, master, live_refresh=master.get("scope") == "LIVE_RETRIEVAL")
+        write_research_diagnostics(ctx, master)
+        return
     prepare_universe_reviews(
         ctx, master.get("stocks", []), master.get("provenance", {}),
         fetch_documents=capture_documents,
@@ -1024,6 +1077,10 @@ def finalize_universe(
     capture_documents: bool = False,
 ) -> dict[str, Any]:
     """Refresh live membership, optionally enrich venues, and isolate bad rows."""
+    from money.qualification.universe_admission import (
+        classify_research_admission,
+        optional_enrichment_status,
+    )
     from money.qualification.universe_normalize import normalize_universe
     from money.qualification.universe_progress import enrichment_order, record_network_progress
     from money.qualification.universe_providers import BulkProviderEnricher
@@ -1032,10 +1089,12 @@ def finalize_universe(
         raise ValueError("SAVED_MODE_CONFLICT")
     offline = replay_saved or reclassify_saved
     source_reference = None
-    if reclassify_saved:
+    if offline:
         prior = ctx.read_json("outputs/universe-provenance.json")
         if isinstance(prior, dict):
-            source_reference = prior.get("source_provenance") or ctx.artifact(prior)
+            source_reference = prior.get("source_provenance")
+            if source_reference is None and prior.get("scope") == "LIVE_RETRIEVAL":
+                source_reference = ctx.artifact(prior)
         else:
             preserved = ctx.read_json("state/universe-rebuild-source.json") or {}
             source_reference = preserved.get("source_provenance")
@@ -1048,7 +1107,10 @@ def finalize_universe(
         "SAVED_LIVE_DERIVED_RECLASSIFICATION" if reclassify_saved
         else "SAVED_RESPONSE_REPLAY_ONLY" if replay_saved else "LIVE_RETRIEVAL"
     )
-    _write_provider_projection(ctx, _provider_projection({"scope": scope_label}))
+    _write_provider_projection(ctx, _provider_projection({
+        "scope": scope_label, "usage_mode": usage_mode(ctx.environ),
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
+    }))
     try:
         if offline:
             if broker is not None or enricher is not None:
@@ -1100,6 +1162,8 @@ def finalize_universe(
         failed = {
             "version": UNIVERSE_VERSION,
             "universe_policy_version": UNIVERSE_POLICY_VERSION,
+            "usage_mode": usage_mode(ctx.environ),
+            "issuer_source_policy": issuer_source_policy(ctx.environ),
             "scope": scope_label,
             "initial_filter": INITIAL_FILTER,
             "status": "REFRESH_FAILED",
@@ -1116,6 +1180,7 @@ def finalize_universe(
             "outputs/universe-review-queue.json",
             {
                 "universe_policy_version": UNIVERSE_POLICY_VERSION,
+                "issuer_source_policy": issuer_source_policy(ctx.environ),
                 "status": "REFRESH_FAILED",
                 "venue_review_required": False,
                 "instruments": [],
@@ -1142,15 +1207,63 @@ def finalize_universe(
     rows = normalize_universe(
         instruments, exchanges, observed_at=observed, venue_reviews=_venues(ctx)
     )
+    provenance = {
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "usage_policy_version": USAGE_POLICY_VERSION,
+        "usage_mode": usage_mode(ctx.environ),
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
+        "scope": scope_label,
+        "credential_binding_verified_this_run": not offline and binding is not None,
+        "retrieval_environment": "live",
+        "retrieved_at": observed.isoformat(),
+        "reclassified_at": ctx.now.isoformat(),
+        "credential_binding_sha256": binding,
+        "instrument_response_hash": hashlib.sha256(raw_instruments).hexdigest(),
+        "exchange_response_hash": hashlib.sha256(raw_exchanges).hexdigest()
+        if raw_exchanges is not None else None,
+        "exchange_enrichment_status": "RETRIEVED" if raw_exchanges is not None else "UNAVAILABLE_OR_INVALID",
+        "initial_filter": INITIAL_FILTER,
+        "response_artifacts": responses,
+        "raw_instruments": len(rows),
+        "gbx_stocks": sum(r["universe_member"] and r["quote_currency"] == "GBX" for r in rows),
+        "gbp_stocks": sum(r["universe_member"] and r["quote_currency"] == "GBP" for r in rows),
+        "gbp_gbx_stocks": sum(r["universe_member"] for r in rows),
+        **({"source_provenance": source_reference} if source_reference is not None else {}),
+    }
+    for row in rows:
+        row["broker_response_refs"] = responses
+        row["provider_enrichment_input"] = row["universe_member"] and row["identity_valid"]
+        classify_research_admission(row, now=ctx.now, authenticated_live=not offline and binding is not None)
+        row["enrichment_status"] = optional_enrichment_status(row, ctx.environ, now=ctx.now)
+    # Persist admission before slow best-effort provider I/O. This is a genuine
+    # broker-only checkpoint, not an enrichment or production success claim.
+    admission_checkpoint = {
+        "version": UNIVERSE_VERSION,
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "usage_mode": usage_mode(ctx.environ),
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
+        "scope": scope_label,
+        "status": "RECLASSIFIED" if reclassify_saved else "REPLAYED" if replay_saved else "REFRESHED",
+        "observed_at": observed.isoformat(),
+        "valid_until": (observed + ELIGIBILITY_MAXIMUM_AGE).isoformat(),
+        "production_qualified": False,
+        "enrichment_complete": False,
+        "provenance": provenance,
+        "universe_provenance": ctx.artifact(provenance),
+        "summary": _summary(rows, ctx.now),
+        "stocks": rows,
+        "eligibility_reviews": [],
+    }
+    _large_write(ctx, "outputs/research-admission.json", json_bytes(admission_checkpoint))
+    _large_write(ctx, MASTER, json_bytes(admission_checkpoint))
+    ctx.write_json("outputs/universe-provenance.json", provenance)
+    _write_provider_projection(ctx, _provider_projection(admission_checkpoint))
     enricher = enricher or BulkProviderEnricher(
         ctx,
         max_requests=0 if offline else max_requests,
         requests_per_minute=requests_per_minute,
         offline=offline,
     )
-    for row in rows:
-        row["broker_response_refs"] = responses
-        row["provider_enrichment_input"] = row["universe_member"] and row["identity_valid"]
     for index in enrichment_order(ctx, rows, binding, replay=offline):
         row = rows[index]
         before = getattr(enricher, "requests_used", 0)
@@ -1176,34 +1289,40 @@ def finalize_universe(
                 qualification_state="UNRESOLVED_IDENTITY",
                 reasons=[*row.get("reasons", []), "CANONICAL_TICKER_COLLISION"],
             )
-    rights = _qualify_rights(ctx, rows)
-    ethics = _ethics(ctx, rows, offline=offline)
+    personal = usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH
+    rights = {} if personal else _qualify_rights(ctx, rows)
+    # Screening is annotation. Do not acquire company evidence just to grant
+    # research admission; the optional cache can still expose existing results.
+    if personal:
+        try:
+            ethics = _ethics(ctx, rows, offline=True)
+        except (ValueError, OSError, KeyError, TypeError):
+            ethics = {}  # Optional annotation failed; no ethical PASS is inferred.
+    else:
+        ethics = _ethics(ctx, rows, offline=offline)
     reviews = []
     for row in rows:
-        reviewed = classify_row(
-            ctx, row, ethics, rights, admission_allowed=not offline and binding is not None
-        )
+        if personal:
+            reviewed = None
+            # Do not run strict company/rights/ethics qualification merely to
+            # admit a research instrument. The separate commercial runner owns
+            # these gates; no personal snapshot can become release evidence.
+            row["production_qualification_state"] = "NOT_EVALUATED"
+            if row["universe_member"] and row["identity_valid"]:
+                row["qualification_state"] = "PRODUCTION_NOT_EVALUATED"
+                row["reasons"] = []
+            assessed = ethics.get(str(row.get("isin") or ""))
+            if assessed is not None:
+                row["ethical_state"] = assessed["clearance"].result
+                row["ethical_screening"] = assessed["clearance"].model_dump(mode="json")
+        else:
+            reviewed = classify_row(
+                ctx, row, ethics, rights, admission_allowed=not offline and binding is not None
+            )
         if reviewed is not None:
             reviews.append(reviewed.model_dump(mode="json"))
-    provenance = {
-        "universe_policy_version": UNIVERSE_POLICY_VERSION,
-        "scope": scope_label,
-        "credential_binding_verified_this_run": not offline and binding is not None,
-        "retrieval_environment": "live",
-        "retrieved_at": observed.isoformat(),
-        "reclassified_at": ctx.now.isoformat(),
-        "credential_binding_sha256": binding,
-        "instrument_response_hash": hashlib.sha256(raw_instruments).hexdigest(),
-        "exchange_response_hash": hashlib.sha256(raw_exchanges).hexdigest()
-        if raw_exchanges is not None
-        else None,
-        "exchange_enrichment_status": "RETRIEVED"
-        if raw_exchanges is not None
-        else "UNAVAILABLE_OR_INVALID",
-        "initial_filter": INITIAL_FILTER,
-        "response_artifacts": responses,
-        **({"source_provenance": source_reference} if reclassify_saved else {}),
-    }
+        classify_research_admission(row, now=ctx.now, authenticated_live=not offline and binding is not None)
+        row["enrichment_status"] = optional_enrichment_status(row, ctx.environ, now=ctx.now)
     summary = _summary(rows, ctx.now)
     summary["provider_requests_this_run"] = getattr(enricher, "requests_used", 0)
     provenance.update(
@@ -1212,6 +1331,8 @@ def finalize_universe(
             for key in (
                 "raw_instruments",
                 "gbx_stocks",
+                "gbp_stocks",
+                "gbp_gbx_stocks",
                 "venue_resolved",
                 "excluded",
                 "unresolved",
@@ -1234,6 +1355,9 @@ def finalize_universe(
     result = {
         "version": UNIVERSE_VERSION,
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "usage_policy_version": USAGE_POLICY_VERSION,
+        "usage_mode": usage_mode(ctx.environ),
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
         "scope": scope_label,
         "policy_migration": migration,
         "initial_filter": INITIAL_FILTER,
@@ -1241,10 +1365,12 @@ def finalize_universe(
         "observed_at": provenance["retrieved_at"],
         "valid_until": (_time(provenance["retrieved_at"]) + ELIGIBILITY_MAXIMUM_AGE).isoformat(),
         "production_qualified": False,
+        "enrichment_complete": True,
         "provenance": provenance,
         "summary": summary,
         "stocks": rows,
         "eligibility_reviews": reviews,
+        "research_eligible": [row for row in rows if row["research_state"] == "RESEARCH_ELIGIBLE"],
         "universe_artifact": membership,
         "universe_provenance": provenance_artifact,
         "provider_qualifications": list(rights.values()),
@@ -1254,13 +1380,19 @@ def finalize_universe(
     }
     queue = {
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "usage_mode": usage_mode(ctx.environ),
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
         "scope": scope_label,
         "credential_binding_sha256": binding,
         "bulk_evidence_work_file": "outputs/universe-review-work.json",
         "provider_rights_reviews": [
             "inputs/provider-rights/eodhd.json",
-            "inputs/provider-rights/companies-house.json",
+            "inputs/provider-rights/official-issuer.json"
+            if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+            else "inputs/provider-rights/companies-house.json",
         ],
+        "provider_rights_review_required": usage_mode(ctx.environ)
+        != UsageMode.PERSONAL_RESEARCH,
         "machine_enrichment": {
             "requests_this_run": summary["provider_requests_this_run"],
             "deferred": summary["provider_deferred"],
@@ -1293,13 +1425,14 @@ def finalize_universe(
                         "isin",
                         "name",
                         "qualification_state",
+                        "research_state",
                         "provider_reasons",
                         "provider_evidence",
                     )
                 },
                 "reasons": [
                     reason
-                    for reason in r.get("reasons", [])
+                    for reason in r.get("research_reasons" if personal else "reasons", [])
                     if reason
                     not in {
                         "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED",
@@ -1309,6 +1442,7 @@ def finalize_universe(
             for r in rows
             if r["universe_member"]
             and (
+                r["research_state"] != "RESEARCH_ELIGIBLE" if personal else
                 r["qualification_state"].startswith("UNRESOLVED_")
                 or r["qualification_state"] in {"EXPIRED", "STALE_EVIDENCE"}
             )
@@ -1317,8 +1451,22 @@ def finalize_universe(
     _large_write(ctx, MASTER, json_bytes(result))
     _large_write(ctx, MASTER_CSV, _csv(rows))
     _large_write(ctx, "outputs/universe-review-queue.json", json_bytes(queue))
+    work = (
+        {
+            "universe_policy_version": UNIVERSE_POLICY_VERSION,
+            "purpose": "RESEARCH_TESTING",
+            "research_eligible": summary["research_eligible"],
+            "company_enrichment_required": False,
+            "ethical_clearance_required": False,
+            "provider_manual_review_required": False,
+            "identity_exceptions": queue["instruments"],
+            "optional_enrichment_coverage": summary["enrichment_coverage"],
+            "production_qualified": False,
+        }
+        if personal else _review_work(rows, provenance)
+    )
     _large_write(
-        ctx, "outputs/universe-review-work.json", json_bytes(_review_work(rows, provenance))
+        ctx, "outputs/universe-review-work.json", json_bytes(work)
     )
     ctx.write_json(
         "outputs/universe-retrieval-facts.json",
@@ -1341,6 +1489,8 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
         _additional_sources,
         _filter_source_coverage,
         _financial_documents,
+        _official_financial_documents,
+        _provider_stage_complete,
         _verified_instrument,
     )
 
@@ -1365,11 +1515,12 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
                 continue
             row = rows_by_isin[review.identifiers.isin]
             foreign = None
-            if row.get("companies_house_state") == "NOT_APPLICABLE":
+            official = issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+            if official or row.get("companies_house_state") == "NOT_APPLICABLE":
                 country = row.get("issuer_facts", {}).get("CountryISO")
                 if (
                     not isinstance(country, str)
-                    or country == "GB"
+                    or (country == "GB" and not official)
                     or not re.fullmatch("[A-Z]{2}", country)
                 ):
                     raise ValueError("FOREIGN_ISSUER_PROOF_REQUIRED")
@@ -1383,13 +1534,16 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
                         "kind": "exact-provider-issuer-jurisdiction-v1",
                         "identifiers": review.identifiers.model_dump(mode="json"),
                         "registered_country": country,
+                        "issuer_company_number": row.get("issuer_company_number"),
+                        "issuer_source_evidence": row.get("issuer_source_evidence", []),
                         "provider_evidence": evidence,
                     }
                 )
                 refs.add(proof)
                 foreign = country, proof[0]
             instrument = _verified_instrument(
-                ctx, review, path, refs, foreign_issuer_evidence=foreign
+                ctx, review, path, refs, foreign_issuer_evidence=foreign,
+                issuer_company_number=row.get("issuer_company_number") if official else None,
             )
             if instrument is not None:
                 result["instruments"].append(instrument.model_dump(mode="json"))
@@ -1400,16 +1554,8 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     _financial_documents(ctx, result, refs)
     _additional_sources(ctx, result, refs)
     _filter_source_coverage(ctx, result)
-    result["complete"] = bool(
-        result["instruments"]
-        and {"eodhd", "companies-house"}
-        <= {q["provider"] for q in result["provider_qualifications"]}
-        and any(
-            q["provider"] == "companies-house" and "financial" in q["datasets"]
-            for q in result["provider_qualifications"]
-        )
-        and any(i["filing_documents"] for i in result["instruments"])
-    )
+    _official_financial_documents(ctx, result)
+    result["complete"] = _provider_stage_complete(ctx, result)
     if not reviews:
         ctx.block(
             "BULK_UNIVERSE_NO_QUALIFIED_MEMBERS",
@@ -1449,7 +1595,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        if not 1 <= args.max_provider_requests <= 100000 or not 1 <= args.requests_per_minute <= 60:
+        if not 0 <= args.max_provider_requests <= 100000 or not 1 <= args.requests_per_minute <= 60:
             raise ValueError("PROVIDER_BUDGET_INVALID")
         repo = Path(__file__).resolve().parents[3]
         selected_qlib = qlib_enabled(os.environ)
@@ -1473,19 +1619,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             "TRADING 212 SAVED RESPONSE REPLAY"
             if args.replay_saved or args.reclassify_saved
-            else "TRADING 212 LIVE GBX STOCK UNIVERSE"
+            else "TRADING 212 LIVE GBP/GBX RESEARCH UNIVERSE"
         )
         print(f"Universe policy: {UNIVERSE_POLICY_VERSION}")
         if result["status"] not in {"REFRESHED", "REPLAYED", "RECLASSIFIED"}:
             print("Live refresh failed; counts unavailable. No stale membership admitted.")
             return 2
         s = result["summary"]
-        print(f"Raw instruments: {s['raw_instruments']}\nGBX stocks: {s['gbx_stocks']}")
+        print(f"Raw instruments: {s['raw_instruments']}\nGBP/GBX stocks: {s['gbp_gbx_stocks']}")
+        print(f"GBP: {s['gbp_stocks']}; GBX: {s['gbx_stocks']}; RESEARCH_ELIGIBLE: {s['research_eligible']}")
         print(
             f"Identity valid: {s['identity_valid']}\nProvider-stage input count: {s['provider_stage_input_count']}"
         )
-        print(f"Venue resolved (informational only): {s['venue_resolved']}/{s['gbx_stocks']}")
-        print("\nQUALIFICATION")
+        print(f"Venue resolved (informational only): {s['venue_resolved']}/{s['gbp_gbx_stocks']}")
+        print("\nSTRICT PRODUCTION QUALIFICATION (not research admission)")
         labels = {
             "Qualified": "QUALIFIED",
             "Identity unresolved": "UNRESOLVED_IDENTITY",
@@ -1496,24 +1643,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         for label, state in labels.items():
             print(f"{label}: {s['states'].get(state, 0)}")
-        print(f"Ethical review required: {s['ethical_review_required']}")
-        print("\nISSUER ETHICAL SCREENING (candidate counts)")
+        print("\nOPTIONAL ETHICAL ANNOTATIONS (no research gate)")
         for state, count in s["ethical_screenings"].items():
             print(f"{state}: {count}")
+        print("\nOPTIONAL ENRICHMENT COVERAGE")
+        for source, counts in s["enrichment_coverage"].items():
+            print(f"{source}: {json.dumps(counts, sort_keys=True)}")
         print(
-            f"\nPROVIDERS\nEODHD mappings attempted: {s['eodhd_mapping_attempted']}/{s['gbx_stocks']} (network: {s['eodhd_lookups_network']}; cached: {s['eodhd_lookups_cached']})"
+            f"\nPROVIDERS\nEODHD mappings attempted: {s['eodhd_mapping_attempted']}/{s['gbp_gbx_stocks']} (network: {s['eodhd_lookups_network']}; cached: {s['eodhd_lookups_cached']})"
         )
-        print(f"EODHD mapped: {s['eodhd_mapped']}/{s['gbx_stocks']}")
+        print(f"EODHD mapped: {s['eodhd_mapped']}/{s['gbp_gbx_stocks']}")
         print(f"Provider requests this run: {s['provider_requests_this_run']}; deferred: {s['provider_deferred']}")
-        print(
-            f"Companies House mapped: {s['companies_house_mapped']}/{s['companies_house_applicable']} applicable; applicability unknown: {s['companies_house_applicability_unknown']}"
-        )
+        if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+            print("Issuer source: official disclosures; Companies House not selected or required")
+        else:
+            print(
+                f"Companies House mapped: {s['companies_house_mapped']}/{s['companies_house_applicable']} applicable; applicability unknown: {s['companies_house_applicability_unknown']}"
+            )
         for label, name in (
             ("Current OHLCV", "ohlcv"),
             ("Corporate actions", "corporate_action"),
             ("News", "news"),
         ):
-            print(f"{label}: {s['datasets'][name]}/{s['gbx_stocks']}")
+            print(f"{label}: {s['datasets'][name]}/{s['gbp_gbx_stocks']}")
         print("Universe qualification is not production/native/release qualification.")
         print("Bulk evidence and remaining reviews: outputs/universe-review-work.json")
         print("Provider progress: outputs/universe-enrichment-progress.json")
@@ -1522,8 +1674,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 "Saved-response replay only; original retrieval time preserved. No network access or eligibility approval."
             )
-        print("After resolving bulk review inputs, continue with:")
+        print("Continue research independently of optional company enrichment with:")
         mode_prefix = "" if selected_qlib else "MONEY_QLIB_ENABLED=false "
+        if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+            mode_prefix = "MONEY_USAGE_MODE=personal_research " + mode_prefix
+        if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+            mode_prefix = "MONEY_ISSUER_SOURCE_POLICY=official_disclosures " + mode_prefix
         print(
             f"railway run --service Money --environment production sh -c '{mode_prefix}MONEY_INFERENCE_CONFIG=data/configuration/ollama-inference.json uv run python scripts/build_live_qualification.py'"
         )

@@ -52,6 +52,10 @@ describe("bounded reviewed company catalogue", () => {
     expect(() => parseInstrumentSearch({ ...catalogue, mode: "demo" })).toThrow();
     expect(instrumentStatus(unavailable)).toContain("not verified");
     expect(instrumentStatus({ ...unavailable, eligibility: "VERIFIED_INELIGIBLE" })).toContain("Outside");
+    const notQualified = instrumentStatus({ ...stock, research_allowed: false });
+    expect(notQualified).toContain("research qualification incomplete");
+    expect(notQualified).not.toContain("eligibility verified");
+    expect(notQualified).not.toContain("ISA");
   });
   it("accepts the canonical API ticker length but rejects longer identifiers", () => {
     const ticker = "A".repeat(32);

@@ -5,7 +5,7 @@ export type ReviewedUniverseInstrument = Instrument & { source: string; provider
 export type UniversePage = { coverage: "reviewed_manifest"; mode: "live"; complete_broker_universe: false; total: number; offset: number; limit: number; evaluated_at: string; catalogue_hash: string; instruments: ReviewedUniverseInstrument[] } | { coverage: "previously_researched_only"; instruments: RecordData[] };
 
 export function parseUniverse(value: unknown): UniversePage {
-  const fail = (): never => { throw new Error("Verified ISA coverage is unavailable. Please retry."); };
+  const fail = (): never => { throw new Error("Qualified stock coverage is unavailable. Please retry."); };
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
   const data = value as Record<string, unknown>;
   if (data.coverage === "previously_researched_only") {

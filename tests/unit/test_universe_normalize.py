@@ -84,10 +84,10 @@ def test_names_do_not_replace_provider_classification() -> None:
     assert row["ethical_state"] == "NOT_YET_SCREENED"
 
 
-@pytest.mark.parametrize("currency", ["GBP", "USD", "EUR", "GBx", " GBX ", None])
-def test_every_non_gbx_quote_is_excluded(currency: str | None) -> None:
+@pytest.mark.parametrize("currency", ["USD", "EUR", "GBx", " GBX ", None])
+def test_every_non_gbp_gbx_quote_is_excluded(currency: str | None) -> None:
     row = normalized(instrument(currencyCode=currency))[0]
-    assert row["qualification_state"] == "EXCLUDED_NON_GBX"
+    assert row["qualification_state"] == "EXCLUDED_NON_GBP_GBX"
     assert row["universe_member"] is False
     assert row["identity_valid"] is False
 
@@ -214,7 +214,7 @@ def test_conflicting_or_duplicate_venue_reviews_do_not_approve_venue_or_block_me
 
 
 @pytest.mark.parametrize(
-    "changes", [{"isin": "GB00B63QSB30"}, {"isin": None}, {"ticker": None}, {"name": ""}]
+    "changes", [{"isin": "GB00B63QSB30"}, {"ticker": None}]
 )
 def test_one_invalid_instrument_does_not_block_valid_rows(changes: dict[str, Any]) -> None:
     rows = normalized(instrument(ticker="GOODl_EQ"), instrument(**changes), None, "malformed")

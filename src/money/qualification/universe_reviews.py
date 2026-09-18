@@ -19,10 +19,12 @@ from urllib.parse import urlsplit
 
 from money.data.provider_probes import ProviderAdmissionReview
 from money.data.security import ProviderFailure, SafeFetcher, SourceSecurityError
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.qualification.core import QualificationContext, fingerprint
 from money.qualification.providers import IndependentReview, _rights_template
 from money.qualification.universe_policy import UNIVERSE_POLICY_VERSION
 from money.schemas.contracts import EXCLUDED_ACTIVITIES, utc_now
+from money.usage_policy import PersonalUseAudit, UsageMode, usage_mode
 
 DOCUMENTS = {
     "trading212-instruments": "https://docs.trading212.com/api/instruments/instruments",
@@ -32,10 +34,20 @@ DOCUMENTS = {
         "https://developer.company-information.service.gov.uk/developer-guidelines"
     ),
 }
-PROVIDERS = ("eodhd", "companies-house")
+PROVIDERS = ("eodhd", "companies-house", "official-issuer")
 ETHICAL_DATASETS = {
     "eodhd": ["issuer-profile", "financial", "news"],
     "companies-house": ["company", "filing", "financial"],
+    "official-issuer": ["issuer-identity", "annual-report", "business-disclosure"],
+}
+SOURCE_ENDPOINTS = {
+    "eodhd": ("https://eodhd.com/api/fundamentals/{symbol}", "https://eodhd.com/api/news"),
+    "companies-house": (
+        "https://api.company-information.service.gov.uk/company/{number}",
+        "https://api.company-information.service.gov.uk/company/{number}/filing-history",
+        "https://document-api.company-information.service.gov.uk/document/{id}/content",
+    ),
+    "official-issuer": ("https://{verified-issuer-host}/{disclosure-path}",),
 }
 
 
@@ -60,7 +72,53 @@ def _evidence(ctx: QualificationContext, paths: Any) -> bool:
 
 
 def _rights(ctx: QualificationContext, provider: str) -> dict[str, Any]:
-    """Describe valid reviews without changing any review or provider state."""
+    """Keep rights knowledge separate from explicit, restricted personal use.
+
+    Personal use is a policy permission to run locally, not a legal opinion or
+    invented licence approval. Technical provider access and source identity are
+    still validated by their own consumers.
+    """
+    result = _reviewed_rights(ctx, provider)
+    result["rights_status"] = (
+        "REVIEWED" if result["provider_rights_current"] else "UNREVIEWED"
+    )
+    result["usage_mode"] = usage_mode(ctx.environ).value
+    result["admissible_datasets"] = list(result["approved_datasets"])
+    result["ethical_use_admissible"] = bool(result["approved_datasets"])
+    result["source_use_evidence_hashes"] = list(result["approval_evidence_hashes"])
+    result["usage_audit"] = None
+    if usage_mode(ctx.environ) != UsageMode.PERSONAL_RESEARCH or provider not in ETHICAL_DATASETS:
+        return result
+    references = tuple(
+        url for key, url in DOCUMENTS.items()
+        if key.startswith(provider)
+    )
+    audit = PersonalUseAudit(
+        provider=provider,
+        datasets=tuple(ETHICAL_DATASETS[provider]),
+        endpoints=SOURCE_ENDPOINTS[provider],
+        attribution=f"Source: {provider}; retain original document URLs and provider identifiers.",
+        source_references=references,
+    )
+    audit_data = audit.model_dump(mode="json")
+    digest, artifact = ctx.artifact(audit_data)
+    result.update({
+        "rights_status": "UNVERIFIED_PERSONAL_USE",
+        "admissible_datasets": list(ETHICAL_DATASETS[provider]),
+        "ethical_use_admissible": True,
+        "source_use_origin": "EXPLICIT_RESTRICTED_PERSONAL_RESEARCH_POLICY",
+        "source_use_evidence_hashes": [digest],
+        "usage_audit": audit_data,
+        "usage_audit_artifact": {"sha256": digest, "path": artifact},
+        # This is an audit refresh deadline, not a fabricated review timestamp.
+        "source_use_valid_until": (ctx.now + timedelta(days=30)).isoformat(),
+        "commercial_public_release_allowed": False,
+    })
+    return result
+
+
+def _reviewed_rights(ctx: QualificationContext, provider: str) -> dict[str, Any]:
+    """Read existing strict approvals without mutating or manufacturing one."""
     result: dict[str, Any] = {
         "provider": provider,
         "provider_review_file": f"inputs/provider-rights/{provider}.json",
@@ -155,6 +213,9 @@ def _documents(
             maximum_redirects=0,
         )
     for key, url in DOCUMENTS.items():
+        if (issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+                and key.startswith("companies-house")):
+            continue
         path = f"state/review-documents/{key}.json"
         result: dict[str, Any] = {"id": key, "url": url, "status": "NOT_CAPTURED"}
         cached = _read(ctx, path)
@@ -324,13 +385,20 @@ def _dossiers(
                 if observation is None:
                     continue
                 source, facts = observation
-                permitted = source["dataset"] in rights[source["provider"]]["approved_datasets"]
-                source["content_use"] = "RIGHTS_REVIEWED" if permitted else "REFERENCES_ONLY"
+                provider_rights = rights[source["provider"]]
+                permitted = source["dataset"] in provider_rights["admissible_datasets"]
+                source["content_use"] = (
+                    provider_rights["rights_status"] if permitted else "REFERENCES_ONLY"
+                )
+                source["usage_audit"] = provider_rights["usage_audit"] if permitted else None
                 sources.append(source)
                 if source["dataset"] == "company" and source["fresh"]:
                     company_number = facts["company_number"]
                 if permitted and source["fresh"]:
-                    factual.append({"source_sha256": source["sha256"], "facts": facts})
+                    factual.append({
+                        "source_sha256": source["sha256"], "facts": facts,
+                        "rights_status": provider_rights["rights_status"],
+                    })
             except (ValueError, OSError, TypeError, KeyError, AttributeError):
                 errors.append("SOURCE_INTEGRITY_OR_IDENTITY_UNVERIFIED")
         # Only an actual issuer identifier joins share classes. A name match,
@@ -346,7 +414,7 @@ def _dossiers(
             "group_key": group_key,
             "grouping_basis": "VERIFIED_COMPANY_NUMBER" if company_number else "SECURITY_IDENTITY_ONLY",
             "status": "DOSSIER_PREPARATION_ONLY", "members": [], "sources": [],
-            "approved_source_facts": [], "source_errors": [],
+            "approved_source_facts": [], "admissible_source_facts": [], "source_errors": [],
             "approval_granted_by_preparation": False,
             "required_exclusions": list(EXCLUDED_ACTIVITIES),
             "unresolved_exposures": list(EXCLUDED_ACTIVITIES),
@@ -365,7 +433,9 @@ def _dossiers(
             if source not in group["sources"]:
                 group["sources"].append(source)
         for facts in factual:
-            if facts not in group["approved_source_facts"]:
+            if facts not in group["admissible_source_facts"]:
+                group["admissible_source_facts"].append(facts)
+            if facts["rights_status"] == "REVIEWED" and facts not in group["approved_source_facts"]:
                 group["approved_source_facts"].append(facts)
         group["source_errors"] = sorted(set(group["source_errors"] + errors))
     queue = []
@@ -373,6 +443,7 @@ def _dossiers(
         group["members"].sort(key=lambda item: (str(item["isin"]), str(item["trading212_id"])))
         group["sources"].sort(key=lambda item: item["sha256"])
         group["approved_source_facts"].sort(key=lambda item: item["source_sha256"])
+        group["admissible_source_facts"].sort(key=lambda item: item["source_sha256"])
         states = {
             item["recorded_ethical_state"] for item in group["members"]
             if item["recorded_ethical_state"] in {"PASS", "FAIL", "UNKNOWN", "NOT_YET_SCREENED"}
@@ -401,6 +472,7 @@ def _dossiers(
             "grouping_basis": group["grouping_basis"],
             "member_count": len(group["members"]), "source_count": len(group["sources"]),
             "approved_fact_sources": len(group["approved_source_facts"]),
+            "admissible_fact_sources": len(group["admissible_source_facts"]),
             "human_review_status": group["human_review_status"],
             "screening_state": state,
             "human_action_required": group["human_action_required"],
@@ -419,15 +491,22 @@ def prepare_universe_reviews(
     fetcher: SafeFetcher | None = None,
 ) -> dict[str, Any]:
     """Prepare global rights and issuer evidence without a second ethical review."""
-    for provider in PROVIDERS:
+    selected_providers = (
+        ("eodhd", "official-issuer")
+        if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+        else PROVIDERS
+    )
+    for provider in selected_providers:
         ctx.template(f"inputs/provider-rights/{provider}.json", _rights_template(provider))
         # Existing scoped global source reviews remain readable, but new runs
         # do not create another approval task alongside the provider review.
     documents = _documents(ctx, fetch=fetch_documents, offline=offline, fetcher=fetcher)
-    rights = {provider: _rights(ctx, provider) for provider in PROVIDERS}
+    rights = {provider: _rights(ctx, provider) for provider in selected_providers}
     queue = _dossiers(ctx, rows, rights)
     summary = {
-        "version": "money-bulk-human-review-preparation-v3", "generated_at": ctx.now.isoformat(),
+        "version": "money-bulk-human-review-preparation-v4", "generated_at": ctx.now.isoformat(),
+        "usage_mode": usage_mode(ctx.environ).value,
+        "issuer_source_policy": issuer_source_policy(ctx.environ).value,
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "scope": "HUMAN_REVIEW_PREPARATION_ONLY",
         "legacy_account_review": "DEPRECATED_IGNORED_NOT_APPROVED",
@@ -446,6 +525,7 @@ def prepare_universe_reviews(
         ),
         "security_count": sum(item["member_count"] for item in queue),
         "rights_approved_fact_sources": sum(item["approved_fact_sources"] for item in queue),
+        "admissible_fact_sources": sum(item["admissible_fact_sources"] for item in queue),
         "official_documents_captured": sum(item["status"] == "CAPTURED" for item in documents),
         "ethics_approved_by_preparation": False, "production_qualified": False,
         "ethics_queue": "outputs/ethics-work-queue.json",
@@ -489,6 +569,41 @@ def prepare_universe_reviews(
 
 
 def _instructions(summary: dict[str, Any]) -> str:
+    personal = summary["usage_mode"] == UsageMode.PERSONAL_RESEARCH.value
+    issuer_provider = (
+        "official-issuer" if summary.get("issuer_source_policy")
+        == IssuerSourcePolicy.OFFICIAL_DISCLOSURES else "companies-house"
+    )
+    rights_instructions = (
+        """1. **Personal provider-use audit, not a signature:** explicit MONEY_USAGE_MODE=personal_research
+   records UNVERIFIED_PERSONAL_USE for each provider, dataset/endpoint category,
+   attribution and known terms references. Unsigned or absent provider-rights
+   reviews do not block local personal research. This is NOT licence approval.
+   Redistribution, public raw-data display, resale and external sharing are
+   prohibited. Source acquisition, dataset observations and exact identity still
+   must pass. See provider_rights in outputs/universe-review-tasks.json.
+
+2. **Hosted/commercial/public release remains blocked:** genuine current global
+   reviews in inputs/provider-rights/{provider}.json must establish that use before
+   commercial/public production. Existing review files are preserved, never signed
+   or converted into APPROVED. The same personal-use audit covers ethical source
+   use; no per-issuer licence review is required. Only local inference receives
+   unverified personal-use disclosure text; remote inference is not permitted.
+"""
+        if personal else
+        f"""1. **Global provider-wide rights reviews:** inputs/provider-rights/eodhd.json and
+   inputs/provider-rights/{issuer_provider}.json must cover actual subscription/licence,
+   datasets, usage_purpose, storage_policy, redistribution, attribution and
+   source_documentation, including hosted use. Only if supported, record REVIEWED
+   with the actual reviewer, time, expiry and rights_evidence_file. API access and
+   filing history do not establish licence or financial-document reuse permission.
+
+2. **Ethical source use belongs to that same provider-wide review:** include
+   ethical_research_datasets only where the attached terms permit that use. No
+   additional ethical-source or per-issuer signature is required. Existing global
+   source-rights supplements remain compatible; public access is not approval.
+"""
+    )
     return f"""# Remaining reviews and issuer evidence
 
 Prepared, not approved. Existing human inputs are never overwritten. No venue
@@ -498,28 +613,14 @@ Legacy `inputs/universe/account-scope.json` and its schema are deprecated and
 ignored, not approved. No account-type, ISA-scope or purchase-availability review
 is required. Technical credential binding still protects live provenance.
 
-1. **Two provider-wide rights reviews:** `inputs/provider-rights/eodhd.json` and
-   `inputs/provider-rights/companies-house.json`. Evidence: captured official
-   documentation links/hashes above plus the operator's actual subscription/licence.
-   Verify datasets, usage_purpose, storage_policy, redistribution, attribution and
-   source_documentation for Money's actual use, including hosted use. Only if
-   supported: status=REVIEWED, actual review.reviewed_by/reviewed_at/valid_until,
-   all review fields and rights_evidence_file under inputs/. Redistribution must
-   be PROHIBITED, FACTS_AND_LINKS or LICENSED as actually supported. API access and
-   filing history do not establish licence permission or financial-document rights.
-   If insufficient: retain UNRESOLVED and obtain clarification from the provider.
+Usage mode: {summary['usage_mode']}.
 
-2. **Ethical source use belongs to that same provider-wide review.** Set
-   review.ethical_research_datasets only to the scopes the attached licence permits
-   for this use: EODHD issuer-profile/financial/news or Companies House
-   company/filing/financial. No additional ethical-source signature or per-issuer
-   rights review is required. Existing `inputs/universe/source-rights/*.json`
-   approvals remain readable as optional global scope supplements. Successful
-   requests, free-text "research", and public access alone do not grant reuse rights.
+{rights_instructions}
 
 3. **One ethical screening per verified issuer:** `outputs/ethics-work-queue.json` contains
    {summary['issuer_groups']} conservative groups covering {summary['security_count']} securities;
-   {summary['rights_approved_fact_sources']} rights-approved fact sources are available.
+   {summary['admissible_fact_sources']} source facts are admissible for the selected use;
+   {summary['rights_approved_fact_sources']} have current reviewed rights.
    Verified company numbers join share classes; otherwise groups remain per ISIN,
    never merged by a similar name. The machine screening checks every configured
    defence/weapons/firearms/military and oil exclusion using admissible issuer-wide

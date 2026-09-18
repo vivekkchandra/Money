@@ -786,6 +786,8 @@ class ResearchStore:
             frozen = connection.scalar(
                 select(db.snapshots.c.payload).where(db.snapshots.c.job_id == job_id)
             )
+            if frozen is not None and frozen.get("usage_mode") == "PERSONAL_RESEARCH":
+                raise StoreError("Personal research cannot export reports through the public API")
             required = (
                 ResearchSnapshot.model_validate(frozen).required_first_pass_firms
                 if frozen is not None else FIRST_PASS_FIRMS
@@ -824,6 +826,8 @@ class ResearchStore:
             snapshot = connection.scalar(
                 select(db.snapshots.c.payload).where(db.snapshots.c.job_id == job_id)
             )
+            if snapshot is not None and snapshot.get("usage_mode") == "PERSONAL_RESEARCH":
+                raise StoreError("Personal research cannot redistribute raw evidence through the API")
             items = list(
                 connection.scalars(
                     select(db.evidence.c.payload).where(db.evidence.c.job_id == job_id)
@@ -1027,6 +1031,10 @@ class ResearchStore:
 
                 assert validated_packet is not None
                 authoritative_snapshot = ResearchSnapshot.model_validate(frozen)
+                if authoritative_snapshot.usage_mode == "PERSONAL_RESEARCH":
+                    raise StoreError(
+                        "Personal research cannot publish commercial decision packets or raw sources"
+                    )
                 _verify_universe_context(
                     authoritative_snapshot, stored_artifacts.get("universe_context")
                 )

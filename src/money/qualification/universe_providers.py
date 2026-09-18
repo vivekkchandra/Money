@@ -27,12 +27,15 @@ from money.data.provider_probes import (
     QualificationArtifacts,
     probe_companies_house,
     probe_eodhd,
+    qualify_personal_probe,
     qualify_probe,
 )
 from money.data.qualification import ProviderQualification
 from money.data.security import ProviderFailure, SafeFetcher, SourceSecurityError, validate_url
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.qualification.core import QualificationContext, fingerprint, json_bytes
 from money.schemas.contracts import utc_now
+from money.usage_policy import UsageMode, usage_mode
 
 _HOSTS = frozenset({"eodhd.com", "api.company-information.service.gov.uk"})
 _STOCK_TYPES = frozenset({"stock", "common stock", "ordinary shares"})
@@ -602,6 +605,9 @@ class BulkProviderEnricher:
         )
 
     def _companies_house(self, row: dict[str, Any], general: dict[str, Any]) -> None:
+        if issuer_source_policy(self.ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+            row["companies_house_state"] = "NOT_SELECTED"
+            return
         country = general.get("CountryISO")
         if isinstance(country, str) and re.fullmatch(r"[A-Z]{2}", country) and country != "GB":
             row["companies_house_state"] = "NOT_APPLICABLE"
@@ -838,6 +844,9 @@ class BulkProviderEnricher:
             "companies_house_candidates",
             "provider_evidence_observed_at",
             "provider_evidence_valid_until",
+            "issuer_source_evidence",
+            "issuer_source_observed_at",
+            "issuer_identity_state",
         ):
             row.pop(field, None)
         row.update(
@@ -868,6 +877,11 @@ class BulkProviderEnricher:
             financial_documents_verified=False,
         )
         self.fetcher.refs = set()
+        if issuer_source_policy(self.ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+            row["companies_house_state"] = "NOT_SELECTED"
+            row["provider_stage_status"]["companies_house"] = {
+                "status": "NOT_SELECTED", "code": "OFFICIAL_DISCLOSURES_SELECTED"
+            }
         self.fetcher.observations = []
         self.fetcher.diagnostics = []
         self.fetcher.integrity_failed = False
@@ -945,7 +959,26 @@ class BulkProviderEnricher:
                 market_report = self._probe("eodhd", identifiers)
                 identifiers = market_report.samples[0]
                 self._attach_probe(row, market_report)
-                if row["companies_house_state"] == "MAPPED":
+                row["identifiers"] = identifiers.model_dump(mode="json")
+                # Fundamentals is not the only authoritative issuer source. The
+                # fallback rehashes and exactly corroborates official bytes; it
+                # grants neither dataset qualification nor ethical clearance.
+                from money.qualification.issuer_sources import apply_issuer_sources
+
+                if apply_issuer_sources(self.ctx, row):
+                    self.fetcher.observations.append(
+                        datetime.fromisoformat(row["issuer_source_observed_at"])
+                    )
+                    identifiers = self._identifiers(row)
+                    row["identifiers"] = identifiers.model_dump(mode="json")
+                    row["issuer_jurisdiction_state"] = "VERIFIED_AUTHORITATIVE_SOURCES"
+                    row["provider_stage_status"]["issuer_identity"] = {
+                        "status": "VERIFIED_AUTHORITATIVE_SOURCES"
+                    }
+                if (
+                    issuer_source_policy(self.ctx.environ) == IssuerSourcePolicy.COMPANIES_HOUSE
+                    and row["companies_house_state"] == "MAPPED"
+                ):
                     company_report = self._probe("companies-house", identifiers)
                     identifiers = company_report.samples[0]
                     self._attach_probe(row, company_report)
@@ -968,9 +1001,12 @@ class BulkProviderEnricher:
                 provider_datasets={},
             )
             row["provider_reasons"].append("PROVIDER_CACHE_INTEGRITY_FAILED")
-        row["provider_evidence"] = [
-            _ref(digest, path) for digest, path in sorted(self.fetcher.refs)
-        ]
+        # Include genuine CH bytes captured by the official-source fallback,
+        # without relabelling public HTML as an API dataset observation.
+        evidence_refs = self.fetcher.refs | {
+            (ref["sha256"], ref["path"]) for ref in row["provider_evidence"]
+        }
+        row["provider_evidence"] = [_ref(digest, path) for digest, path in sorted(evidence_refs)]
         row["provider_evidence_observed_at"] = min(
             self.fetcher.observations, default=self.ctx.now
         ).isoformat()
@@ -998,21 +1034,29 @@ def qualify_bulk_provider_reports(
     peers being admitted. The aggregate proof links those real qualifications;
     it is deliberately not a forged multi-sample ``ProviderProbeReport``.
     """
-    if provider not in {"eodhd", "companies-house"} or rights.get("status") != "REVIEWED":
+    personal = usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH
+    if provider not in {"eodhd", "companies-house"} or (
+        not personal and rights.get("status") != "REVIEWED"
+    ):
         return None
     try:
-        evidence_path = rights["rights_evidence_file"]
-        if not isinstance(evidence_path, str) or not evidence_path.startswith("inputs/"):
-            return None
-        evidence = ctx.read_bytes(evidence_path)
-        if evidence is None or not evidence.strip() or evidence.strip() in {b"{}", b"[]", b"null"}:
-            return None
-        rights_ref = ctx.artifact(evidence)
-        review = ProviderAdmissionReview.model_validate(
-            {**rights["review"], "rights_evidence_hash": rights_ref[0]}
-        )
-        if review.provider != provider:
-            return None
+        rights_ref = None
+        review = None
+        evidence = b""
+        if not personal:
+            evidence_path = rights["rights_evidence_file"]
+            if not isinstance(evidence_path, str) or not evidence_path.startswith("inputs/"):
+                return None
+            raw = ctx.read_bytes(evidence_path)
+            if raw is None or not raw.strip() or raw.strip() in {b"{}", b"[]", b"null"}:
+                return None
+            evidence = raw
+            rights_ref = ctx.artifact(evidence)
+            review = ProviderAdmissionReview.model_validate(
+                {**rights["review"], "rights_evidence_hash": rights_ref[0]}
+            )
+            if review.provider != provider:
+                return None
         artifacts = _ContextArtifacts(ctx)
         admissions: list[ProviderQualification] = []
         identifier_expiries: list[datetime] = []
@@ -1052,9 +1096,13 @@ def qualify_bulk_provider_reports(
                     or sample.companies_house_number != row.get("companies_house_number")
                 ):
                     continue
-                qualification = qualify_probe(
-                    report, review, evidence, artifacts, clock=lambda: ctx.now
-                )
+                if personal:
+                    qualification = qualify_personal_probe(report, artifacts, clock=lambda: ctx.now)
+                else:
+                    assert review is not None
+                    qualification = qualify_probe(
+                        report, review, evidence, artifacts, clock=lambda: ctx.now
+                    )
                 qualified_ref = ctx.artifact(qualification.model_dump(mode="json"))
                 admissions.append(qualification)
                 identifier_expiries.append(sample.valid_until)
@@ -1084,7 +1132,11 @@ def qualify_bulk_provider_reports(
                 "version": "money-bulk-provider-admission-v1",
                 "provider": provider,
                 "policy": "union-of-individually-qualified-currencies; earliest-expiry; original-probe-times-preserved",
-                "rights_evidence": _ref(*rights_ref),
+                "usage_mode": usage_mode(ctx.environ),
+                "rights_evidence": _ref(*rights_ref) if rights_ref else None,
+                "personal_use": first.personal_use.model_dump(mode="json")
+                if first.personal_use is not None
+                else None,
                 "individual_qualifications": links,
                 "historical_publication_verified": False,
                 "financial_documents_verified": False,
@@ -1106,7 +1158,7 @@ def qualify_bulk_provider_reports(
             }
         )
         for dataset in aggregate.datasets:
-            aggregate.require(dataset, ctx.now)
+            aggregate.require(dataset, ctx.now, usage_mode=usage_mode(ctx.environ))
         ctx.artifact(aggregate.model_dump(mode="json"))
         return aggregate
     except (ValueError, OSError, KeyError, TypeError):

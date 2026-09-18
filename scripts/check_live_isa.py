@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 from money.data.instruments import InstrumentCatalogue
+from money.data.official_disclosures import require_official_disclosures
+from money.data.source_policy import IssuerSourcePolicy
 from money.data.universe import ReviewedStockUniverse, StockUniverseQuery
 from money.research.live import LiveManifest, VerifiedInstrument, load_manifest
 from money.schemas.contracts import ResearchMandate, utc_now
@@ -69,9 +71,23 @@ def select_candidates(
     try:
         catalogue = InstrumentCatalogue.from_manifest(manifest)
         if require_filing_documents:
-            document_tickers = {
-                item.metadata.ticker for item in manifest.reviewed_instruments if item.filing_documents
-            }
+            document_tickers = set()
+            for item in manifest.reviewed_instruments:
+                if getattr(
+                    manifest, "issuer_source_policy", IssuerSourcePolicy.COMPANIES_HOUSE,
+                ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+                    if not item.official_disclosures:
+                        continue
+                    require_official_disclosures(
+                        item.official_disclosures, item.identifiers, item.supplemental_evidence,
+                        {q.provider: q for q in manifest.provider_qualifications}, now,
+                        jurisdiction=item.issuer_jurisdiction,
+                        jurisdiction_proof_hash=item.issuer_jurisdiction_proof_hash,
+                        issuer_company_number=item.issuer_company_number,
+                    )
+                    document_tickers.add(item.metadata.ticker)
+                elif item.filing_documents:
+                    document_tickers.add(item.metadata.ticker)
             catalogue = replace(
                 catalogue,
                 entries=tuple(

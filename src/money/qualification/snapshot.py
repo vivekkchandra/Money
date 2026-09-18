@@ -11,6 +11,7 @@ from money.data.live_eligibility import EligibilityReview
 from money.data.qualification import ProviderQualification
 from money.data.quality.market import evaluate_market_quality
 from money.data.security import ProviderFailure
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.data.uk.filing_documents import ReviewedStorageHost
 from money.qualification.core import QualificationContext, fingerprint
 from money.research.live import LiveSnapshotBuilder, VerifiedInstrument
@@ -24,6 +25,7 @@ from money.schemas.contracts import Contract, EvidenceRecord, ResearchMandate, R
 from money.storage import ResearchStore
 from money.storage.models import queue_control
 from money.storage.production_models import provider_state
+from money.usage_policy import UsageMode, usage_mode
 
 
 class QualificationSources(Contract):
@@ -32,6 +34,8 @@ class QualificationSources(Contract):
     market_credential_environment_variable: str = "EODHD_API_KEY"
     filings_credential_environment_variable: str = "COMPANIES_HOUSE_API_KEY"
     filing_document_storage_hosts: tuple[ReviewedStorageHost, ...] = ()
+    usage_mode: UsageMode = UsageMode.HOSTED_COMMERCIAL_PRODUCTION
+    issuer_source_policy: IssuerSourcePolicy = IssuerSourcePolicy.COMPANIES_HOUSE
 
 
 def _cached_snapshot(
@@ -82,12 +86,16 @@ def _instrument_snapshot(
     ctx: QualificationContext, sources: QualificationSources, selected: VerifiedInstrument
 ) -> ResearchSnapshot:
     """Resume one genuine data acquisition, never an earlier universe selection."""
+    if sources.issuer_source_policy != issuer_source_policy(ctx.environ):
+        raise ValueError("SNAPSHOT_ISSUER_SOURCE_POLICY_MISMATCH")
     selected.identifiers.require_current(ctx.now)
     study = ctx.read_bytes("reviews/lean-inputs.json") or b""
     source_key = fingerprint(
         {
             "instrument": selected.model_dump(mode="json"),
             "qlib_enabled": qlib_enabled(ctx.environ),
+            "usage_mode": sources.usage_mode,
+            "issuer_source_policy": sources.issuer_source_policy,
             "providers": [item.model_dump(mode="json") for item in sources.provider_qualifications],
             "storage_hosts": [
                 item.model_dump(mode="json") for item in sources.filing_document_storage_hosts
@@ -99,6 +107,8 @@ def _instrument_snapshot(
     cached = _cached_snapshot(ctx, ctx.cache(namespace, key, 3600))
     if cached is not None:
         snapshot = cached
+        if snapshot.issuer_source_policy != sources.issuer_source_policy:
+            raise ValueError("SNAPSHOT_ISSUER_SOURCE_POLICY_MISMATCH")
         if (
             snapshot.qlib_enabled == qlib_enabled(ctx.environ)
             and snapshot.instrument == selected.metadata
@@ -111,6 +121,8 @@ def _instrument_snapshot(
     original = _cached_snapshot(ctx, ctx.cache(namespace + "-source", source_key, 3600))
     if original is not None:
         previous = original
+        if previous.issuer_source_policy != sources.issuer_source_policy:
+            raise ValueError("SNAPSHOT_ISSUER_SOURCE_POLICY_MISMATCH")
         if previous.instrument == selected.metadata and all(
             item.available_at(ctx.now) and item.fresh_until > ctx.now for item in previous.evidence
         ):
@@ -144,7 +156,9 @@ def _instrument_snapshot(
         provider_state.create(store.engine)
         with store.engine.begin() as connection:
             connection.execute(queue_control.insert().values(id=1))
-        snapshot = LiveSnapshotBuilder(sources, store)(selected.metadata)
+        snapshot = LiveSnapshotBuilder(
+            sources, store, qlib_enabled=qlib_enabled(ctx.environ), usage_mode=sources.usage_mode
+        )(selected.metadata)
     finally:
         store.engine.dispose()
     if snapshot.qlib_enabled != qlib_enabled(ctx.environ):
@@ -171,11 +185,16 @@ def run_snapshot_stage(
     record of admitted universe membership. It does not veto unrelated stocks.
     """
     fields = provider_output.get("manifest_fields", provider_output)
+    selected_policy = issuer_source_policy(ctx.environ)
+    if fields.get("issuer_source_policy", IssuerSourcePolicy.COMPANIES_HOUSE) != selected_policy:
+        raise ValueError("SNAPSHOT_ISSUER_SOURCE_POLICY_MISMATCH")
     sources = QualificationSources.model_validate(
         {
             "reviewed_instruments": fields.get("instruments", []),
             "provider_qualifications": fields.get("provider_qualifications", []),
             "filing_document_storage_hosts": fields.get("filing_document_storage_hosts", []),
+            "usage_mode": usage_mode(ctx.environ),
+            "issuer_source_policy": fields.get("issuer_source_policy", issuer_source_policy(ctx.environ)),
         }
     )
     reviews = tuple(
@@ -237,7 +256,7 @@ def run_snapshot_stage(
             raise ValueError("SNAPSHOT_PROVIDER_QUALIFICATION_REQUIRED")
         for provider in sources.provider_qualifications:
             for dataset in provider.datasets:
-                provider.require(dataset, ctx.now)
+                provider.require(dataset, ctx.now, usage_mode=sources.usage_mode)
     except ValueError:
         provider_current = False
     details = {item.metadata.ticker: item for item in sources.reviewed_instruments}

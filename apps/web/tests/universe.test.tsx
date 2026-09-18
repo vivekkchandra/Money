@@ -10,18 +10,20 @@ const fixture = {
   instruments: [{ instrument_id: "TEST.L", ticker: "TEST.L", company: "Synthetic UK test company", exchange: "LSE", currency: "GBX", eligibility: "VERIFIED_ELIGIBLE", research_allowed: true, verified_at: "2026-09-16T11:00:00Z", synthetic: false, instrument_type: "STOCK", source: "Reviewed fixture", provider: "fixture-provider", source_id: "fixture-proof-1", metadata_hash: "b".repeat(64), eligibility_proof_hash: "c".repeat(64), ethical_proof_hash: "d".repeat(64), verified_until: "2026-09-16T13:00:00Z" }],
 };
 
-describe("reviewed ISA universe display", () => {
+describe("qualified stock universe display", () => {
   it("projects provenance without claiming complete broker coverage", () => {
     const page = parseUniverse({ ...fixture, secret: "hidden", instruments: [{ ...fixture.instruments[0], private_provider_payload: "hidden" }] });
     expect(JSON.stringify(page)).not.toContain("hidden");
     expect(parseUniverse(page)).toEqual(page);
     const html = renderToStaticMarkup(<UniverseRecords page={page} now={now} />);
     expect(html).toContain("25 mandate-eligible instruments");
-    expect(html).toContain("not the complete Trading 212 ISA universe");
+    expect(html).toContain("not the complete Trading 212 accessible universe");
     expect(html).toContain("GBX"); expect(html).toContain("fixture-proof-1");
     expect(html).toContain("Ethical proof hash");
     expect(html).toContain("/jobs?ticker=TEST.L");
     expect(html).not.toContain("Historical eligibility record");
+    expect(html).not.toContain("ISA eligibility");
+    expect(html).toContain("Research eligibility verified");
   });
   it.each([{ mode: "live_rnd" }, { complete_broker_universe: true }, { catalogue_hash: "invalid" }, { offset: 10001 }])("fails closed on mislabelled coverage %j", update => {
     expect(() => parseUniverse({ ...fixture, ...update })).toThrow();
@@ -42,7 +44,7 @@ describe("reviewed ISA universe display", () => {
     const page = parseUniverse({ coverage: "previously_researched_only", instruments: [{ id: "fixture", payload: { ticker: "DEMO.L", provider: "money-demo" } }] });
     const html = renderToStaticMarkup(<UniverseRecords page={page} now={now} />);
     expect(html).toContain("Historical eligibility checks");
-    expect(html).toContain("does not establish present ISA eligibility");
+    expect(html).toContain("does not establish current broker membership or research eligibility");
     expect(html).toContain("DEMO.L");
     expect(html).not.toContain("ISA eligibility verified");
   });

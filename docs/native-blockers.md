@@ -1,5 +1,33 @@
 # Native qualification blockers — 2026-09-18
 
+## Current local two-firm implementation
+
+The personal runner now prepares isolated `.venv-tradingagents` and
+`.venv-ai-hedge-fund` environments through `prepare_native_environments(ctx)`.
+Each uses Python 3.12.14, exact `UPSTREAM_LOCK.txt` source pins, full upstream
+dependencies and a thin Money bridge. Hashed locks/setup cache live under
+`<qualification root>/state/native/` (normally
+`data/qualified/local-inference/state/native/`). It does not install Money's conflicting full application
+closure into AI-Hedge-Fund. The existing operator command is unchanged; see
+[research-testing.md](research-testing.md).
+
+Both targets must independently pass installed-source fingerprints, native
+imports, dependency consistency and unsuppressed complete security audits.
+The September 18 sandbox run verified both exact source archives and created
+both Python 3.12.14 environments. It stopped at `NATIVE_PACKAGE_INDEX_UNREACHABLE`:
+no upstream wheel was installed and neither target dependency audit ran.
+This does not predict a successful install, audit or agent run on the operator's
+Mac; use the actual latest preparation/preflight receipts. Unavailable network access
+or a failed audit remains blocked. CrewAI/ChromaDB need not be present where they
+are not required by the resolved two-firm dependency closure; this is separation
+of runtime ownership, not suppression of an installed-package advisory.
+
+The main/CrewAI advisories below remain genuine historical findings and separate
+commercial/runtime blockers. Local two-firm readiness cannot certify CrewAI,
+hosted inference, worker egress, mandatory LEAN, release or production acceptance.
+
+## Historical shared-environment evidence
+
 The resumable state remains **unqualified**. This is an engineering diagnosis,
 not independent approval, a fresh dependency audit, or hosted runtime evidence.
 `outputs/native-blocker-diagnosis.json` is reproducible offline through
@@ -27,12 +55,13 @@ checked-out distribution requirements independently have empty intersections:
 | langchain-anthropic | `0.3.5` | TradingAgents `>=0.3.15` |
 | langchain-google-genai | `^2.0.11` (`<3`) | TradingAgents `>=4.0.0` |
 
-Do not retry a known-unsatisfiable worker build or install with `--no-deps`.
-An engineering owner must first propose a reviewed compatible upstream patch/
-source repin or an explicitly designed per-engine distribution/isolation
-contract. Neither has been approved or implemented here. Preserve exact source
-attestation and frozen Money evidence; then resolve, lock, build and audit the
-actual exercised closure. Do not silently edit upstream requirements or pins.
+Do not retry a known-unsatisfiable shared worker build or install with `--no-deps`.
+The local per-engine isolation contract described above separates these empty
+intersections without repinning or altering upstream requirements. It still
+requires successful resolution, installation and audit of each actual target.
+The historical resolver failure is not rewritten as a pass. Preserve exact
+source attestation and frozen Money evidence; do not silently edit requirements
+or pins to make an incompatible shared environment appear consistent.
 
 The current research image installs Money's locked CrewAI extra only. It does
 not package the pinned TradingAgents/AI-Hedge-Fund sources or qualify native
@@ -154,8 +183,8 @@ worker based on that failure. The operator can inspect the current topology with
 railway status --project 57b5ce77-898d-40a7-9f4a-d864c84e73dc --environment production
 ```
 
-No deployment/configuration change is the next corrective step while the pinned
-closure is unsatisfiable and the security audit fails. Required human/infrastructure
+No hosted deployment/configuration change is justified by the old incompatible
+shared closure or failed security audit. Required hosted human/infrastructure
 decisions are the reviewed compatible native closure, real hosted inference
 selection, target enforcement/inspector, and independent LEAN/egress evidence.
 These requirements apply to one genuine candidate as well as a larger universe.

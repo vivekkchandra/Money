@@ -14,8 +14,8 @@ export type Evidence = { snapshot: RecordData | null; evidence: RecordData[] };
 export type Health = { status: string; database: string | RecordData; worker: string | RecordData; mode: string; version?: string; git_sha?: string; environment?: string; schema_revision?: string; queue_depth?: number | null; queue_age_seconds?: number | null };
 
 export const DEFAULT_MANDATE = {
-  broker: "Trading212", account_type: "StocksAndSharesISA", maximum_capital_gbp: "200",
-  instrument_types: ["STOCK"], quote_currencies: ["GBP", "GBX"],
+  broker: "Trading212", account_type: null, maximum_capital_gbp: "200",
+  instrument_types: ["STOCK"], quote_currencies: ["GBX"],
   excluded_activities: ["defence", "weapons", "firearms", "material_military_contracting", "oil_exploration", "oil_production", "integrated_oil", "oil_refining", "oil_services"],
   minimum_horizon_days: 1, maximum_horizon_days: 30,
   stretch_profit_gbp: "1000", stretch_may_override_risk: false, version: 1,

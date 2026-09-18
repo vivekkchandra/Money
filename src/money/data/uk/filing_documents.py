@@ -40,6 +40,7 @@ from money.data.security import (
 )
 from money.data.uk.xbrl import parse_company_archive
 from money.schemas.contracts import Contract, EvidenceRecord, FinancialFact, utc_now
+from money.usage_policy import UsageMode
 
 API_HOST = "api.company-information.service.gov.uk"
 DOCUMENT_HOST = "document-api.company-information.service.gov.uk"
@@ -343,12 +344,14 @@ class CompaniesHouseFilingDocuments:
         transport: FilingTransport | None = None,
         parser: Callable[..., tuple[EvidenceRecord, ...]] = parse_company_archive,
         clock: Callable[[], datetime] = utc_now,
+        usage_mode: UsageMode = UsageMode.HOSTED_COMMERCIAL_PRODUCTION,
     ) -> None:
         if qualification.provider != "companies-house":
             raise ValueError("PROVIDER_QUALIFICATION_MISMATCH")
         if len({item.host for item in storage_hosts}) != len(storage_hosts):
             raise ValueError("FILING_STORAGE_HOST_DUPLICATE")
         self.qualification = qualification
+        self.usage_mode = usage_mode
         self.storage_hosts = {item.host: item.review_evidence_hash for item in storage_hosts}
         self.transport = transport or CompaniesHouseDocumentTransport(api_key, storage_hosts)
         self.parser, self.clock = parser, clock
@@ -413,8 +416,8 @@ class CompaniesHouseFilingDocuments:
             ):
                 raise ValueError("FILING_ADMISSION_SCOPE_INVALID")
         else:
-            self.qualification.require("filing", start)
-            self.qualification.require("financial", start)
+            self.qualification.require("filing", start, usage_mode=self.usage_mode)
+            self.qualification.require("financial", start, usage_mode=self.usage_mode)
         number = identifiers.companies_house_number
         if not number or not re.fullmatch(IDENTIFIER, filing_id):
             raise ValueError("FILING_IDENTIFIER_INVALID")
@@ -475,8 +478,8 @@ class CompaniesHouseFilingDocuments:
             if not self.qualification.verified_at <= retrieved_at < self.qualification.valid_until:
                 raise ValueError("FILING_ADMISSION_SCOPE_INVALID")
         else:
-            self.qualification.require("filing", retrieved_at)
-            self.qualification.require("financial", retrieved_at)
+            self.qualification.require("filing", retrieved_at, usage_mode=self.usage_mode)
+            self.qualification.require("financial", retrieved_at, usage_mode=self.usage_mode)
         raw_date = filing.get("date")
         if not isinstance(raw_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
             raise ValueError("FILING_DATE_INVALID")

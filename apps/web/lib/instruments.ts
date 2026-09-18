@@ -99,10 +99,10 @@ export function instrumentLabel(instrument: Instrument): string {
 
 export function instrumentStatus(instrument: Instrument): string {
   if (instrument.synthetic) return "Synthetic demonstration · not live research";
-  if (instrument.research_mode === "live_rnd") return `R&D / PERSONAL USE · ${instrument.eligibility === "UNKNOWN" ? "ISA eligibility unverified" : instrument.eligibility === "VERIFIED_INELIGIBLE" ? "Not ISA eligible" : "ISA eligibility verified"} · ${instrument.research_allowed ? "public-data collection only" : "collection unavailable"}`;
-  if (instrument.eligibility === "UNKNOWN") return "ISA eligibility not verified · research unavailable";
+  if (instrument.research_mode === "live_rnd") return `R&D / PERSONAL USE · ${instrument.eligibility === "UNKNOWN" ? "Research eligibility unverified" : instrument.eligibility === "VERIFIED_INELIGIBLE" ? "Outside the research universe" : "Research eligibility verified"} · ${instrument.research_allowed ? "public-data collection only" : "collection unavailable"}`;
+  if (instrument.eligibility === "UNKNOWN") return "Research eligibility not verified · research unavailable";
   if (instrument.eligibility === "VERIFIED_INELIGIBLE") return "Outside the eligible research universe";
-  return instrument.research_allowed ? "ISA eligibility verified · screening still applies" : "ISA eligibility verified · research currently unavailable";
+  return instrument.research_allowed ? "Research eligibility verified · screening still applies" : "Broker membership verified · research qualification incomplete";
 }
 
 export type SearchState = {

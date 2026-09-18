@@ -41,7 +41,7 @@ def seed_old(
         or [
             stock(),
             stock(ticker="FOREIGNl_EQ", shortName="FOREIGN", isin="US0378331005"),
-            stock(ticker="GBP_EQ", currencyCode="GBP"),
+            stock(ticker="GBP_EQ", currencyCode="GBP", isin="GB0006389398"),
         ]
     ).encode()
     references = {
@@ -135,7 +135,7 @@ def test_saved_live_policy_reclassification_preserves_evidence_without_new_authe
     assert result["provenance"]["credential_binding_verified_this_run"] is False
     assert result["observed_at"] == source["retrieved_at"]
     assert result["summary"]["gbx_stocks"] == 2
-    assert result["summary"]["identity_valid"] == 2
+    assert result["summary"]["identity_valid"] == 3
     assert result["eligibility_reviews"] == []
     assert result["summary"]["qualified"] == 0
     assert "UNRESOLVED_ISA_SCOPE" not in json.dumps(result)
@@ -151,6 +151,35 @@ def test_saved_live_policy_reclassification_preserves_evidence_without_new_authe
     again = universe.finalize_universe(ctx, reclassify_saved=True)
     assert again["status"] == "RECLASSIFIED"
     assert live_metadata_state(ctx, again)["source_current"] is True
+
+
+def test_replay_preserves_existing_live_lineage_without_claiming_live_refresh(ctx, monkeypatch):
+    from money.qualification.universe_status import live_metadata_state
+
+    source = seed_recorded_live(ctx)
+    forbid_network(monkeypatch)
+    replay = universe.finalize_universe(ctx, replay_saved=True)
+    assert replay["status"] == "REPLAYED"
+    assert live_metadata_state(ctx, replay)["current"] is False
+    reference = replay["provenance"]["source_provenance"]
+    assert json.loads(ctx.verify_artifact(*reference)) == json.loads(json.dumps(source))
+    reclassified = universe.finalize_universe(ctx, reclassify_saved=True)
+    assert reclassified["status"] == "RECLASSIFIED"
+    assert tuple(reclassified["provenance"]["source_provenance"]) == tuple(reference)
+    assert reclassified["provenance"]["credential_binding_verified_this_run"] is False
+    assert reclassified["eligibility_reviews"] == []
+
+
+def test_failed_refresh_retains_selected_source_policy_in_all_projections(ctx, monkeypatch):
+    ctx.environ["MONEY_ISSUER_SOURCE_POLICY"] = "official_disclosures"
+    forbid_network(monkeypatch)
+    failed = universe.finalize_universe(ctx)
+    assert failed["status"] == "REFRESH_FAILED"
+    for path in (
+        "outputs/trading212-gbx-stock-universe.json", "outputs/universe-review-queue.json",
+        "outputs/providers-result.json", "state/provider-stage.json",
+    ):
+        assert ctx.read_json(path)["issuer_source_policy"] == "official_disclosures"
 
 
 def test_saved_policy_migration_replaces_retired_status_actions_without_approvals(
@@ -216,7 +245,7 @@ def test_stale_recorded_live_source_reclassifies_only_as_expired(
     monkeypatch.setattr(universe, "utc_now", lambda: ctx.now)
     forbid_network(monkeypatch)
     result = universe.finalize_universe(ctx, reclassify_saved=True)
-    assert result["summary"]["states"] == {"EXPIRED": 2}
+    assert result["summary"]["states"] == {"EXPIRED": 3}
     assert result["eligibility_reviews"] == []
     metadata = live_metadata_state(ctx, result)
     assert metadata["current"] is False
@@ -234,9 +263,9 @@ def test_saved_v1_state_rebuilds_all_active_projections_without_network(
     assert result["status"] == "REPLAYED"
     assert result["scope"] == "SAVED_RESPONSE_REPLAY_ONLY"
     assert result["summary"]["gbx_stocks"] == 2
-    assert result["summary"]["identity_valid"] == 2
+    assert result["summary"]["identity_valid"] == 3
     assert result["summary"]["identity_unresolved"] == 0
-    assert result["summary"]["provider_stage_input_count"] == 2
+    assert result["summary"]["provider_stage_input_count"] == 3
     assert result["summary"]["qualified"] == 0
     assert result["eligibility_reviews"] == []
     assert result["production_qualified"] is False
@@ -257,8 +286,8 @@ def test_saved_v1_state_rebuilds_all_active_projections_without_network(
         assert "VENUE_COUNTRY_NOT_VERIFIED" not in json.dumps(value)
         assert "uk_venue_stocks" not in value.get("summary", {})
     projection = ctx.read_json("outputs/providers-result.json")
-    assert projection["candidate_counts"] == {"GBX": 2}
-    assert projection["provider_stage_input_count"] == len(projection["provider_stage_inputs"]) == 2
+    assert projection["candidate_counts"] == {"GBX": 2, "GBP": 1}
+    assert projection["provider_stage_input_count"] == len(projection["provider_stage_inputs"]) == 3
     assert projection["instruments"] == []  # Research instruments still need every gate.
     assert not projection["complete"]
     queue = ctx.read_json("outputs/universe-review-queue.json")
@@ -283,7 +312,7 @@ def test_replay_preserves_expiry_and_never_authenticates_retrieval(
     forbid_network(monkeypatch)
     result = universe.finalize_universe(ctx, replay_saved=True)
     assert result["valid_until"] == (NOW + timedelta(hours=24)).isoformat()
-    assert result["summary"]["states"]["EXPIRED"] == 2
+    assert result["summary"]["states"]["EXPIRED"] == 3
     assert result["summary"]["qualified"] == 0
     assert result["eligibility_reviews"] == []
     assert result["observed_at"] == NOW.isoformat()
@@ -357,7 +386,7 @@ def test_replay_falls_back_to_archived_source_metadata_without_copying_classific
     result = universe.finalize_universe(ctx, replay_saved=True)
     assert result["status"] == "REPLAYED"
     assert result["observed_at"] == source["retrieved_at"]
-    assert result["summary"]["identity_valid"] == 2
+    assert result["summary"]["identity_valid"] == 3
     assert all("VENUE_COUNTRY_NOT_VERIFIED" not in json.dumps(row) for row in result["stocks"])
 
 
@@ -419,9 +448,9 @@ def test_full_provider_stage_keeps_enrichment_inputs_distinct_from_approved_inst
         monkeypatch.setattr(providers, name, lambda *_: None)
     result = universe.run_bulk_provider_stages(ctx)
     assert result["universe_policy_version"] == UNIVERSE_POLICY_VERSION
-    assert result["provider_stage_input_count"] == 2
-    assert result["candidate_counts"] == {"GBX": 2}
-    assert result["eligible_counts"] == {"GBX": 0}
+    assert result["provider_stage_input_count"] == 3
+    assert result["candidate_counts"] == {"GBX": 2, "GBP": 1}
+    assert result["eligible_counts"] == {"GBX": 0, "GBP": 0}
     assert result["instruments"] == result["qualified_universe"] == []
     assert result["complete"] is False
     assert ctx.read_json("state/provider-stage.json") == json.loads(json.dumps(result))
@@ -462,5 +491,5 @@ def test_provenance_exchange_hash_mismatch_discards_only_optional_enrichment(
     result = universe.finalize_universe(ctx, replay_saved=True)
     assert result["status"] == "REPLAYED"
     assert result["provenance"]["exchange_response_hash"] is None
-    assert result["summary"]["identity_valid"] == 2
-    assert result["summary"]["provider_stage_input_count"] == 2
+    assert result["summary"]["identity_valid"] == 3
+    assert result["summary"]["provider_stage_input_count"] == 3

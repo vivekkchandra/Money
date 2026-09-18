@@ -18,6 +18,7 @@ from money.adapters.eligibility import eligibility_failures
 from money.adapters.native_attestation import SINGLE_MODULE_SOURCE_DIGESTS
 from money.data.identifiers import InstrumentIdentifiers
 from money.data.live_eligibility import EligibilityReview
+from money.data.official_disclosures import OfficialDisclosureProof, require_official_disclosures
 from money.data.provider_probes import (
     ProviderAdmissionReview,
     ProviderProbeReport,
@@ -25,9 +26,11 @@ from money.data.provider_probes import (
     json_bytes,
     probe_companies_house,
     probe_eodhd,
+    qualify_personal_probe,
     qualify_probe,
 )
 from money.data.qualification import ProviderQualification
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.data.uk.filing_documents import (
     DOCUMENT_HOST,
     CompaniesHouseFilingDocuments,
@@ -45,6 +48,7 @@ from money.schemas.contracts import (
     ResearchMandate,
     utc_now,
 )
+from money.usage_policy import PersonalUseAudit, UsageMode, usage_mode
 
 
 class IndependentReview(Contract):
@@ -82,6 +86,7 @@ class SupplementalReview(Contract):
     corporate_action_coverage_file: str
     archived_market_proof_file: str | None = None
     financial_currency_evidence_files: tuple[str, ...] = ()
+    official_disclosure_evidence_files: tuple[str, ...] = Field(default=(), max_length=40)
 
 
 class SourceObservation(Contract):
@@ -101,7 +106,7 @@ class SupplementalSourceAdmission(Contract):
     redistribution: Literal["PROHIBITED", "FACTS_AND_LINKS", "LICENSED"]
     attribution: str = Field(min_length=1, max_length=500)
     source_documentation: str = Field(min_length=1, max_length=2000)
-    rights_evidence_file: str
+    rights_evidence_file: str | None = None
     publication_times: Literal["AS_RETRIEVED", "ORIGINAL_PUBLICATION_VERIFIED"]
     maximum_age_seconds: int = Field(gt=0, le=604800)
     observations: tuple[SourceObservation, ...] = Field(min_length=1, max_length=4000)
@@ -295,6 +300,7 @@ def _verified_instrument(
     refs: set[tuple[str, str]],
     *,
     foreign_issuer_evidence: tuple[str, str] | None = None,
+    issuer_company_number: str | None = None,
 ) -> VerifiedInstrument | None:
     value = ctx.read_json(path)
     if not isinstance(value, dict) or value.get("review", {}).get("status") != "REVIEWED":
@@ -310,6 +316,7 @@ def _verified_instrument(
         "archived_market_proof_hash",
         "issuer_jurisdiction",
         "issuer_jurisdiction_proof_hash",
+        "issuer_company_number",
     }
     if controlled.intersection(review.instrument_evidence):
         raise ValueError("GENERATED_PROOF_OVERRIDE_FORBIDDEN")
@@ -323,6 +330,9 @@ def _verified_instrument(
     financial_hashes = {
         _attach(ctx, item, refs)[0] for item in review.financial_currency_evidence_files
     }
+    disclosure_hashes = {
+        _attach(ctx, item, refs)[0] for item in review.official_disclosure_evidence_files
+    }
     instrument = VerifiedInstrument.model_validate(
         {
             **eligible.model_dump(),
@@ -333,16 +343,24 @@ def _verified_instrument(
             "issuer_jurisdiction_proof_hash": foreign_issuer_evidence[1]
             if foreign_issuer_evidence
             else None,
+            "issuer_company_number": issuer_company_number,
         }
     )
     instrument.identifiers.symbol_for("eodhd", ctx.now)
     costs = instrument.cost_applicability
+    official = issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+    if official and (
+        not instrument.official_disclosures
+        or any(not proof.artifact_hashes <= disclosure_hashes | {instrument.issuer_jurisdiction_proof_hash}
+               for proof in instrument.official_disclosures)
+    ):
+        raise ValueError("OFFICIAL_DISCLOSURE_SOURCE_AND_TECHNICAL_PROOFS_REQUIRED")
     if (
         (
             not instrument.identifiers.companies_house_number
             and not (
                 foreign_issuer_evidence
-                and foreign_issuer_evidence[0] != "GB"
+                and (foreign_issuer_evidence[0] != "GB" or official)
                 and any(
                     record.payload.kind == "filing" for record in instrument.supplemental_evidence
                 )
@@ -457,6 +475,17 @@ def _provider(
                 )
         ctx.write_json("discovery/companies-house-filings.json", {"filings": filings})
     rights = ctx.read_json(review_path)
+    if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+        try:
+            qualification = qualify_personal_probe(report, artifacts, clock=lambda: ctx.now)
+            artifacts.save(qualification.model_dump(mode="json"))
+            return qualification.model_dump(mode="json")
+        except (ValueError, OSError, KeyError, TypeError):
+            ctx.block(
+                "PROVIDER_DATASET_QUALIFICATION_REQUIRED",
+                f"{name}: repair actual probe coverage, identity, integrity or freshness; personal use does not waive these checks.",
+            )
+            return None
     if not isinstance(rights, dict) or rights.get("status") != "REVIEWED":
         ctx.block(
             "PROVIDER_RIGHTS_REVIEW_REQUIRED",
@@ -605,6 +634,10 @@ def _financial_documents(
     clock: Callable[[], datetime] | None = None,
 ) -> None:
     """Probe true document extraction without pretending the filing feed qualified it."""
+    if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+        # The alternative is admitted after actual supplemental source observations;
+        # absence of CH is not absence of required filing/financial evidence.
+        return
     path = "inputs/financial-documents.json"
     live_clock = clock or utc_now
     value = ctx.read_json(path)
@@ -708,7 +741,10 @@ def _financial_documents(
             return
         stamp = IndependentReview.model_validate(value.get("review"))
         stamp.require_current(live_clock())
-        if value.get("rights_cover_financial_documents") is not True:
+        if (
+            usage_mode(ctx.environ) != UsageMode.PERSONAL_RESEARCH
+            and value.get("rights_cover_financial_documents") is not True
+        ):
             raise ValueError("FINANCIAL_DOCUMENT_RIGHTS_REVIEW_REQUIRED")
         review_ref = _attach(ctx, path, refs)
         report_ref = ctx.artifact(
@@ -730,9 +766,19 @@ def _financial_documents(
                 "qualified_by": stamp.reviewed_by,
                 "qualification_report_hash": report_ref[0],
                 "valid_until": min(base.valid_until, stamp.valid_until),
+                **(
+                    {
+                        "personal_use": base.personal_use.model_copy(
+                            update={"datasets": ("company", "filing", "financial")}
+                        ),
+                        "qualified_by": None,
+                    }
+                    if base.personal_use is not None
+                    else {}
+                ),
             }
         )
-        qualified.require("financial", live_clock())
+        qualified.require("financial", live_clock(), usage_mode=usage_mode(ctx.environ))
         instruments = []
         for instrument in result["instruments"]:
             updated = dict(instrument)
@@ -841,6 +887,7 @@ def _additional_sources(
             ):
                 raise ValueError("SUPPLEMENTAL_SOURCE_REVIEW_INVALID")
             source_refs = []
+            conversion_review_ref = _attach(ctx, path, refs)
             currencies: set[str] = set()
             datasets: set[str] = set()
             record_hashes: set[str] = set()
@@ -870,6 +917,14 @@ def _additional_sources(
                     publication = _attach(ctx, observation.publication_evidence_file, refs)
                 elif record.publication_time != record.retrieval_time:
                     raise ValueError("AS_RETRIEVED_PUBLICATION_TIME_INVALID")
+                for disclosure in item.official_disclosures:
+                    if record.hash in disclosure.evidence_hashes and (
+                        original[0] != disclosure.document_sha256
+                        or conversion_review_ref[0] != disclosure.conversion_evidence_hash
+                        or admission.publication_times != disclosure.publication_times
+                        or (publication is not None and publication[0] != disclosure.publication_evidence_hash)
+                    ):
+                        raise ValueError("OFFICIAL_DISCLOSURE_SOURCE_OBSERVATION_MISMATCH")
                 if (
                     record in item.archived_market_evidence
                     and admission.publication_times != "ORIGINAL_PUBLICATION_VERIFIED"
@@ -887,13 +942,30 @@ def _additional_sources(
                 currencies.add(item.metadata.quote_currency)
                 datasets.add(record.payload.kind)
                 records.append(record)
-            rights_ref = _attach(ctx, admission.rights_evidence_file, refs)
+            personal = usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH
+            personal_audit = None
+            if personal:
+                personal_audit = PersonalUseAudit(
+                    provider=admission.provider,
+                    datasets=tuple(sorted(datasets)),
+                    # Source observations above retain exact evidence references.
+                    endpoints=(admission.source_documentation,),
+                    attribution=admission.attribution,
+                    source_references=(admission.source_documentation,),
+                )
+                rights_ref = None
+            else:
+                if not admission.rights_evidence_file:
+                    raise ValueError("SUPPLEMENTAL_SOURCE_RIGHTS_EVIDENCE_REQUIRED")
+                rights_ref = _attach(ctx, admission.rights_evidence_file, refs)
             review_ref = _attach(ctx, path, refs)
             proof = ctx.artifact(
                 {
                     "kind": "money-reviewed-supplemental-source-v1",
                     "review": review_ref,
                     "rights": rights_ref,
+                    "personal_use": personal_audit.model_dump(mode="json")
+                    if personal_audit is not None else None,
                     "observations": source_refs,
                     "provider": admission.provider,
                     "publication_times": admission.publication_times,
@@ -907,8 +979,8 @@ def _additional_sources(
                 earliest_observation=min(record.observation_time for record in records),
                 publication_times=admission.publication_times,
                 maximum_age_seconds=admission.maximum_age_seconds,
-                production_qualified=True,
-                qualified_by=admission.review.reviewed_by,
+                production_qualified=not personal,
+                qualified_by=None if personal else admission.review.reviewed_by,
                 qualification_report_hash=proof[0],
                 verified_at=admission.review.reviewed_at,
                 valid_until=min(
@@ -918,12 +990,13 @@ def _additional_sources(
                 ),
                 usage_purpose=admission.usage_purpose,
                 storage_policy=admission.storage_policy,
-                redistribution=admission.redistribution,
+                redistribution="PROHIBITED" if personal else admission.redistribution,
                 attribution=admission.attribution,
                 source_documentation=admission.source_documentation,
+                personal_use=personal_audit,
             )
             for dataset in datasets:
-                qualified.require(dataset, utc_now())
+                qualified.require(dataset, utc_now(), usage_mode=usage_mode(ctx.environ))
             admissions.append(qualified.model_dump(mode="json"))
             observed_coverage.extend(
                 (admission.provider, item.ticker, item.evidence.hash)
@@ -965,6 +1038,7 @@ def _filter_source_coverage(ctx: QualificationContext, result: dict[str, Any]) -
                     record.payload.kind,
                     checked_at,
                     historical=record in instrument.archived_market_evidence,
+                    usage_mode=usage_mode(ctx.environ),
                 )
                 if (
                     record.fresh_until <= checked_at
@@ -998,6 +1072,68 @@ def _filter_source_coverage(ctx: QualificationContext, result: dict[str, Any]) -
     result["instruments"] = verified
 
 
+def _official_financial_documents(ctx: QualificationContext, result: dict[str, Any]) -> None:
+    """Require a real replacement, never relabel CH failures as qualified data."""
+    if issuer_source_policy(ctx.environ) != IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+        return
+    ctx.template("inputs/official-disclosures.schema.json", OfficialDisclosureProof.model_json_schema())
+    ctx.template("inputs/official-disclosures.instructions.json", {
+        "status": "UNRESOLVED",
+        "source_policy": IssuerSourcePolicy.OFFICIAL_DISCLOSURES,
+        "instructions": (
+            "Attach exact issuer official_disclosures proofs and normalized filing/financial "
+            "records in the existing SupplementalReview. Reference actual raw document, identity, "
+            "accounting-currency, publication and independently reviewed extraction bytes through "
+            "official_disclosure_evidence_files. Admit matching observations through "
+            "inputs/supplemental-sources.json. Retrieval alone, a PDF or filing list is not qualification."
+        ),
+        "no_approval_granted": True,
+    })
+    qualifications = {item["provider"]: ProviderQualification.model_validate(item)
+                      for item in result["provider_qualifications"]}
+    valid = []
+    for value in result["instruments"]:
+        try:
+            item = VerifiedInstrument.model_validate(value)
+            require_official_disclosures(
+                item.official_disclosures, item.identifiers, item.supplemental_evidence,
+                qualifications, ctx.now, jurisdiction=item.issuer_jurisdiction,
+                jurisdiction_proof_hash=item.issuer_jurisdiction_proof_hash,
+                usage_mode=usage_mode(ctx.environ),
+                issuer_company_number=item.issuer_company_number,
+            )
+        except (ValueError, KeyError):
+            result.setdefault("candidate_exclusions", []).append({
+                "ticker": value["metadata"]["ticker"],
+                "code": "OFFICIAL_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED",
+                "action": "Supply exact qualified filing and financial observations with source, currency, extraction and publication proofs.",
+            })
+        else:
+            valid.append(value)
+    result["instruments"] = valid
+    if not valid:
+        ctx.block(
+            "OFFICIAL_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED",
+            "Use inputs/official-disclosures.schema.json with the candidate SupplementalReview "
+            "and inputs/supplemental-sources.json. Qualify actual issuer filing/financial facts, "
+            "raw bytes, currency, technical extraction and PIT; Companies House is not selected.",
+        )
+
+
+def _provider_stage_complete(ctx: QualificationContext, result: dict[str, Any]) -> bool:
+    providers = {item["provider"] for item in result["provider_qualifications"]}
+    if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+        return bool(result["instruments"] and "eodhd" in providers and all(
+            item.get("official_disclosures") for item in result["instruments"]
+        ))
+    return bool(
+        result["instruments"] and {"eodhd", "companies-house"} <= providers
+        and any(item["provider"] == "companies-house" and "financial" in item["datasets"]
+                for item in result["provider_qualifications"])
+        and any(item["filing_documents"] for item in result["instruments"])
+    )
+
+
 def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     """Observe current metadata, resume reviews, and probe only reviewed mappings."""
     # Presence selects the bulk workflow; its finalizer validates/migrates the
@@ -1018,6 +1154,7 @@ def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
         return run_bulk_provider_stages(ctx)
     refs: set[tuple[str, str]] = set()
     result: dict[str, Any] = {
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
         "provider_qualifications": [],
         "instruments": [],
         "eligibility_reviews": [],
@@ -1026,7 +1163,10 @@ def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
         "candidate_exclusions": [],
     }
     # Rights and document requirements are visible even before instrument review.
-    provider_names: tuple[Literal["eodhd", "companies-house"], ...] = ("eodhd", "companies-house")
+    provider_names: tuple[Literal["eodhd", "companies-house"], ...] = (
+        ("eodhd",) if issuer_source_policy(ctx.environ) == IssuerSourcePolicy.OFFICIAL_DISCLOSURES
+        else ("eodhd", "companies-house")
+    )
     for name in provider_names:
         ctx.template(f"inputs/provider-rights/{name}.json", _rights_template(name))
     ctx.template(
@@ -1188,6 +1328,7 @@ def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     _financial_documents(ctx, result, refs)
     _additional_sources(ctx, result, refs)
     _filter_source_coverage(ctx, result)
+    _official_financial_documents(ctx, result)
     if not result["instruments"]:
         for exclusion in result["candidate_exclusions"]:
             ctx.block(exclusion["code"], exclusion["action"])
@@ -1195,16 +1336,7 @@ def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
             "QUALIFIED_INSTRUMENT_EVIDENCE_REQUIRED",
             "Complete one candidate's eligibility, spread, costs, corporate-action and supplemental source reviews; all other unresolved candidates stay excluded.",
         )
-    result["complete"] = bool(
-        result["instruments"]
-        and {"eodhd", "companies-house"}
-        <= {item["provider"] for item in result["provider_qualifications"]}
-        and any(
-            item["provider"] == "companies-house" and "financial" in item["datasets"]
-            for item in result["provider_qualifications"]
-        )
-        and any(item["filing_documents"] for item in result["instruments"])
-    )
+    result["complete"] = _provider_stage_complete(ctx, result)
     result["artifact_refs"] = sorted(refs)
     result["unresolved_candidate_count"] = len(candidates) - len(result["eligibility_reviews"])
     ctx.write_json("state/provider-stage.json", result)

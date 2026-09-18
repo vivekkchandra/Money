@@ -13,9 +13,44 @@ from money.data.provider_probes import (
     QualificationArtifacts,
     probe_companies_house,
     probe_eodhd,
+    qualify_personal_probe,
     qualify_probe,
 )
 from money.data.security import ProviderFailure
+from money.usage_policy import UsageMode
+
+
+def test_personal_technical_probe_is_real_proof_not_a_rights_approval(tmp_path):
+    artifacts = QualificationArtifacts(tmp_path, secrets=("synthetic-api-secret",))
+    report = probe_eodhd("synthetic-api-secret", (sample(),), NOW, artifacts, fetcher=Fetcher())
+    qualification = qualify_personal_probe(report, artifacts, clock=lambda: NOW)
+    qualification.require("ohlcv", NOW, usage_mode=UsageMode.PERSONAL_RESEARCH)
+    assert qualification.personal_use.rights_status == "UNVERIFIED_PERSONAL_USE"
+    assert qualification.qualified_by is None
+    assert qualification.production_qualified is False
+    assert qualification.redistribution == "PROHIBITED"
+    assert not qualification.personal_use.external_sharing
+    proof = artifacts.read(
+        qualification.qualification_report_hash, qualification.qualification_report_hash + ".json"
+    )
+    assert hashlib.sha256(proof).hexdigest() == qualification.qualification_report_hash
+    with pytest.raises(ValueError):
+        qualification.require("ohlcv", NOW)
+    with pytest.raises(ValueError, match="HISTORICAL"):
+        qualification.require("ohlcv", NOW, usage_mode=UsageMode.PERSONAL_RESEARCH, historical=True)
+    assert report.rights_review_hash is None
+
+
+@pytest.mark.parametrize("failure", ["empty", "failed", "stale", "corrupt"])
+def test_personal_rights_policy_never_weakens_technical_probe(tmp_path, failure):
+    artifacts = QualificationArtifacts(tmp_path, secrets=())
+    fetcher = Fetcher(**{failure: "news"}) if failure in {"empty", "failed"} else Fetcher()
+    report = probe_eodhd("synthetic-key", (sample(),), NOW, artifacts, fetcher=fetcher)
+    if failure == "corrupt":
+        (tmp_path / report.datasets[0].artifact_path).write_bytes(b"{}")
+    checked = NOW + timedelta(days=1) if failure == "stale" else NOW
+    with pytest.raises(ValueError):
+        qualify_personal_probe(report, artifacts, clock=lambda: checked)
 
 
 def sample():

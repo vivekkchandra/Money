@@ -7,16 +7,19 @@ Live membership and all non-ethical qualification remain in their existing gates
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import AwareDatetime, Field
 
 from money.adapters.eligibility import _UNKNOWN_ACTIVITIES, _activity
 from money.data.identifiers import InstrumentIdentifiers
 from money.qualification.core import QualificationContext, fingerprint
+from money.qualification.issuer_sources import apply_issuer_sources, validated_issuer_documents
 from money.qualification.universe_reviews import PROVIDERS, _rights, _source
 from money.schemas.contracts import (
     EXCLUDED_ACTIVITIES,
@@ -24,6 +27,7 @@ from money.schemas.contracts import (
     EthicalClearance,
     content_hash,
 )
+from money.usage_policy import PersonalUseAudit, UsageMode, usage_mode
 
 
 class EthicalDocumentInput(Contract):
@@ -33,7 +37,7 @@ class EthicalDocumentInput(Contract):
     provider: str
     dataset: str
     evidence_file: str
-    published_at: AwareDatetime
+    published_at: AwareDatetime | None = None
     retrieved_at: AwareDatetime
     evidence_kind: Literal[
         "annual_report", "regulatory_filing", "business_profile", "business_description", "news"
@@ -123,6 +127,16 @@ def _evaluator(ctx: QualificationContext) -> Callable[[str, str], str] | None:
 
     try:
         selection = load_inference_selections(ctx.repo, ctx.environ)["crewai"]
+        if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+            hostname = urlsplit(str(selection.endpoint)).hostname or ""
+            try:
+                local = hostname == "localhost" or ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                local = False
+            if not local:
+                # Personal licensed source text may not be shared with remote
+                # model providers merely because an inference key is available.
+                return None
         # This bounded preprocessing call does not qualify any native CIO runtime
         # or hosted inference. Local configuration remains local-only evidence.
         return selection.inference(ctx.environ).complete
@@ -162,14 +176,20 @@ def screen_universe(
         except (ValueError, TypeError):
             continue
         key = "isin:" + identifiers.isin
+        legal_name = identifiers.company_name
+        source_row = {**row, "provider_evidence": list(row.get("provider_evidence", []))}
+        if apply_issuer_sources(ctx, source_row):
+            key = "companies-house:" + source_row["companies_house_number"]
+            legal_name = source_row["legal_company_name"]
         facts = []
-        for ref in row.get("provider_evidence", []):
+        for ref in source_row.get("provider_evidence", []):
             try:
-                source = _source(ctx, ref, row)
+                source = _source(ctx, ref, source_row)
                 if source is not None:
                     fact, body = source
                     if fact["dataset"] == "company" and fact["fresh"]:
                         key = "companies-house:" + body["company_number"]
+                        legal_name = body["company_name"]
                     facts.append(source)
             except (ValueError, OSError, TypeError, KeyError):
                 continue
@@ -177,7 +197,7 @@ def screen_universe(
             key,
             {
                 "members": [],
-                "name": identifiers.company_name,
+                "name": legal_name,
                 "facts": [],
                 "documents": [],
             },
@@ -217,18 +237,22 @@ def screen_universe(
         approvals = []
         invalid_evidence = bool(set(isins) & invalid_inputs)
         for provider, rights in global_rights.items():
-            if rights.get("approved_datasets") and rights.get("valid_until"):
+            deadline = rights.get("source_use_valid_until") or rights.get("valid_until")
+            if rights.get("admissible_datasets") and deadline:
                 approvals.append(
                     GlobalSourceApproval(
                         provider=provider,
-                        evidence_hashes=tuple(rights["approval_evidence_hashes"]),
+                        evidence_hashes=tuple(rights["source_use_evidence_hashes"]),
                         permitted_use="ethical-research",
-                        valid_until=rights["valid_until"],
+                        valid_until=deadline,
+                        rights_status=rights["rights_status"],
+                        personal_use=PersonalUseAudit.model_validate(rights["usage_audit"])
+                        if rights.get("usage_audit") else None,
                     )
                 )
         for source, body in group["facts"]:
             rights = global_rights[source["provider"]]
-            if source["dataset"] not in rights["approved_datasets"]:
+            if source["dataset"] not in rights["admissible_datasets"]:
                 continue
             # A current profile is admissible evidence, NOT a complete-business
             # assertion. The evaluator must support coverage from actual quotes.
@@ -262,7 +286,10 @@ def screen_universe(
                 continue
             if (
                 item.provider not in global_rights
-                or item.dataset not in global_rights[item.provider]["approved_datasets"]
+                or item.dataset not in global_rights[item.provider]["admissible_datasets"]
+                # Official issuer text needs a verified retrieval/identity
+                # receipt, not a manually labelled file containing an ISIN.
+                or item.provider == "official-issuer"
             ):
                 invalid_evidence = True
                 continue
@@ -271,7 +298,9 @@ def screen_universe(
                     invalid_evidence = True
                     continue
                 raw_bytes = ctx.read_bytes(item.evidence_file)
-                if not raw_bytes or not item.published_at <= item.retrieved_at <= ctx.now:
+                if not raw_bytes or item.retrieved_at > ctx.now or (
+                    item.published_at is not None and item.published_at > item.retrieved_at
+                ):
                     invalid_evidence = True
                     continue
                 content = raw_bytes.decode("utf-8")
@@ -299,6 +328,42 @@ def screen_universe(
             except (ValueError, OSError, UnicodeError):
                 invalid_evidence = True
                 continue
+        # Official issuer pages and reports are independently bound to the exact
+        # broker/provider/registration identity by the retrieval adapter.
+        for member in group["members"]:
+            try:
+                issuer_documents = validated_issuer_documents(ctx, member)
+            except (ValueError, OSError, TypeError, KeyError):
+                invalid_evidence = True
+                continue
+            for document in issuer_documents:
+                provider = document["provider"]
+                if document["dataset"] not in global_rights.get(provider, {}).get("admissible_datasets", []):
+                    continue
+                try:
+                    raw_bytes = ctx.read_bytes(document["text_path"])
+                    if not raw_bytes or hashlib.sha256(raw_bytes).hexdigest() != document["text_sha256"]:
+                        raise ValueError("ETHICAL_OFFICIAL_DOCUMENT_HASH_MISMATCH")
+                    digest, artifact = ctx.artifact(raw_bytes)
+                    documents[digest] = EthicalEvidence(
+                        source_id=digest,
+                        provider=provider,
+                        issuer_key=key,
+                        content=raw_bytes.decode("utf-8"),
+                        content_sha256=digest,
+                        published_at=document.get("published_at"),
+                        retrieved_at=document["retrieved_at"],
+                        evidence_kind=document["evidence_kind"],
+                    )
+                    references.append({
+                        "sha256": digest, "path": artifact,
+                        "source_url": document["source_url"],
+                        "raw_sha256": document["raw_sha256"],
+                        "raw_path": document["raw_path"],
+                        "rights_status": global_rights[provider]["rights_status"],
+                    })
+                except (ValueError, OSError, TypeError, KeyError, UnicodeError):
+                    invalid_evidence = True
         path = f"state/ethical-screenings/{fingerprint(key)}.json"
         previous = None
         try:

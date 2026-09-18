@@ -24,6 +24,7 @@ from money.data.qualification import ProviderQualification
 from money.data.security import ProviderFailure, SafeFetcher, SourceSecurityError
 from money.data.uk.live import CompaniesHouseProvider, EODHDProvider
 from money.schemas.contracts import Contract, EvidenceRecord, utc_now
+from money.usage_policy import PersonalUseAudit
 
 
 class ProviderAdmissionReview(Contract):
@@ -309,6 +310,105 @@ def _verify_observation(
         raise ValueError("PROVIDER_PROOF_INVALID") from error
 
 
+def _require_technical_probe(
+    report: ProviderProbeReport, artifacts: QualificationArtifacts, now: datetime
+) -> tuple[str, ...]:
+    """The same byte, identity, observation and freshness checks in either usage mode."""
+    if (
+        now.tzinfo is None
+        or now.utcoffset() is None
+        or not report.retrieved_at <= now < report.retrieved_at + timedelta(days=1)
+    ):
+        raise ValueError("PROVIDER_PROBE_STALE")
+    required = ("ohlcv", "corporate_action", "news") if report.provider == "eodhd" else ("filing",)
+    sampled_tickers = {item.ticker for item in report.samples}
+    if not sampled_tickers or len(sampled_tickers) != len(report.samples):
+        raise ValueError("QUALIFICATION_SAMPLES_INVALID")
+    for sample in report.samples:
+        sample.require_current(now)
+    observed_datasets = required if report.provider == "eodhd" else ("company", "filing")
+    if {item.dataset for item in report.datasets} != set(observed_datasets):
+        raise ValueError("PROVIDER_DATASET_NOT_QUALIFIED")
+    for dataset in observed_datasets:
+        observations = [probe for probe in report.datasets if probe.dataset == dataset]
+        if (
+            len(observations) != len(report.samples)
+            or {probe.ticker for probe in observations} != sampled_tickers
+            or any(probe.status == "FAILED" for probe in observations)
+            or not any(probe.status == "RETRIEVED" and probe.record_count for probe in observations)
+        ):
+            raise ValueError("PROVIDER_DATASET_NOT_QUALIFIED")
+        for observation in observations:
+            _verify_observation(report, observation, artifacts)
+    return required
+
+
+def qualify_personal_probe(
+    report: ProviderProbeReport,
+    artifacts: QualificationArtifacts,
+    *,
+    clock: Callable[[], datetime] = utc_now,
+) -> ProviderQualification:
+    """Qualify technical observations for local use, never approve licence rights."""
+    required = _require_technical_probe(report, artifacts, clock())
+    audit = PersonalUseAudit(
+        provider=report.provider,
+        datasets=required if report.provider == "eodhd" else ("company", "filing"),
+        endpoints=(
+            (
+                "https://eodhd.com/api/eod", "https://eodhd.com/api/div",
+                "https://eodhd.com/api/splits", "https://eodhd.com/api/news",
+            )
+            if report.provider == "eodhd"
+            else ("https://api.company-information.service.gov.uk/company",)
+        ),
+        attribution="EODHD" if report.provider == "eodhd" else "Companies House",
+        source_references=(
+            "https://eodhd.com/terms-conditions"
+            if report.provider == "eodhd"
+            else "https://developer.company-information.service.gov.uk/",
+        ),
+    )
+    report_ref = artifacts.save(report.model_dump(mode="json"))
+    audit_ref = artifacts.save(audit.model_dump(mode="json"))
+    proof_hash, _ = artifacts.save(
+        {
+            "kind": "money-personal-provider-technical-qualification-v1",
+            "original_probe": {"sha256": report_ref[0], "path": report_ref[1]},
+            "usage_audit": {"sha256": audit_ref[0], "path": audit_ref[1]},
+            "historical_publication_verified": False,
+            "financial_documents_verified": False,
+        }
+    )
+    return ProviderQualification(
+        provider=report.provider,
+        datasets=required,
+        currencies=tuple(sorted({sample.quote_currency for sample in report.samples})),
+        earliest_observation=min(
+            probe.earliest_observation
+            for probe in report.datasets
+            if probe.earliest_observation is not None
+            and probe.dataset == ("ohlcv" if report.provider == "eodhd" else "filing")
+        ),
+        publication_times="AS_RETRIEVED",
+        maximum_age_seconds=86400,
+        production_qualified=False,
+        qualified_by=None,
+        qualification_report_hash=proof_hash,
+        verified_at=report.retrieved_at,
+        valid_until=min(
+            report.retrieved_at + timedelta(days=1),
+            *(sample.valid_until for sample in report.samples),
+        ),
+        usage_purpose="personal research only",
+        storage_policy="private bounded normalized evidence; no external sharing",
+        redistribution="PROHIBITED",
+        attribution=audit.attribution,
+        source_documentation=audit.source_references[0],
+        personal_use=audit,
+    )
+
+
 def qualify_probe(
     report: ProviderProbeReport,
     review: ProviderAdmissionReview,
@@ -336,26 +436,7 @@ def qualify_probe(
         or hashlib.sha256(rights_evidence).hexdigest() != review.rights_evidence_hash
     ):
         raise ValueError("PROVIDER_ADMISSION_REVIEW_INVALID")
-    required = ("ohlcv", "corporate_action", "news") if report.provider == "eodhd" else ("filing",)
-    sampled_tickers = {item.ticker for item in report.samples}
-    if not sampled_tickers or len(sampled_tickers) != len(report.samples):
-        raise ValueError("QUALIFICATION_SAMPLES_INVALID")
-    for sample in report.samples:
-        sample.require_current(now)
-    observed_datasets = required if report.provider == "eodhd" else ("company", "filing")
-    if {item.dataset for item in report.datasets} != set(observed_datasets):
-        raise ValueError("PROVIDER_DATASET_NOT_QUALIFIED")
-    for dataset in observed_datasets:
-        observations = [probe for probe in report.datasets if probe.dataset == dataset]
-        if (
-            len(observations) != len(report.samples)
-            or {probe.ticker for probe in observations} != sampled_tickers
-            or any(probe.status == "FAILED" for probe in observations)
-            or not any(probe.status == "RETRIEVED" and probe.record_count for probe in observations)
-        ):
-            raise ValueError("PROVIDER_DATASET_NOT_QUALIFIED")
-        for observation in observations:
-            _verify_observation(report, observation, artifacts)
+    required = _require_technical_probe(report, artifacts, now)
     artifacts.save_bytes(rights_evidence)
     # Persist review text as an actual artifact; never merely invent its digest.
     review_hash, _ = artifacts.save(review.model_dump(mode="json"))

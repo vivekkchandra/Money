@@ -190,7 +190,7 @@ class FinancialFact(Contract):
 
 
 class DocumentFact(Contract):
-    kind: Literal["filing", "announcement", "news", "corporate_action", "macro"]
+    kind: Literal["filing", "announcement", "news", "corporate_action", "macro", "instrument_metadata"]
     title: str = Field(min_length=1, max_length=500)
     excerpt: str = Field(max_length=20000)
     url: str = Field(min_length=1, max_length=2000)
@@ -237,7 +237,25 @@ class EvidenceRecord(Contract):
         )
 
 
+class ResearchEnrichment(Contract):
+    """Availability is information, not permission, identity proof or approval."""
+
+    source: str = Field(min_length=1, max_length=100)
+    status: Literal["AVAILABLE", "UNAVAILABLE", "NOT_CONFIGURED", "ACCESS_DENIED", "STALE"]
+    reason: str = Field(default="", max_length=1000)
+    evidence_ids: tuple[str, ...] = ()
+
+
 class ResearchSnapshot(Contract):
+    purpose: Literal["PRODUCTION_QUALIFICATION", "RESEARCH_TESTING"] = Field(
+        default="PRODUCTION_QUALIFICATION",
+        exclude_if=lambda value: value == "PRODUCTION_QUALIFICATION",
+    )
+    enrichment: tuple[ResearchEnrichment, ...] = Field(default=(), exclude_if=lambda value: not value)
+    missing_data: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+    issuer_source_policy: Literal["companies_house", "official_disclosures"] = Field(
+        default="companies_house", exclude_if=lambda value: value == "companies_house"
+    )
     snapshot_id: str
     ticker: Ticker
     created_at: AwareDatetime
@@ -251,6 +269,12 @@ class ResearchSnapshot(Contract):
     # Legacy snapshots required Qlib. Omit that default to preserve archived
     # hashes; explicit disabled mode is frozen into every new snapshot hash.
     qlib_enabled: bool = Field(default=True, strict=True, exclude_if=lambda value: value is True)
+    # Personal rights uncertainty is immutable provenance, never production
+    # approval. Omit the strict legacy default to preserve historical hashes.
+    usage_mode: Literal["PERSONAL_RESEARCH", "HOSTED_COMMERCIAL_PRODUCTION"] = Field(
+        default="HOSTED_COMMERCIAL_PRODUCTION",
+        exclude_if=lambda value: value == "HOSTED_COMMERCIAL_PRODUCTION",
+    )
     # Live bulk discovery binds each candidate to the complete pre-screen
     # universe. Omit absent bindings to retain existing archived hash contracts.
     universe_hash: str | None = Field(
@@ -262,8 +286,16 @@ class ResearchSnapshot(Contract):
     def required_first_pass_firms(self) -> frozenset[str]:
         return required_first_pass_firms(self.qlib_enabled)
 
+    def require_commercial_release(self) -> None:
+        if self.purpose == "RESEARCH_TESTING" or self.usage_mode == "PERSONAL_RESEARCH":
+            raise ValueError("PERSONAL_USE_PUBLIC_COMMERCIAL_REDISTRIBUTION_FORBIDDEN")
+
     @model_validator(mode="after")
     def freeze_facts(self) -> Self:
+        if self.purpose == "RESEARCH_TESTING" and (
+            self.usage_mode != "PERSONAL_RESEARCH" or self.qlib_enabled or not self.universe_hash
+        ):
+            raise ValueError("RESEARCH_TESTING_REQUIRES_PERSONAL_SCOPE_FROZEN_UNIVERSE_AND_QLIB_DISABLED")
         if self.instrument.ticker != self.ticker:
             raise ValueError("instrument and snapshot ticker mismatch")
         if self.instrument.verified_at > self.created_at:
@@ -274,6 +306,9 @@ class ResearchSnapshot(Contract):
             raise ValueError("historical instrument metadata contains look-ahead information")
         if len({e.evidence_id for e in self.evidence}) != len(self.evidence):
             raise ValueError("duplicate evidence identity")
+        evidence_ids = {e.evidence_id for e in self.evidence}
+        if any(not set(item.evidence_ids) <= evidence_ids for item in self.enrichment):
+            raise ValueError("enrichment references unknown evidence")
         for cutoff in (
             self.price_cutoff,
             self.news_cutoff,
@@ -339,6 +374,32 @@ class Usage(Contract):
     cost_gbp: Decimal | None = Field(default=None, ge=0)
 
 
+class ResearchAnalysis(Contract):
+    """Cited claim IDs grouped by analytical role; absent facts stay absent."""
+
+    bullish_evidence: tuple[str, ...] = ()
+    bearish_evidence: tuple[str, ...] = ()
+    catalysts: tuple[str, ...] = ()
+    risks: tuple[str, ...] = ()
+    valuation_observations: tuple[str, ...] = ()
+    fundamental_observations: tuple[str, ...] = ()
+    price_technical_observations: tuple[str, ...] = ()
+    macro_sensitivity: tuple[str, ...] = ()
+    news_events: tuple[str, ...] = ()
+    proposed_thesis: tuple[str, ...] = ()
+    invalidation_conditions: tuple[str, ...] = ()
+    uncertainty: tuple[str, ...] = ()
+    missing_data: tuple[str, ...] = ()
+    confidence: Literal["LOW", "MEDIUM", "HIGH", "INSUFFICIENT_EVIDENCE"] = "INSUFFICIENT_EVIDENCE"
+
+    def require_claims(self, claims: tuple[Claim, ...]) -> None:
+        allowed = {claim.claim_id for claim in claims}
+        for field in type(self).model_fields:
+            if field not in {"confidence", "uncertainty", "missing_data"}:
+                if not set(getattr(self, field)) <= allowed:
+                    raise ValueError("RESEARCH_ANALYSIS_UNKNOWN_CLAIM")
+
+
 class FirmReport(Contract):
     firm: Literal["tradingagents", "ai_hedge_fund", "qlib"]
     snapshot_id: str
@@ -355,6 +416,13 @@ class FirmReport(Contract):
     created_at: AwareDatetime
     usage: Usage = Field(default_factory=Usage)
     runtime: Literal["live", "demo"] = "live"
+    analysis: ResearchAnalysis | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def cited_analysis(self) -> Self:
+        if self.analysis is not None:
+            self.analysis.require_claims(self.claims)
+        return self
 
 
 class TradingAgentsResearchReport(FirmReport):

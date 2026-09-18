@@ -366,11 +366,11 @@ def test_full_refresh_preserves_raw_hashes_and_only_bulk_templates(
     assert broker.calls == ["instruments", "exchanges"]
     assert result["summary"]["raw_instruments"] == 4
     assert result["summary"]["gbx_stocks"] == 1
-    assert result["summary"]["venue_resolved"] == 1
-    assert result["stocks"][1]["qualification_state"] == "EXCLUDED_NON_GBX"
+    assert result["summary"]["venue_resolved"] == 2
+    assert result["stocks"][1]["research_state"] == "RESEARCH_ELIGIBLE"
     assert result["summary"]["qualified"] == 0
-    assert result["summary"]["unresolved"] == 1
-    assert result["summary"]["states"] == {"UNRESOLVED_ETHICAL": 1}
+    assert result["summary"]["unresolved"] == 2
+    assert result["summary"]["states"] == {"UNRESOLVED_ETHICAL": 2}
     assert result["summary"]["raw_states"]["UNRESOLVED_IDENTITY"] == 1
     assert (
         result["provenance"]["instrument_response_hash"]
@@ -439,7 +439,7 @@ def test_every_gbx_stock_reaches_provider_lookup_without_uk_venue(
     assert ctx.read_json("outputs/universe-review-queue.json")["venue_review_required"] is False
 
 
-def test_only_gbx_stocks_are_enriched_and_counted(ctx: QualificationContext) -> None:
+def test_gbp_and_gbx_stocks_are_enriched_and_counted(ctx: QualificationContext) -> None:
     broker = Broker(
         [
             instrument(),
@@ -452,15 +452,17 @@ def test_only_gbx_stocks_are_enriched_and_counted(ctx: QualificationContext) -> 
     )
     enricher = Enricher()
     result = universe.finalize_universe(ctx, broker=broker, enricher=enricher)
-    assert enricher.calls == ["TESTl_EQ"]
+    assert enricher.calls == ["GBP_EQ", "TESTl_EQ"]
     assert result["summary"]["raw_instruments"] == 6
     assert result["summary"]["gbx_stocks"] == 1
-    assert result["summary"]["eodhd_mapping_attempted"] == 1
-    assert result["summary"]["excluded"] == 5
+    assert result["summary"]["gbp_gbx_stocks"] == 2
+    assert result["summary"]["eodhd_mapping_attempted"] == 2
+    assert result["summary"]["excluded"] == 4
     assert result["initial_filter"] == {
         "instrument_type": "STOCK",
-        "quote_currency": "GBX",
+        "quote_currencies": ["GBP", "GBX"],
         "venue_required": False,
+        "company_enrichment_required": False,
     }
 
 
@@ -841,7 +843,7 @@ def test_invalid_optional_exchange_cache_is_discarded_not_used_as_identity(
     assert broker.calls == ["instruments", "exchanges"]
 
 
-def test_finalizer_summary_uses_gbx_denominator_and_no_uk_venue_gate(
+def test_finalizer_summary_uses_gbp_gbx_denominator_and_no_uk_venue_gate(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     broker = Broker(
@@ -853,10 +855,10 @@ def test_finalizer_summary_uses_gbx_denominator_and_no_uk_venue_gate(
     monkeypatch.setattr(universe, "finalize_universe", lambda *_args, **_kwargs: result)
     assert universe.main(["--output", str(ctx.root)]) == 2
     output = capsys.readouterr().out
-    assert "Raw instruments: 2\nGBX stocks: 1" in output
-    assert "Venue resolved (informational only): 0/1" in output
-    assert "EODHD mappings attempted: 1/1" in output
-    assert "EODHD mapped: 1/1" in output
+    assert "Raw instruments: 2\nGBP/GBX stocks: 2" in output
+    assert "Venue resolved (informational only): 0/2" in output
+    assert "EODHD mappings attempted: 2/2" in output
+    assert "EODHD mapped: 2/2" in output
     assert "ISA scope" not in output
     assert "UK venue stocks" not in output
     assert "Stocks GBP/GBX" not in output
@@ -1071,8 +1073,12 @@ def test_machine_screening_without_any_ethical_review_file(
     licence = ctx.artifact(b"Synthetic provider-wide licence for ethical-research")
     monkeypatch.setattr(universe_ethics, "_rights", lambda _ctx, provider: {
         "approved_datasets": ["financial"] if provider == "eodhd" else [],
+        "admissible_datasets": ["financial"] if provider == "eodhd" else [],
         "valid_until": (NOW + timedelta(days=90)).isoformat(),
         "approval_evidence_hashes": [licence[0]],
+        "source_use_evidence_hashes": [licence[0]],
+        "rights_status": "REVIEWED",
+        "usage_audit": None,
     })
     calls = []
 

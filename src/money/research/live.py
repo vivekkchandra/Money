@@ -39,9 +39,15 @@ from money.backtest.lean import (
 from money.crews.cio import CIOResult, CrewAICioAdapter, CrewAINativeRunner
 from money.data.identifiers import InstrumentIdentifiers
 from money.data.live_eligibility import EligibilityReview, Trading212LiveEligibilityService
+from money.data.official_disclosures import (
+    OfficialDisclosureProof,
+    require_official_disclosures,
+    validate_disclosure_records,
+)
 from money.data.qualification import ProviderQualification
 from money.data.quality.market import evaluate_market_quality
 from money.data.resilience import ProviderCircuit
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.data.uk.filing_documents import (
     CompaniesHouseFilingDocuments,
     FinancialCurrencyProof,
@@ -76,6 +82,7 @@ from money.schemas.contracts import (
 )
 from money.signals.generation import SignalDesign, SignalPolicy, generate_signal
 from money.storage import ResearchStore
+from money.usage_policy import UsageMode
 
 if TYPE_CHECKING:
     from money.flows.research import ResearchRuntime
@@ -95,8 +102,14 @@ class VerifiedInstrument(Contract):
     archived_market_evidence: tuple[EvidenceRecord, ...] = Field(default=(), max_length=4000)
     archived_market_proof_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     filing_documents: tuple[FinancialCurrencyProof, ...] = Field(default=(), max_length=4)
+    official_disclosures: tuple[OfficialDisclosureProof, ...] = Field(
+        default=(), max_length=4, exclude_if=lambda value: not value,
+    )
     issuer_jurisdiction: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     issuer_jurisdiction_proof_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    issuer_company_number: str | None = Field(
+        default=None, pattern=r"^[A-Z0-9]{8}$", exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def reviewed_filing_identity(self) -> VerifiedInstrument:
@@ -111,6 +124,18 @@ class VerifiedInstrument(Contract):
             for proof in self.filing_documents
         ):
             raise ValueError("LIVE_FILING_COMPANY_MISMATCH")
+        if self.filing_documents and self.official_disclosures:
+            raise ValueError("LIVE_ISSUER_SOURCE_ROUTES_MIXED")
+        for proof in self.official_disclosures:
+            validate_disclosure_records(
+                proof, self.identifiers, self.supplemental_evidence,
+                issuer_company_number=self.issuer_company_number,
+            )
+            if (
+                proof.jurisdiction != self.issuer_jurisdiction
+                or proof.identity_evidence_hash != self.issuer_jurisdiction_proof_hash
+            ):
+                raise ValueError("OFFICIAL_DISCLOSURE_JURISDICTION_MISMATCH")
         return self
 
 
@@ -171,6 +196,10 @@ class LiveManifest(Contract):
     provider_qualifications: tuple[ProviderQualification, ...] = Field(min_length=1)
     market_credential_environment_variable: str = "EODHD_API_KEY"
     filings_credential_environment_variable: str = "COMPANIES_HOUSE_API_KEY"
+    issuer_source_policy: IssuerSourcePolicy = Field(
+        default=IssuerSourcePolicy.COMPANIES_HOUSE,
+        exclude_if=lambda value: value == IssuerSourcePolicy.COMPANIES_HOUSE,
+    )
     filing_document_storage_hosts: tuple[ReviewedStorageHost, ...] = Field(default=(), max_length=8)
     tradingagents: InferenceSelection
     ai_hedge_fund: InferenceSelection
@@ -219,6 +248,21 @@ class LiveManifest(Contract):
         broker_ids = [item.identifiers.trading212_id for item in instruments]
         if len(tickers) != len(set(tickers)) or len(broker_ids) != len(set(broker_ids)):
             raise ValueError("LIVE_MANIFEST_DUPLICATE_IDENTITY")
+        if self.issuer_source_policy == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+            qualifications = {item.provider: item for item in self.provider_qualifications}
+            for instrument in instruments:
+                if instrument.filing_documents:
+                    raise ValueError("LIVE_ISSUER_SOURCE_ROUTES_MIXED")
+                require_official_disclosures(
+                    instrument.official_disclosures, instrument.identifiers,
+                    instrument.supplemental_evidence, qualifications, utc_now(),
+                    jurisdiction=instrument.issuer_jurisdiction,
+                    jurisdiction_proof_hash=instrument.issuer_jurisdiction_proof_hash,
+                    issuer_company_number=instrument.issuer_company_number,
+                )
+            return
+        if any(item.official_disclosures for item in instruments):
+            raise ValueError("LIVE_ISSUER_SOURCE_POLICY_MISMATCH")
         if any(item.filing_documents for item in instruments):
             company_qualification = next(
                 item for item in self.provider_qualifications if item.provider == "companies-house"
@@ -258,13 +302,18 @@ class LiveManifest(Contract):
         providers = [item.provider for item in self.provider_qualifications]
         if len(providers) != len(set(providers)):
             raise ValueError("LIVE_MANIFEST_DUPLICATE_IDENTITY")
-        if not {"eodhd", "companies-house"} <= set(providers):
+        required_providers = {"eodhd"}
+        if self.issuer_source_policy == IssuerSourcePolicy.COMPANIES_HOUSE:
+            required_providers.add("companies-house")
+        if not required_providers <= set(providers):
             raise ValueError("LIVE_MANIFEST_REQUIRED_PROVIDER_MISSING")
         required_datasets = {
             "eodhd": {"ohlcv", "corporate_action", "news"},
             "companies-house": {"filing"},
         }
         for provider in self.provider_qualifications:
+            if provider.personal_use is not None:
+                raise ValueError("LIVE_MANIFEST_PERSONAL_USE_FORBIDDEN")
             if not provider.datasets or not required_datasets.get(provider.provider, set()) <= set(
                 provider.datasets
             ):
@@ -286,6 +335,10 @@ class LiveProvenance(Contract):
     cost_version: str
     native_egress_verification_hash: str
     model_selections: tuple[tuple[str, str, str], ...]
+    issuer_source_policy: IssuerSourcePolicy = Field(
+        default=IssuerSourcePolicy.COMPANIES_HOUSE,
+        exclude_if=lambda value: value == IssuerSourcePolicy.COMPANIES_HOUSE,
+    )
 
 
 def read_qualification_bytes(root: Path, relative: str, maximum: int) -> bytes:
@@ -480,12 +533,17 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
                 raise ValueError("ARCHIVED_MARKET_PROOF_MISSING")
             required.add(item.archived_market_proof_hash)
         if item.issuer_jurisdiction is not None:
-            if (item.issuer_jurisdiction == "GB"
+            if (manifest.issuer_source_policy == IssuerSourcePolicy.COMPANIES_HOUSE
+                    and (item.issuer_jurisdiction == "GB"
                     or item.identifiers.companies_house_number is not None
-                    or item.issuer_jurisdiction_proof_hash is None):
+                    or item.issuer_jurisdiction_proof_hash is None)):
                 raise ValueError("LIVE_FOREIGN_ISSUER_JURISDICTION_INVALID")
+            if item.issuer_jurisdiction_proof_hash is None:
+                raise ValueError("ISSUER_JURISDICTION_PROOF_REQUIRED")
             required.add(item.issuer_jurisdiction_proof_hash)
         required.update(proof.evidence_hash for proof in item.filing_documents)
+        for disclosure in item.official_disclosures:
+            required.update(disclosure.artifact_hashes)
     for provider in manifest.provider_qualifications:
         if provider.qualification_report_hash:
             required.add(provider.qualification_report_hash)
@@ -502,6 +560,7 @@ def merge_archived_market(
     qualifications: dict[str, ProviderQualification],
     snapshot_id: str,
     instrument: InstrumentMetadata,
+    *, usage_mode: UsageMode = UsageMode.HOSTED_COMMERCIAL_PRODUCTION,
 ) -> list[EvidenceRecord]:
     """Explicit original-publication archive takes priority only without conflicts.
 
@@ -520,7 +579,7 @@ def merge_archived_market(
         qualification = qualifications.get(record.provider)
         if qualification is None:
             raise ValueError("ARCHIVED_MARKET_PROVIDER_UNQUALIFIED")
-        qualification.require("ohlcv", now, historical=True)
+        qualification.require("ohlcv", now, historical=True, usage_mode=usage_mode)
         if (
             "GB" not in qualification.geography
             or "STOCK" not in qualification.instrument_types
@@ -574,13 +633,21 @@ class SnapshotSources(Protocol):
     @property
     def filing_document_storage_hosts(self) -> tuple[ReviewedStorageHost, ...]: ...
 
+    @property
+    def issuer_source_policy(self) -> IssuerSourcePolicy: ...
+
 
 class LiveSnapshotBuilder:
     def __init__(
-        self, manifest: SnapshotSources, store: ResearchStore, *, qlib_enabled: bool = True
+        self, manifest: SnapshotSources, store: ResearchStore, *, qlib_enabled: bool = True,
+        usage_mode: UsageMode = UsageMode.HOSTED_COMMERCIAL_PRODUCTION,
     ) -> None:
         self.manifest = manifest
         self.qlib_enabled = qlib_enabled
+        self.usage_mode = usage_mode
+        self.issuer_source_policy = IssuerSourcePolicy(
+            getattr(manifest, "issuer_source_policy", IssuerSourcePolicy.COMPANIES_HOUSE)
+        )
         self.circuit = ProviderCircuit(store)
 
     def __call__(self, instrument: InstrumentMetadata) -> ResearchSnapshot:
@@ -595,6 +662,7 @@ class LiveSnapshotBuilder:
         market = EODHDProvider(
             os.environ.get(self.manifest.market_credential_environment_variable, ""),
             qualifications["eodhd"],
+            usage_mode=self.usage_mode,
         )
         records: list[EvidenceRecord] = []
         for dataset in ("ohlcv", "corporate_action", "news"):
@@ -606,13 +674,55 @@ class LiveSnapshotBuilder:
             )
         if item.archived_market_evidence:
             records = merge_archived_market(
-                records, item.archived_market_evidence, qualifications, snapshot_id, instrument
+                records, item.archived_market_evidence, qualifications, snapshot_id, instrument,
+                usage_mode=self.usage_mode,
             )
-        if item.identifiers.companies_house_number:
+        if self.issuer_source_policy == IssuerSourcePolicy.OFFICIAL_DISCLOSURES:
+            if item.filing_documents:
+                raise ValueError("LIVE_ISSUER_SOURCE_ROUTES_MIXED")
+            require_official_disclosures(
+                item.official_disclosures, item.identifiers, item.supplemental_evidence,
+                qualifications, now, jurisdiction=item.issuer_jurisdiction,
+                jurisdiction_proof_hash=item.issuer_jurisdiction_proof_hash,
+                issuer_company_number=item.issuer_company_number,
+                usage_mode=self.usage_mode,
+            )
+            for proof in item.official_disclosures:
+                records.append(
+                    EvidenceRecord(
+                        snapshot_id=snapshot_id,
+                        source="Official issuer document and conversion provenance",
+                        provider=proof.provider,
+                        source_id=f"{proof.source_id}:provenance",
+                        canonical_source_id=f"{proof.provider}:{proof.source_id}:provenance",
+                        observation_time=proof.retrieval_time,
+                        publication_time=proof.publication_time,
+                        retrieval_time=proof.retrieval_time,
+                        fresh_until=min(
+                            proof.fresh_until, qualifications[proof.provider].valid_until,
+                            item.identifiers.valid_until,
+                        ),
+                        pit_safe=True,
+                        critical=True,
+                        payload=DocumentFact(
+                            kind="filing",
+                            title="Verified official disclosure provenance; raw redistribution prohibited",
+                            excerpt=json.dumps(
+                                proof.model_dump(mode="json", exclude={"evidence_hashes"})
+                                | {"disclosure_proof_hash": content_hash(proof)},
+                                sort_keys=True, separators=(",", ":"),
+                            ),
+                            url=proof.source_url,
+                        ),
+                    )
+                )
+        elif item.official_disclosures:
+            raise ValueError("LIVE_ISSUER_SOURCE_POLICY_MISMATCH")
+        elif item.identifiers.companies_house_number:
             filing = CompaniesHouseProvider(
                 os.environ.get(self.manifest.filings_credential_environment_variable, "")
             )
-            qualifications["companies-house"].require("filing", now)
+            qualifications["companies-house"].require("filing", now, usage_mode=self.usage_mode)
             records.extend(
                 self.circuit.call(
                     "companies-house:filing", lambda: filing.filings(item.identifiers, snapshot_id, now)
@@ -626,6 +736,7 @@ class LiveSnapshotBuilder:
                 os.environ.get(self.manifest.filings_credential_environment_variable, ""),
                 qualifications["companies-house"],
                 storage_hosts=self.manifest.filing_document_storage_hosts,
+                usage_mode=self.usage_mode,
             )
             for selection in item.filing_documents:
                 bundle = self.circuit.call(
@@ -669,7 +780,9 @@ class LiveSnapshotBuilder:
         for evidence in (*item.supplemental_evidence, item.spread_evidence):
             if evidence.provider not in qualifications:
                 raise ValueError("PROVIDER_UNQUALIFIED")
-            qualifications[evidence.provider].require(evidence.payload.kind, now)
+            qualifications[evidence.provider].require(
+                evidence.payload.kind, now, usage_mode=self.usage_mode
+            )
             if evidence.fresh_until <= now or not evidence.available_at(now):
                 raise ValueError("CRITICAL_DATA_STALE")
             records.append(
@@ -704,6 +817,13 @@ class LiveSnapshotBuilder:
             instrument=instrument,
             evidence=tuple(records),
             qlib_enabled=self.qlib_enabled,
+            usage_mode=cast(
+                Literal["PERSONAL_RESEARCH", "HOSTED_COMMERCIAL_PRODUCTION"], self.usage_mode.value
+            ),
+            issuer_source_policy=cast(
+                Literal["companies_house", "official_disclosures"],
+                self.issuer_source_policy.value,
+            ),
         )
         quality = evaluate_market_quality(
             snapshot,
@@ -745,6 +865,11 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
 
     if "MONEY_QLIB_ENABLED" in os.environ and qlib_enabled(os.environ) != manifest.qlib_enabled:
         raise ValueError("LIVE_QLIB_MODE_DIFFERS_FROM_PINNED_MANIFEST")
+    if (
+        "MONEY_ISSUER_SOURCE_POLICY" in os.environ
+        and issuer_source_policy(os.environ) != manifest.issuer_source_policy
+    ):
+        raise ValueError("LIVE_ISSUER_SOURCE_POLICY_DIFFERS_FROM_PINNED_MANIFEST")
     model = None
     if manifest.qlib_enabled:
         if manifest.qlib_registry_id is None or manifest.qlib_artifact_hash is None:
@@ -921,6 +1046,7 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
         if manifest.enable_native_cross_examination else None,
         provenance=LiveProvenance(
             manifest_hash=content_hash(manifest),
+            issuer_source_policy=manifest.issuer_source_policy,
             provider_qualifications=manifest.provider_qualifications,
             qlib_enabled=manifest.qlib_enabled,
             qlib_artifact_hash=manifest.qlib_artifact_hash,

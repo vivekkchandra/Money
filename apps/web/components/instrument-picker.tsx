@@ -66,7 +66,7 @@ export function InstrumentPicker({ selected, onSelect, disabled = false, allowUn
       onBlur={event => { if (!event.currentTarget.parentElement?.parentElement?.contains(event.relatedTarget)) dispatch({ type: "close" }); }}
     /></div>
     <p id={helpId} className="search-help">Choose a listed match. A listing is not a research recommendation.</p>
-    {state.mode === "live_rnd" && <p className="search-help"><strong>R&D / PERSONAL USE</strong> · Public-source search; not a verified ISA universe. Data may be delayed and is not commercially licensed.</p>}
+    {state.mode === "live_rnd" && <p className="search-help"><strong>R&D / PERSONAL USE</strong> · Public-source search; not a qualified live broker universe. Data may be delayed and is not commercially licensed.</p>}
     <div id={statusId} role="status" aria-live="polite" className="search-status">
       {state.phase === "loading" && "Searching the configured company source…"}
       {state.phase === "idle" && "Start typing a company name or ticker."}

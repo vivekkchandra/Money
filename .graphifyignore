@@ -1,4 +1,6 @@
 .venv/
+.venv-tradingagents/
+.venv-ai-hedge-fund/
 upstreams/
 data/
 logs/

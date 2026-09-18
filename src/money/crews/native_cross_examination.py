@@ -141,7 +141,7 @@ class NativeFirmChallengeRunner:
         package = "tradingagents" if self.firm == "tradingagents" else "hedge_fund"
         if self.settings.verify_source_pin:
             require_pinned_source(package)
-        session = InferenceSession(self.inference, self.settings)
+        session = InferenceSession(self.inference, self.settings, usage_mode=snapshot.usage_mode)
         context = _context(snapshot, own_report, challenge, round_number)
         schema_instruction = ("\nRespond to the supplied challenge, not a trading decision. "
             "MAINTAIN requires evidence supporting the unchanged original claim; otherwise withdraw "
@@ -353,7 +353,7 @@ class CrewAIChallengeVerifier:
                 auth.get_auth_token = original_auth
         except ImportError as exc:
             raise UpstreamUnavailable("pinned CrewAI challenge-verification runtime is unavailable") from exc
-        session = InferenceSession(self.inference, self.settings)
+        session = InferenceSession(self.inference, self.settings, usage_mode=snapshot.usage_mode)
         role = "Independent Correspondence Evidence Auditor"
         description = (snapshot_payload(snapshot) + "\nUNTRUSTED_CHALLENGE=" + challenge.model_dump_json()
             + "\nUNTRUSTED_RESPONSE=" + response.model_dump_json()

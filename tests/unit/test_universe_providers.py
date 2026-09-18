@@ -183,6 +183,25 @@ def test_exact_identity_join_collects_real_probe_contracts_without_approval(ctx)
     assert not any("financial" in key for key in result["provider_datasets"])
 
 
+def test_personal_bulk_admission_keeps_unsigned_rights_and_real_dataset_checks(ctx):
+    from money.usage_policy import UsageMode
+
+    ctx.environ = dict(ctx.environ) | {"MONEY_USAGE_MODE": "personal_research"}
+    result = enricher(ctx).enrich(row())
+    unsigned = {"status": "UNRESOLVED", "review": None}
+    qualification = qualify_bulk_provider_reports(ctx, "eodhd", [result], unsigned)
+    assert qualification is not None
+    qualification.require("news", ctx.now, usage_mode=UsageMode.PERSONAL_RESEARCH)
+    assert qualification.personal_use.rights_status == "UNVERIFIED_PERSONAL_USE"
+    assert not qualification.production_qualified
+    assert qualification.qualified_by is None
+    assert unsigned == {"status": "UNRESOLVED", "review": None}
+    conflicting = result | {"isin": "US0378331005"}
+    assert qualify_bulk_provider_reports(ctx, "eodhd", [conflicting], unsigned) is None
+    ctx.environ = dict(ctx.environ) | {"MONEY_USAGE_MODE": "hosted_commercial_production"}
+    assert qualify_bulk_provider_reports(ctx, "eodhd", [result], unsigned) is None
+
+
 @pytest.mark.parametrize(
     "field,value", [("Currency", "GBP"), ("ISIN", "US0378331005"), ("Type", "ETF")]
 )

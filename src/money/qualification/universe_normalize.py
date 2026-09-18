@@ -1,4 +1,4 @@
-"""Normalize current live STOCK/GBX membership without granting qualification.
+"""Normalize current live STOCK/GBP/GBX membership without granting qualification.
 
 Trading 212's accessible-instrument response alone establishes initial market
 membership. Exchange, country, and MIC are optional enrichment, never membership
@@ -165,7 +165,7 @@ def normalize_universe(
 
     ``universe_member`` records the exact live type/currency market filter even
     when a subsequent identity check fails. ``identity_valid`` is independently
-    established by the broker identifier, ISIN, name, and duplicate checks only;
+    established by the broker identifier and non-conflicting optional identity;
     provider enrichment may run before final qualification. Valid candidates remain
     ``UNRESOLVED_PROVIDER_MAPPING`` until providers, ethics, and freshness
     gates are verified. Venue facts are informational.
@@ -211,7 +211,7 @@ def normalize_universe(
             "quote_currency": currency,
             "instrument_type": instrument_type,
             "universe_member": source.get("type") == "STOCK"
-            and source.get("currencyCode") == "GBX",
+            and source.get("currencyCode") in ("GBP", "GBX"),
             "identity_valid": False,
             "exchange_id": None,
             "exchange_name": None,
@@ -223,6 +223,7 @@ def normalize_universe(
             "extended_hours": source.get("extendedHours"),
             "observed_at": observed_at.isoformat(),
             "valid_until": (observed_at + timedelta(hours=24)).isoformat(),
+            "broker_valid_until": (observed_at + timedelta(hours=24)).isoformat(),
             "instrument_row_sha256": metadata_row_hash(raw),
             "exchange_row_sha256": None,
             "companies_house_number": None,
@@ -233,6 +234,7 @@ def normalize_universe(
             "ethical_state": "NOT_YET_SCREENED",
             "evidence_freshness": "FRESH_MEMBERSHIP_ONLY",
             "qualification_state": "UNRESOLVED_IDENTITY",
+            "research_state": "DISCOVERED",
             "reasons": reasons,
         }
         rows.append(row)
@@ -249,17 +251,20 @@ def normalize_universe(
             row["qualification_state"] = "EXCLUDED_INSTRUMENT_TYPE"
             reasons.append("NOT_INDIVIDUAL_STOCK_TYPE")
             continue
-        if source.get("currencyCode") != "GBX":
-            row["qualification_state"] = "EXCLUDED_NON_GBX"
-            reasons.append("QUOTE_CURRENCY_NOT_GBX")
+        if source.get("currencyCode") not in ("GBP", "GBX"):
+            row["qualification_state"] = "EXCLUDED_NON_GBP_GBX"
+            reasons.append("QUOTE_CURRENCY_NOT_GBP_GBX")
             continue
-        if broker_id is None or isin is None or row["name"] is None:
+        # Absent enrichment is not corrupt identity. A supplied malformed ISIN,
+        # however, must not be silently discarded to evade an identity conflict.
+        if broker_id is None or (source.get("isin") not in (None, "") and isin is None):
             reasons.append("INSTRUMENT_IDENTIFIER_INVALID")
             continue
         # A different venue does not by itself turn
         # the same ISIN into a separate economic security. Quarantine aliases;
         # never select a preferred line using provider order or ticker heuristics.
-        economic_keys[isin].append(row)
+        if isin is not None:
+            economic_keys[isin].append(row)
         row["identity_valid"] = True
         row["qualification_state"] = "UNRESOLVED_PROVIDER_MAPPING"
 
@@ -275,4 +280,7 @@ def normalize_universe(
                         row["qualification_state"] = "UNRESOLVED_IDENTITY"
                     if reason not in row["reasons"]:
                         row["reasons"].append(reason)
+    for row in rows:
+        row["basic_identity_valid"] = row["identity_valid"]
+        row["basic_identity_reasons"] = list(row["reasons"])
     return rows

@@ -9,8 +9,11 @@ or an uncalibrated numeric confidence score.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from importlib import import_module
+from types import SimpleNamespace
 from typing import Any
 
 from money.adapters.native import (
@@ -27,6 +30,7 @@ from money.adapters.upstream import UPSTREAM_SHAS, InvalidUpstreamReport, Upstre
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
     Claim,
+    ResearchAnalysis,
     ResearchMandate,
     ResearchSnapshot,
     TradingAgentsResearchReport,
@@ -83,6 +87,44 @@ def _native_chat(session: InferenceSession, context: str) -> Any:
     return SnapshotChat()
 
 
+@contextmanager
+def _snapshot_sentiment_sources() -> Iterator[None]:
+    """Bind native eager prefetches to honest absence inside the private child.
+
+    The pinned sentiment node directly calls three data functions before invoking
+    its model; disabling model tools does not intercept those calls. Keep the
+    native node and its debate intact, but provide no external-data capability.
+    Native source files and the shared tool objects are never modified. Original
+    module aliases are restored even if analysis fails.
+    """
+    try:
+        module: Any = import_module("tradingagents.agents.analysts.sentiment_analyst")
+        names = ("get_news", "fetch_stocktwits_messages", "fetch_reddit_posts")
+        previous = {name: getattr(module, name) for name in names}
+    except (ImportError, AttributeError) as exc:
+        raise UpstreamUnavailable("the pinned sentiment source boundary is unavailable") from exc
+
+    def unavailable(source: str) -> Callable[..., str]:
+        def read(*args: object, **kwargs: object) -> str:
+            return (
+                "<unavailable> " + source + " prefetch is disabled in Money's snapshot-only "
+                "research capability. No observations from this native source were fetched. "
+                "Use only separately provenance-labelled evidence in the frozen Money "
+                "snapshot; do not relabel it as this source. </unavailable>"
+            )
+
+        return read
+
+    try:
+        module.get_news = SimpleNamespace(func=unavailable("Native news / Yahoo Finance"))
+        module.fetch_stocktwits_messages = unavailable("StockTwits")
+        module.fetch_reddit_posts = unavailable("Reddit")
+        yield
+    finally:
+        for name, original in previous.items():
+            setattr(module, name, original)
+
+
 class TradingAgentsNativeRunner:
     def __init__(
         self, inference: NativeInference, settings: NativeRunSettings | None = None
@@ -95,7 +137,7 @@ class TradingAgentsNativeRunner:
         if self.settings.verify_source_pin:
             require_pinned_source("tradingagents")
         context = _mandate_context(mandate) + "\n" + snapshot_payload(snapshot)
-        session = InferenceSession(self.inference, self.settings)
+        session = InferenceSession(self.inference, self.settings, usage_mode=snapshot.usage_mode)
         chat = _native_chat(session, context)
         try:
             native = import_module("tradingagents.agents")
@@ -113,7 +155,11 @@ class TradingAgentsNativeRunner:
             ("create_news_analyst", "news_report"),
             ("create_sentiment_analyst", "sentiment_report"),
         ):
-            state.update(getattr(native, name)(chat)(state))
+            if name == "create_sentiment_analyst":
+                with _snapshot_sentiment_sources():
+                    state.update(getattr(native, name)(chat)(state))
+            else:
+                state.update(getattr(native, name)(chat)(state))
             notes[key] = state[key]
             state["messages"] = []
         # Blind firm-internal debate only; no report store or shared memory exists.
@@ -136,7 +182,7 @@ class TradingAgentsNativeRunner:
         ), snapshot)
         return TradingAgentsResearchReport(
             snapshot_id=snapshot.snapshot_id, snapshot_hash=snapshot.hash,
-            conclusion=output.conclusion, claims=output.claims,
+            conclusion=output.conclusion, claims=output.claims, analysis=output.analysis,
             model_version=session.model, prompt_version="money-tradingagents-snapshot-v1",
             upstream_sha=UPSTREAM_SHAS["tradingagents"], model_family=session.model,
             llm_provider_family=session.provider,
@@ -186,7 +232,7 @@ class AIHedgeFundNativeRunner:
             require_pinned_source("hedge_fund")
         content = _mandate_context(mandate) + "\n" + snapshot_payload(snapshot)
         view = _SnapshotView(snapshot, content)
-        session = InferenceSession(self.inference, self.settings)
+        session = InferenceSession(self.inference, self.settings, usage_mode=snapshot.usage_mode)
         results: list[tuple[str, AnalysisOutput]] = []
         for module_name, class_name in self.PERSONAS:
             try:
@@ -236,9 +282,28 @@ class AIHedgeFundNativeRunner:
         conclusion = "\n\n".join(f"{name}: {result.conclusion}" for name, result in results)
         if len(conclusion) > 8000:
             raise InvalidUpstreamReport("combined AI-HF report exceeds the report size limit")
+        analysis = None
+        if all(result.analysis is not None for _, result in results):
+            facets: dict[str, Any] = {}
+            for field in ResearchAnalysis.model_fields:
+                if field == "confidence":
+                    # Preserve uncertainty conservatively, never average numbers.
+                    levels = ("INSUFFICIENT_EVIDENCE", "LOW", "MEDIUM", "HIGH")
+                    facets[field] = min(
+                        (result.analysis.confidence for _, result in results if result.analysis),
+                        key=levels.index,
+                    )
+                else:
+                    facets[field] = tuple(
+                        f"{name}: {value}" if field in {"missing_data", "uncertainty"}
+                        else f"aihf:{name}:{value}"
+                        for name, result in results if result.analysis
+                        for value in getattr(result.analysis, field)
+                    )
+            analysis = ResearchAnalysis.model_validate(facets)
         return AIHedgeFundResearchReport(
             snapshot_id=snapshot.snapshot_id, snapshot_hash=snapshot.hash,
-            conclusion=conclusion, claims=claims, model_version=session.model,
+            conclusion=conclusion, claims=claims, analysis=analysis, model_version=session.model,
             prompt_version="money-aihf-native-personas-v1", upstream_sha=UPSTREAM_SHAS["ai_hedge_fund"],
             model_family=session.model, llm_provider_family=session.provider,
             feature_families=tuple(sorted({c.family for c in claims})),

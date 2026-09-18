@@ -57,6 +57,7 @@ def test_even_successful_offline_schema_is_never_live_qualification(monkeypatch)
     manifest = SimpleNamespace(
         provider_qualifications=(), market_credential_environment_variable="EODHD_API_KEY",
         filings_credential_environment_variable="COMPANIES_HOUSE_API_KEY",
+        issuer_source_policy="companies_house",
         **{name: SimpleNamespace(credential_environment_variable="SYNTHETIC_TEST_KEY")
            for name in ("tradingagents", "ai_hedge_fund", "crewai")},
     )
@@ -75,6 +76,19 @@ def test_even_successful_offline_schema_is_never_live_qualification(monkeypatch)
 def test_api_preflight_does_not_demand_inference_secrets():
     report = preflight.deployment_preflight("api")
     assert not any(row["name"].endswith("_credential") for row in report["checks"])
+
+
+def test_official_disclosures_need_evidence_not_companies_house_credential(monkeypatch):
+    monkeypatch.setenv("MONEY_ISSUER_SOURCE_POLICY", "official_disclosures")
+    monkeypatch.setenv("MONEY_QLIB_ENABLED", "false")
+    report = preflight.deployment_preflight("worker")
+    checks = {row["name"]: row for row in report["checks"]}
+    assert checks["filings_credential"]["status"] == "NOT_REQUIRED"
+    assert checks["filings_credential"]["code"] == "OFFICIAL_DISCLOSURES_SELECTED_EVIDENCE_STILL_REQUIRED"
+    assert checks["market_credential"]["status"] == "BLOCKED_CREDENTIAL"
+    assert checks["promoted_qlib_model"]["status"] == "NOT_REQUIRED"
+    assert checks["lean"]["status"] == "NOT_VERIFIED"
+    assert report["production_status"] == "PRODUCTION BLOCKED"
 
 
 def test_cyclic_manifest_parent_is_blocked_without_leaking_path(tmp_path, monkeypatch):

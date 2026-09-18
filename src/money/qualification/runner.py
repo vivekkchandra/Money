@@ -16,12 +16,14 @@ from typing import Any, Never
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from money.data.source_policy import issuer_source_policy
 from money.qualification.core import MAXIMUM_BYTES, QualificationContext, json_bytes, run_captured
 from money.qualification.snapshot import run_snapshot_stage
 from money.research.inference_config import InferenceSelection, load_inference_selections
 from money.research.live import LiveManifest, load_manifest
 from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import Contract, ResearchSnapshot, utc_now
+from money.usage_policy import USAGE_POLICY_VERSION, UsageMode, usage_mode
 
 EXPECTED_ENVIRONMENT = {
     "MONEY_ENV": "production",
@@ -89,7 +91,9 @@ def _execute(
         if diagnostics:
             ctx.check_secrets(diagnostics)
             ctx.write_bytes(f"outputs/{name}-diagnostics.txt", diagnostics)
-        if name == "providers" and ctx.read_json("state/bulk-universe-mode.json") is not None:
+        if name == "research-universe" or (
+            name == "providers" and ctx.read_json("state/bulk-universe-mode.json") is not None
+        ):
             from money.qualification.universe import _large_write
 
             _large_write(ctx, f"outputs/{name}-result.json", json_bytes(result))
@@ -125,6 +129,14 @@ def assemble_manifest(
     ctx: QualificationContext, outputs: Sequence[dict[str, Any]]
 ) -> tuple[Path, str] | None:
     """Assemble only successful stage fields; never accept an operator manifest."""
+    if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+        ctx.block(
+            "PERSONAL_RESEARCH_COMMERCIAL_RELEASE_FORBIDDEN",
+            "Personal research does not create a production manifest or grant public display, "
+            "redistribution or commercial rights. A separate hosted-commercial run requires "
+            "reviewed provider rights and every existing release requirement.",
+        )
+        return None
     fields: dict[str, Any] = {"qlib_enabled": qlib_enabled(ctx.environ)}
     for output in outputs:
         for key, value in output.get("manifest_fields", {}).items():
@@ -133,7 +145,7 @@ def assemble_manifest(
             fields[key] = value
     # Provider stage also exposes data-only inputs for snapshot qualification.
     providers = outputs[0] if outputs else {}
-    for key in ("instruments", "provider_qualifications", "filing_document_storage_hosts"):
+    for key in ("instruments", "provider_qualifications", "filing_document_storage_hosts", "issuer_source_policy"):
         if key in providers:
             fields[key] = providers[key]
     instruments = fields.pop("instruments", [])
@@ -366,6 +378,10 @@ def validate_and_test(
 
 
 def run(ctx: QualificationContext) -> dict[str, Any]:
+    if usage_mode(ctx.environ) == UsageMode.PERSONAL_RESEARCH:
+        from money.qualification.research_testing import run_research_testing
+
+        return run_research_testing(ctx)
     from money.qualification.native import (
         run_cio_stage,
         run_first_pass_stage,
@@ -381,7 +397,15 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
     )
 
     enabled = qlib_enabled(ctx.environ)
-    ctx.write_json("outputs/research-mode.json", {"qlib_enabled": enabled})
+    selected_usage = usage_mode(ctx.environ)
+    ctx.write_json("outputs/research-mode.json", {
+        "qlib_enabled": enabled,
+        "usage_mode": selected_usage,
+        "issuer_source_policy": issuer_source_policy(ctx.environ),
+        "usage_policy_version": USAGE_POLICY_VERSION,
+        "commercial_release_permitted": selected_usage != UsageMode.PERSONAL_RESEARCH,
+        "raw_data_redistribution_permitted": False,
+    })
     for name, value in EXPECTED_ENVIRONMENT.items():
         if ctx.environ.get(name, "").lower() != value:
             ctx.block(
@@ -518,6 +542,9 @@ def main(argv: Sequence[str] | None = None, *, environment: Mapping[str, str] | 
         with ctx.locked():
             report = run(ctx)
         print(report["status"])
+        if report["status"] == "RESEARCH RUN COMPLETE":
+            print("Personal research only. No production manifest, release or trade approval.")
+            return 0
         if report["status"] == "QUALIFICATION COMPLETE":
             print("MONEY_LIVE_MANIFEST=/app/data/qualified/live/manifest.json")
             print(f"MONEY_LIVE_MANIFEST_SHA256={report['manifest_sha256']}")

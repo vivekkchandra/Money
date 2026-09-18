@@ -243,7 +243,7 @@ class CrewAINativeRunner:
                 auth.get_auth_token = original_auth
         except ImportError as exc:
             raise UpstreamUnavailable("the CrewAI runtime is not installed") from exc
-        session = InferenceSession(self.inference, self.settings)
+        session = InferenceSession(self.inference, self.settings, usage_mode=snapshot.usage_mode)
         inference = self.inference
         runtime: Literal["live", "demo"] = "live" if self.settings.verify_source_pin else "demo"
         llm = _crewai_llm(session)

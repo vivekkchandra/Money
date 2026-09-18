@@ -17,6 +17,7 @@ from money.data.identifiers import InstrumentIdentifiers
 from money.data.qualification import ProviderQualification
 from money.data.security import SafeFetcher, SourceSecurityError, untrusted_text
 from money.schemas.contracts import DocumentFact, EvidenceRecord, PriceBar, content_hash
+from money.usage_policy import UsageMode
 
 
 class Trading212MetadataProvider:
@@ -204,7 +205,8 @@ class CompaniesHouseProvider:
 
 class EODHDProvider:
     def __init__(
-        self, api_key: str, qualification: ProviderQualification, fetcher: SafeFetcher | None = None
+        self, api_key: str, qualification: ProviderQualification, fetcher: SafeFetcher | None = None,
+        *, usage_mode: UsageMode = UsageMode.HOSTED_COMMERCIAL_PRODUCTION,
     ) -> None:
         if not api_key or api_key.casefold() == "demo":
             raise ValueError("MARKET_PROVIDER_CREDENTIAL_MISSING")
@@ -212,6 +214,7 @@ class EODHDProvider:
             raise ValueError("PROVIDER_QUALIFICATION_MISMATCH")
         self._key = api_key
         self.qualification = qualification
+        self.usage_mode = usage_mode
         self._fetcher = fetcher or SafeFetcher(frozenset({"eodhd.com"}), maximum_bytes=5_000_000)
 
     def _rows(self, path: str, query: dict[str, str]) -> list[dict[str, Any]]:
@@ -234,9 +237,9 @@ class EODHDProvider:
         snapshot_id: str,
         retrieved_at: datetime,
     ) -> tuple[EvidenceRecord, ...]:
-        self.qualification.require(dataset, retrieved_at)
+        self.qualification.require(dataset, retrieved_at, usage_mode=self.usage_mode)
         if dataset == "ohlcv":
-            self.qualification.require("corporate_action", retrieved_at)
+            self.qualification.require("corporate_action", retrieved_at, usage_mode=self.usage_mode)
         return self._fetch_records(identifiers, dataset, snapshot_id, retrieved_at)
 
     def _fetch_records(

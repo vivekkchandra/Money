@@ -1,4 +1,48 @@
-# Native worker packaging — 2026-09-17
+# Native runtime packaging
+
+## Local two-firm research: isolated environments
+
+The personal research runner now calls `prepare_native_environments(ctx)` from
+`run_local_native_preflight`. The operator command in
+[research-testing.md](research-testing.md) is unchanged; when native preflight
+is reached it prepares `.venv-tradingagents` and `.venv-ai-hedge-fund` separately,
+using Python 3.12.14 and the exact commits in `UPSTREAM_LOCK.txt`.
+
+Each environment resolves and installs its **complete upstream dependency
+metadata**, together with the thin Money snapshot/inference bridge, rather than
+installing Money's full application dependencies into both. This separates
+AI-Hedge-Fund's NumPy/pandas/dotenv/LangChain constraints from TradingAgents and
+the API/control plane without editing upstream requirements or source pins.
+Hashed dependency locks and setup cache live under `<qualification root>/state/native/`
+(normally `data/qualified/local-inference/state/native/`).
+
+Execution requires each actual target interpreter to pass exact installed-source
+attestation, native import checks, installed dependency consistency and a complete
+unsuppressed dependency audit. A successful resolver or created virtualenv alone
+does not qualify it. Money's parent validates bounded child reports against the
+same immutable snapshot before either independent report can be sealed. Provider
+credentials are not passed into child environments; Ollama needs no fake key.
+
+CrewAI/ChromaDB are not automatically added to these two environments. Their
+absence is valid only if the actual resolved native dependency closure does not
+require them; every installed package is still audited. Existing main/CrewAI
+advisories remain recorded, not ignored or relabelled fixed. This local process
+separation is not hosted OS/container egress qualification or production approval.
+
+Installation and fresh audit outcomes are recorded by the runtime preparation
+workflow. The September 18 sandbox run verified both exact source archives and
+created both Python 3.12.14 environments, then stopped with
+`NATIVE_PACKAGE_INDEX_UNREACHABLE`. Neither upstream wheel was installed and
+neither target dependency audit ran. This is not a claim that installation or
+audit will pass elsewhere. A failed setup, unavailable
+registry/advisory service, missing source or reported vulnerability remains an
+explicit native-execution blocker. No native report is substituted.
+
+## Separate hosted worker: historical shared-environment diagnosis
+
+The following September 17 observations/build requirements describe the retained
+hosted/commercial runtime, not a requirement to merge the two local research
+environments back into one dependency set.
 
 Status: **PRODUCTION BLOCKED**. The research Docker target currently installs the
 locked CrewAI extra, which is insufficient to run the four pinned native engines.
@@ -43,12 +87,12 @@ neither that diagnosis nor a local scripted test is production qualification.
   metadata are also absent. An honest updated lock cannot be produced from the
   currently available cache. No speculative dependency versions were added.
 
-## Concrete build sequence
+## Hosted build sequence (not the local two-environment installer)
 
-1. Resolve the narrowly exercised native dependency closure with registry access.
-   Add those dependencies to Money's `research` extra and build tools to a
-   separate locked build group. Preserve an independently resolved control-plane
-   export. Pin and audit both exports, including all transitive dependencies.
+1. Resolve each exercised native dependency closure with registry access, retaining
+   separate environments where upstream requirements conflict. Preserve an
+   independently resolved control-plane export. Pin and audit every runtime's
+   actual complete installed closure, including transitive dependencies.
    Do not use `--no-deps` to hide unsatisfied upstream requirements or overwrite
    the existing lock without a successful resolver result.
 2. Add a builder stage used only by the research target in both Dockerfiles.

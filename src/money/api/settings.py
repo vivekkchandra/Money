@@ -6,6 +6,8 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from money.usage_policy import UsageMode, usage_mode
+
 
 class OperatorSettings(BaseSettings):
     """Offline database administration must remain possible during provider outages."""
@@ -38,6 +40,7 @@ class Settings(BaseSettings):
 
     money_env: Literal["development", "test", "preview", "production"] = "production"
     money_research_mode: Literal["unconfigured", "demo", "live", "live_rnd"] = "unconfigured"
+    money_usage_mode: UsageMode = UsageMode.HOSTED_COMMERCIAL_PRODUCTION
     money_deployment_env: Literal["local", "hosted"] = "local"
     money_sec_user_agent: str | None = Field(default=None, min_length=10, max_length=200)
     money_rnd_provider_timeout_seconds: float = Field(default=30, ge=5, le=60)
@@ -84,9 +87,20 @@ class Settings(BaseSettings):
             raise ValueError("MONEY_QLIB_ENABLED_REQUIRES_TRUE_OR_FALSE")
         return qlib_enabled({"MONEY_QLIB_ENABLED": value})
 
+    @field_validator("money_usage_mode", mode="before")
+    @classmethod
+    def explicit_usage_selection(cls, value: object) -> UsageMode:
+        if not isinstance(value, str):
+            raise ValueError("MONEY_USAGE_MODE_INVALID")
+        return usage_mode({"MONEY_USAGE_MODE": value})
+
     @model_validator(mode="after")
     def secure_configuration(self) -> Self:
         local = self.money_env in {"development", "test"} and self.money_deployment_env == "local"
+        if self.money_usage_mode == UsageMode.PERSONAL_RESEARCH and (
+            not local or self.money_auth_mode != "private"
+        ):
+            raise ValueError("Personal research is forbidden in hosted/public/commercial APIs")
         selected_inference = None
         if self.money_inference_config is not None:
             from money.research.inference_config import load_inference_selections

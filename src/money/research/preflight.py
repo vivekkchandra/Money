@@ -16,6 +16,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from money.api.settings import Settings
+from money.data.source_policy import IssuerSourcePolicy, issuer_source_policy
 from money.research.live import load_manifest
 from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import utc_now
@@ -69,12 +70,24 @@ def deployment_preflight(role: Literal["api", "worker"]) -> dict[str, Any]:
             check("manifest", "VERIFIED_OFFLINE", "SCHEMA_HASHES_AND_DATED_PROVIDER_RECORDS_VALID")
 
     if role == "worker":
+        try:
+            selected_source_policy = (
+                manifest.issuer_source_policy if manifest else issuer_source_policy(os.environ)
+            )
+        except ValueError:
+            selected_source_policy = IssuerSourcePolicy.COMPANIES_HOUSE
+            check("issuer_source_policy", "BLOCKED_CONFIGURATION", "ISSUER_SOURCE_POLICY_INVALID")
         credential_names = {
             "broker_metadata_key": "TRADING212_API_KEY",
             "broker_metadata_secret": "TRADING212_API_SECRET",
             "market": manifest.market_credential_environment_variable if manifest else "EODHD_API_KEY",
-            "filings": manifest.filings_credential_environment_variable if manifest else "COMPANIES_HOUSE_API_KEY",
         }
+        if selected_source_policy == IssuerSourcePolicy.COMPANIES_HOUSE:
+            credential_names["filings"] = (
+                manifest.filings_credential_environment_variable if manifest else "COMPANIES_HOUSE_API_KEY"
+            )
+        else:
+            check("filings_credential", "NOT_REQUIRED", "OFFICIAL_DISCLOSURES_SELECTED_EVIDENCE_STILL_REQUIRED")
         if manifest:
             for name in ("tradingagents", "ai_hedge_fund", "crewai"):
                 selection = getattr(manifest, name)

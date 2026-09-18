@@ -179,6 +179,11 @@ def test_tradingagents_retains_analysts_debate_and_risk_with_shared_ollama_trans
         ),
         "tradingagents.agents": nodes,
         "tradingagents.graph.propagation": SimpleNamespace(Propagator=Propagator),
+        "tradingagents.agents.analysts.sentiment_analyst": SimpleNamespace(
+            get_news=SimpleNamespace(func=forbidden_tool),
+            fetch_stocktwits_messages=forbidden_tool,
+            fetch_reddit_posts=forbidden_tool,
+        ),
     }
     monkeypatch.setattr(native_qualitative, "import_module", modules.__getitem__)
     transport = ScriptedOllama(["Own-firm cited observation"] * len(roles) + [analysis()])

@@ -28,11 +28,11 @@ const job: Job = { id: rnd.research_id, ticker: rnd.ticker, status: "COMPLETE", 
 const search = { mode: "live_rnd", coverage: "public_provider", total: 1, limit: 10, offset: 0, instruments: [{ instrument_id: "NVDA", ticker: "NVDA", company: "NVIDIA Corporation", currency: "USD", exchange: "NASDAQ", eligibility: "UNKNOWN", research_allowed: true, synthetic: false, verified_at: rnd.issued_at, canonical_symbol: "NVDA", provider_symbol: "NVDA", country: "US", instrument_type: "STOCK" }] };
 
 describe("explicit live personal R&D contracts", () => {
-  it("allows public-data collection without falsely certifying ISA eligibility or currency", () => {
+  it("allows public-data collection without falsely certifying research eligibility or currency", () => {
     const result = parseInstrumentSearch(search);
     expect(result.mode).toBe("live_rnd");
     expect(result.instruments[0]).toMatchObject({ research_mode: "live_rnd", eligibility: "UNKNOWN", currency: "USD", research_allowed: true });
-    expect(instrumentStatus(result.instruments[0])).toContain("ISA eligibility unverified");
+    expect(instrumentStatus(result.instruments[0])).toContain("Research eligibility unverified");
     expect(instrumentStatus(result.instruments[0])).toContain("public-data collection only");
     expect(() => parseInstrumentSearch({ ...search, mode: "live", coverage: "reviewed_catalogue" })).toThrow();
     expect(() => parseInstrumentSearch({ ...search, mode: "live", coverage: "public_provider" })).toThrow();
