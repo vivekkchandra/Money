@@ -1,0 +1,28 @@
+{
+  "schema_version": "money-isolated-native-runtimes-v1",
+  "python_version": "3.12.14",
+  "adapter_dependencies": ["pydantic>=2.12.5"],
+  "audit_tool": "pip-audit==2.10.1",
+  "engines": {
+    "tradingagents": {
+      "repository": "https://github.com/TauricResearch/TradingAgents.git",
+      "revision": "be952b8eccb49720509af544c6675233bc1f10d0",
+      "package": "tradingagents",
+      "distribution": "tradingagents",
+      "version": "0.4.0",
+      "source_directory": "upstreams/tradingagents",
+      "environment_directory": ".venv-tradingagents",
+      "imports": ["tradingagents.agents", "tradingagents.graph.propagation", "langchain_core.runnables"]
+    },
+    "ai_hedge_fund": {
+      "repository": "https://github.com/virattt/ai-hedge-fund.git",
+      "revision": "fc1bf250ead209ae5f02c39c3d0062c4bb554505",
+      "package": "hedge_fund",
+      "distribution": "aihf",
+      "version": "2.2.0",
+      "source_directory": "upstreams/ai-hedge-fund",
+      "environment_directory": ".venv-ai-hedge-fund",
+      "imports": ["hedge_fund.signals.buffett", "hedge_fund.signals.lynch"]
+    }
+  }
+}

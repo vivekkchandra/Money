@@ -1,0 +1,26 @@
+{
+  "schema_version": "money-aihf-metadata-compatibility-v1",
+  "role": "ai_hedge_fund",
+  "repository": "https://github.com/virattt/ai-hedge-fund.git",
+  "revision": "fc1bf250ead209ae5f02c39c3d0062c4bb554505",
+  "target": "pyproject.toml",
+  "section": "tool.poetry.dependencies",
+  "original_sha256": "4658513fe53a6d1bfab3415d4d6cb6d984b70400e1ac9c30e3680a719dba4bb6",
+  "package": "hedge_fund",
+  "source_sha256": "4323005f036350ed3bb3b959a10215e4d5c7ecbc26d179751c15d8c4507a77e6",
+  "reason": "The exact upstream dependency declarations exclude currently patched LangChain integrations/core and python-dotenv. Only dependency metadata changes; the entire application package remains identical to the pinned commit. Resolution, import/behavior tests, dependency closure and an unsuppressed audit must independently pass.",
+  "advisories": [
+    "GHSA-gr75-jv2w-4656",
+    "GHSA-qh6h-p6c9-ff54",
+    "GHSA-2g6r-c272-w58r",
+    "GHSA-r7w7-9xr2-qq2r",
+    "GHSA-mf9w-mj56-hr94"
+  ],
+  "changes": [
+    {"name": "langchain-anthropic", "original": "0.3.5", "replacement": ">=1.4.6,<2"},
+    {"name": "langchain-openai", "original": "^0.3.5", "replacement": ">=1.1.14,<2"},
+    {"name": "langchain-deepseek", "original": "^0.1.2", "replacement": ">=1,<2"},
+    {"name": "langchain-xai", "original": "^0.2.5", "replacement": ">=1,<2"},
+    {"name": "python-dotenv", "original": "1.0.0", "replacement": ">=1.2.2,<2"}
+  ]
+}
