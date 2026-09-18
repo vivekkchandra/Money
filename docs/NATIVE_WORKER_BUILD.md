@@ -8,11 +8,15 @@ The personal research runner now calls `prepare_native_environments(ctx)` from
 is reached it prepares `.venv-tradingagents` and `.venv-ai-hedge-fund` separately,
 using Python 3.12.14 and the exact commits in `UPSTREAM_LOCK.txt`.
 
-Each environment resolves and installs its **complete upstream dependency
-metadata**, together with the thin Money snapshot/inference bridge, rather than
+Each environment resolves and installs its **complete declared dependency
+graph**, together with the thin Money snapshot/inference bridge, rather than
 installing Money's full application dependencies into both. This separates
 AI-Hedge-Fund's NumPy/pandas/dotenv/LangChain constraints from TradingAgents and
-the API/control plane without editing upstream requirements or source pins.
+the API/control plane without editing upstream application code or source pins.
+AIHF's five-declaration metadata-only compatibility patch, source preservation,
+advisories and actual validation results are documented in
+[aihf-dependency-compatibility.md](aihf-dependency-compatibility.md). It is not a
+resolver override or security exemption; installed metadata and audit must pass.
 Hashed dependency locks and setup cache live under `<qualification root>/state/native/`
 (normally `data/qualified/local-inference/state/native/`).
 
@@ -30,7 +34,7 @@ advisories remain recorded, not ignored or relabelled fixed. This local process
 separation is not hosted OS/container egress qualification or production approval.
 
 Installation and fresh audit outcomes are recorded by the runtime preparation
-workflow. The September 18 sandbox run verified both exact source archives and
+workflow. The initial September 18 sandbox run verified both exact source archives and
 created both Python 3.12.14 environments, then stopped with
 `NATIVE_PACKAGE_INDEX_UNREACHABLE`. Neither upstream wheel was installed and
 neither target dependency audit ran. This is not a claim that installation or

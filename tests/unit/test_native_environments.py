@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,8 @@ def test_audit_targets_each_actual_environment_and_never_ignores_findings(
 
     def command(_ctx: Any, args: list[str], **kwargs: Any) -> CommandResult:
         calls.append(args)
+        if "--version" in args:
+            return CommandResult(0, b"pip-audit 2.10.1\n")
         return (CommandResult(dependency_exit, b"") if "check" in args
                 else CommandResult(1 if vulnerable else 0, json_bytes(report)))
 
@@ -123,7 +126,9 @@ def test_audit_targets_each_actual_environment_and_never_ignores_findings(
     audit = native._audit(ctx, "tradingagents", "/isolated/python", [("package-one", "1.0")])
     assert audit["passed"] is expected
     assert calls[0] == ["uv", "pip", "check", "--python", "/isolated/python"]
-    assert "--ignore-vuln" not in calls[1]
+    assert "--ignore-vuln" not in calls[2]
+    assert "--offline" in calls[2][:calls[2].index("pip-audit")]
+    assert "--offline" not in calls[2][calls[2].index("pip-audit") + 1:]
     raw = json.loads(ctx.verify_artifact(*audit["artifacts"][1]))
     assert raw["audit"] == report
     assert raw["security_warnings_ignored"] is False
@@ -198,17 +203,24 @@ def test_fixed_versions_required_for_remediation_and_no_advisories_are_hidden() 
         "vulns": [{"id": "GHSA-fixed", "fix_versions": ["2.0"]}]}]}})
 
 
+@pytest.mark.parametrize("extra", [None, "unexpected.so", "unexpected.dat"])
 def test_upstream_metadata_tampering_in_staging_is_rejected(
     ctx: QualificationContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    extra: str | None,
 ) -> None:
     import io
     import tarfile
 
-    spec = native._definitions(ctx)["engines"]["tradingagents"]
+    role = "ai_hedge_fund" if extra else "tradingagents"
+    spec = native._definitions(ctx)["engines"][role]
     work = tmp_path / "work"
     source = work / "source"
     source.mkdir(parents=True)
-    (source / "pyproject.toml").write_text("altered dependency metadata")
+    (source / "pyproject.toml").write_text(
+        "altered dependency metadata" if extra is None else "exact original metadata",
+    )
+    if extra:
+        (source / extra).write_bytes(b"not in the pinned archive")
 
     def command(_ctx: Any, args: list[str], _code: str, **kwargs: Any) -> bytes:
         if "get-url" in args:
@@ -224,7 +236,7 @@ def test_upstream_metadata_tampering_in_staging_is_rejected(
 
     monkeypatch.setattr(native, "_require", command)
     with pytest.raises(ValueError, match="NATIVE_STAGED_SOURCE_CHANGED"):
-        native._source(ctx, "tradingagents", spec, work)
+        native._source(ctx, role, spec, work)
 
 
 def test_resume_checks_real_environment_instead_of_approving_checkpoint(
@@ -293,3 +305,72 @@ def test_failed_latest_status_cannot_erase_installed_byte_baseline(
         assert result["complete"] is False
         assert all(r["errors"] == ["NATIVE_INSTALLED_ENVIRONMENT_CHANGED"]
                    for r in result["runtimes"].values())
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_installed_metadata_must_match_the_actual_compatibility_wheel(
+    ctx: QualificationContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    changed: bool,
+) -> None:
+    wheel = tmp_path / "aihf-2.2.0-py3-none-any.whl"
+    metadata = b"Name: aihf\nVersion: 2.2.0\nRequires-Dist: python-dotenv (>=1.2.2,<2)\n"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("aihf-2.2.0.dist-info/METADATA", metadata)
+    installed = metadata.replace(b">=1.2.2,<2", b"==1.0.0") if changed else metadata
+    monkeypatch.setattr(native, "_json_command", lambda *args: installed.decode())
+    if changed:
+        with pytest.raises(ValueError, match="NATIVE_INSTALLED_METADATA_MISMATCH"):
+            native._verify_installed_metadata(ctx, "/isolated/python", {"distribution": "aihf"}, wheel)
+    else:
+        assert native._verify_installed_metadata(
+            ctx, "/isolated/python", {"distribution": "aihf"}, wheel,
+        ) == native.hashlib.sha256(metadata).hexdigest()
+
+
+def test_failed_compatibility_build_preserves_previous_audit_and_installed_environment(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = {"complete": False, "security": {"passed": False, "findings": [
+        {"package": "python-dotenv", "version": "1.0.0", "id": "GHSA-mf9w-mj56-hr94"}]}}
+    ctx.write_json("outputs/native-environments/ai_hedge_fund.json", old)
+    monkeypatch.setattr(native, "_python", lambda *args: "/python")
+    monkeypatch.setattr(native, "_venv", lambda _ctx, _python, path: str(path / "bin/python"))
+    patched_work: list[Path] = []
+
+    def source(_ctx: QualificationContext, _role: str, _spec: Any, work: Path) -> Path:
+        (work / "source.tar").write_bytes(b"source archive test fixture")
+        return work / "source"
+
+    def prepare(_ctx: Any, _source: Any, work: Path, definition: Any) -> tuple[Path, dict[str, Any]]:
+        patched_work.append(work)
+        return work / "compatibility-source", {"definition_sha256": definition["definition_sha256"]}
+
+    def fail_build(*args: Any) -> Any:
+        raise ValueError("NATIVE_PACKAGE_INDEX_UNREACHABLE")
+
+    monkeypatch.setattr(native, "_source", source)
+    monkeypatch.setattr(native, "prepare_compatibility_source", prepare)
+    monkeypatch.setattr(native, "_wheel", fail_build)
+    monkeypatch.setattr(native, "_sync", lambda *args, **kwargs: pytest.fail("must not mutate environment"))
+    result = native.prepare_native_environments(ctx)
+    role = result["runtimes"]["ai_hedge_fund"]
+    assert role["errors"] == ["NATIVE_PACKAGE_INDEX_UNREACHABLE"]
+    assert json.loads(ctx.verify_artifact(*role["previous_attempt_artifact"])) == old
+    assert len(patched_work) == 1
+    assert patched_work[0].parent.name == "compatibility"
+    assert patched_work[0].name == role["compatibility"]["definition_sha256"]
+    assert not result["complete"]
+
+
+@pytest.mark.parametrize("baseline,lock,patch,expected", [
+    (None, "lock", None, True),
+    ({"lock_sha256": "lock"}, "lock", None, False),
+    ({"lock_sha256": "lock", "compatibility_sha256": "patch"}, "lock", "patch", False),
+    ({"lock_sha256": "old"}, "new", None, True),
+    ({"lock_sha256": "lock"}, "lock", "patch", True),
+    ({"compatibility_sha256": "patch"}, "lock", "patch", True),
+])
+def test_only_exact_byte_verified_lock_and_patch_may_skip_reinstallation(
+    baseline: dict[str, Any] | None, lock: str, patch: str | None, expected: bool,
+) -> None:
+    assert native._needs_sync(baseline, lock, patch) is expected

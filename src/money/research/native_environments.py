@@ -3,8 +3,10 @@
 These environments install each complete upstream dependency graph separately.
 Only the explicitly declared Pydantic adapter dependency is added; the Money
 application (and its unrelated CrewAI/NumPy dependency graph) is not installed.
-No source or dependency override, advisory suppression, or credential inheritance
-is used. Failed installation/audit receipts are evidence of failure, not approval.
+Application source pins never change. An explicit, hash-bound Money metadata-only
+compatibility patch can replace reviewed upstream dependency declarations; the
+complete patched closure must still pass consistency, imports and audit. No
+resolver override, advisory suppression or credential inheritance is used.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import shutil
 import sys
 import tarfile
 import tomllib
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,7 @@ from money.qualification.core import (
     run_captured,
 )
 from money.qualification.native import _audit_result
+from money.research.native_compatibility import load_compatibility, prepare_compatibility_source
 from money.schemas.contracts import content_hash
 
 SCHEMA = "money-isolated-native-runtimes-v1"
@@ -183,7 +187,14 @@ def _source(ctx: QualificationContext, role: str, spec: dict[str, Any], work: Pa
                     or not (member.isfile() or member.isdir())):
                 raise ValueError("NATIVE_SOURCE_ARCHIVE_INVALID")
         if existing:
-            original_names = {member.name for member in members}
+            original_names = {member.name.rstrip("/") for member in members}
+            staged_names = {path.relative_to(source).as_posix() for path in source.rglob("*")}
+            # AIHF's pristine tree feeds the compatibility copy. TradingAgents'
+            # unchanged setuptools build creates build/ and *.egg-info here;
+            # retain its existing archive/member checks without trusting those
+            # generated files as part of AIHF's metadata patch.
+            if role == "ai_hedge_fund" and staged_names != original_names:
+                raise ValueError("NATIVE_STAGED_SOURCE_CHANGED")
             for member in members:
                 target = source / member.name
                 if target.is_symlink():
@@ -373,12 +384,38 @@ def _restore_source_files(ctx: QualificationContext, python: str, source: Path,
     _write(ctx, license_path, (source / "LICENSE").read_bytes())
 
 
+def _verify_installed_metadata(
+    ctx: QualificationContext, python: str, spec: dict[str, Any], wheel: Path,
+) -> str:
+    """The installed declaration must match the actual (possibly patched) wheel."""
+    with zipfile.ZipFile(wheel) as archive:
+        names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+        if len(names) != 1:
+            raise ValueError("NATIVE_WHEEL_METADATA_INVALID")
+        expected = archive.read(names[0])
+    code = (
+        "import importlib.metadata, json, sys; "
+        "print(json.dumps(importlib.metadata.distribution(sys.argv[1]).read_text('METADATA')))"
+    )
+    actual = _json_command(ctx, [python, "-I", "-B", "-c", code, spec["distribution"]],
+                           "NATIVE_INSTALLED_METADATA_MISMATCH")
+    if not isinstance(actual, str) or actual.encode() != expected:
+        raise ValueError("NATIVE_INSTALLED_METADATA_MISMATCH")
+    return hashlib.sha256(expected).hexdigest()
+
+
 def _audit(ctx: QualificationContext, role: str, python: str,
            inventory: list[tuple[str, str]]) -> dict[str, Any]:
     requirements = "".join(f"{name}=={version}\n" for name, version in inventory).encode()
     reference = ctx.artifact(requirements)
     checked = _command(ctx, ["uv", "pip", "check", "--python", python], timeout=60)
-    audited = _command(ctx, ["uv", "tool", "run", "--from", "pip-audit==2.10.1", "pip-audit",
+    cached_tool = _command(ctx, ["uv", "tool", "run", "--offline", "--from",
+        "pip-audit==2.10.1", "pip-audit", "--version"], timeout=30)
+    # --offline belongs to uv's tool bootstrap, not pip-audit. The real audit
+    # still queries its advisory service and must cover every installed package.
+    reuse_tool = cached_tool.returncode == 0 and cached_tool.output.strip() == b"pip-audit 2.10.1"
+    audited = _command(ctx, ["uv", "tool", "run", *(["--offline"] if reuse_tool else []),
+        "--from", "pip-audit==2.10.1", "pip-audit",
         "--strict", "--no-deps", "--disable-pip", "--timeout", "15", "--requirement",
         str(ctx.root / reference[1]), "--format", "json", "--progress-spinner", "off"],
         timeout=600)
@@ -394,6 +431,7 @@ def _audit(ctx: QualificationContext, role: str, python: str,
         "verified_at": ctx.now.isoformat(), "inventory": inventory,
         "python": python, "dependency_check_exit": checked.returncode,
         "audit_exit": audited.returncode, "audit": raw, "passed": passed,
+        "cached_pinned_audit_tool": reuse_tool,
         "security_warnings_ignored": False})
     return {"passed": passed, "findings": findings,
             "dependency_closure_verified": checked.returncode == 0,
@@ -404,6 +442,12 @@ def _fix_available(security: dict[str, Any]) -> bool:
     return any(vuln.get("fix_versions") for dependency in
                security.get("audit", {}).get("dependencies", [])
                for vuln in dependency.get("vulns", []))
+
+
+def _needs_sync(baseline: dict[str, Any] | None, lock_hash: str, patch_hash: str | None) -> bool:
+    """Reuse only an already byte-verified installation of this exact closure."""
+    return (baseline is None or baseline.get("lock_sha256") != lock_hash
+            or baseline.get("compatibility_sha256") != patch_hash)
 
 
 def _remediate(ctx: QualificationContext, role: str, python: str, source: Path,
@@ -455,6 +499,7 @@ def prepare_native_environments(ctx: QualificationContext, *, provision: bool = 
             "errors": []}
         runtimes[role] = result
         try:
+            compatibility = load_compatibility(ctx, role)
             definition_hash = fingerprint({"spec": spec, "python": definitions["python_version"],
                 "adapter_dependencies": definitions["adapter_dependencies"],
                 "platform": platform.system(), "machine": platform.machine()})
@@ -465,6 +510,7 @@ def prepare_native_environments(ctx: QualificationContext, *, provision: bool = 
                 raise ValueError("NATIVE_ENVIRONMENT_NOT_INSTALLED")
             executable = _venv(ctx, python, environment)
             baseline = work / "environment.receipt.json"
+            baseline_value = None
             if baseline.exists():
                 baseline_raw = baseline.read_bytes()
                 ctx.check_secrets(baseline_raw)
@@ -478,22 +524,44 @@ def prepare_native_environments(ctx: QualificationContext, *, provision: bool = 
                         and installed_files_fingerprint(environment) != previous["environment_sha256"]):
                     raise ValueError("NATIVE_INSTALLED_ENVIRONMENT_CHANGED")
                 _inspect(ctx, executable, spec)  # changed installed code is never silently repaired
+            # Retain the original failed closure/audit when migrating metadata;
+            # no old finding becomes an approval or disappears from the audit trail.
+            if isinstance(previous, dict):
+                result["previous_attempt_artifact"] = ctx.artifact(previous)
+            build_work = (work / "compatibility" / compatibility["definition_sha256"]
+                          if compatibility else work)
+            _safe_directory(build_work)
             if not provision and (not (work / "source").exists()
-                    or not (work / "runtime.lock").exists()
-                    or not list((work / "wheels").glob("*.whl"))):
+                    or not (build_work / "runtime.lock").exists()
+                    or not list((build_work / "wheels").glob("*.whl"))):
                 raise ValueError("NATIVE_ENVIRONMENT_NOT_INSTALLED")
             source = _source(ctx, role, spec, work)
             result["source"]["archive_verified"] = True
             result["source"]["archive_sha256"] = hashlib.sha256((work / "source.tar").read_bytes()).hexdigest()
-            wheel, build_hash = _wheel(ctx, source, work, python)
-            requirements, lock = work / "runtime.in", work / "runtime.lock"
+            build_source = source
+            if compatibility:
+                build_source, result["compatibility"] = prepare_compatibility_source(
+                    ctx, source, build_work, compatibility,
+                )
+            wheel, build_hash = _wheel(ctx, build_source, build_work, python)
+            requirements, lock = build_work / "runtime.in", build_work / "runtime.lock"
+            result.update({"build_lock_sha256": build_hash, "wheel_path": str(wheel),
+                "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                "planned_lock_path": str(lock)})
             _write(ctx, requirements, (str(wheel) + "\n" +
                 "\n".join(definitions["adapter_dependencies"]) + "\n").encode())
             lock_hash = _lock(ctx, requirements, lock, executable)
-            if provision:
-                _sync(ctx, lock, executable, reinstall=not baseline.exists())
+            expected_patch = compatibility["definition_sha256"] if compatibility else None
+            if provision and _needs_sync(baseline_value, lock_hash, expected_patch):
+                installed_patch = (baseline_value.get("compatibility_sha256")
+                                   if baseline_value is not None else None)
+                _sync(ctx, lock, executable,
+                      reinstall=not baseline.exists() or installed_patch != expected_patch)
                 _restore_source_files(ctx, executable, source, spec, environment)
             inspected = _inspect(ctx, executable, spec)
+            result["installed_metadata_sha256"] = _verify_installed_metadata(
+                ctx, executable, spec, wheel,
+            )
             result.update({"source": {**result["source"], "verified": True,
                 "installed_path": inspected["source_path"], "sha256": SOURCE_DIGESTS[spec["package"]]},
                 "lock_path": str(lock), "lock_sha256": lock_hash,
@@ -507,7 +575,8 @@ def prepare_native_environments(ctx: QualificationContext, *, provision: bool = 
             # on the following retry. This is integrity evidence, not audit PASS.
             result["environment_sha256"] = installed_files_fingerprint(environment)
             baseline_ref = ctx.artifact({"environment_sha256": result["environment_sha256"],
-                "inventory_sha256": result["inventory_sha256"], "lock_sha256": lock_hash})
+                "inventory_sha256": result["inventory_sha256"], "lock_sha256": lock_hash,
+                "compatibility_sha256": compatibility["definition_sha256"] if compatibility else None})
             _write(ctx, baseline, json_bytes({"artifact": baseline_ref}))
             security = _audit(ctx, role, executable, inspected["inventory"])
             if provision and not security["passed"] and _fix_available(security):
@@ -518,11 +587,15 @@ def prepare_native_environments(ctx: QualificationContext, *, provision: bool = 
                     environment, requirements, lock, security)
                 result.update({"lock_sha256": lock_hash, "inventory": inspected["inventory"],
                                "inventory_sha256": content_hash(inspected["inventory"])})
+                result["installed_metadata_sha256"] = _verify_installed_metadata(
+                    ctx, executable, spec, wheel,
+                )
             result["security"] = security
             artifacts.extend(security["artifacts"])
             result["environment_sha256"] = installed_files_fingerprint(environment)
             baseline_ref = ctx.artifact({"environment_sha256": result["environment_sha256"],
-                "inventory_sha256": result["inventory_sha256"], "lock_sha256": lock_hash})
+                "inventory_sha256": result["inventory_sha256"], "lock_sha256": lock_hash,
+                "compatibility_sha256": compatibility["definition_sha256"] if compatibility else None})
             _write(ctx, baseline, json_bytes({"artifact": baseline_ref}))
             result["complete"] = security["passed"] is True
             if not result["complete"]:
@@ -533,7 +606,7 @@ def prepare_native_environments(ctx: QualificationContext, *, provision: bool = 
                 code = "NATIVE_ENVIRONMENT_UNAVAILABLE"
             result["errors"].append(code)
         result["execution_identity"] = fingerprint({key: value for key, value in result.items()
-                                                     if key not in {"security", "errors", "complete"}})
+            if key not in {"security", "errors", "complete", "previous_attempt_artifact"}})
         result["verified_at"] = ctx.now.isoformat()
         ctx.write_json(f"outputs/native-environments/{role}.json", result)
     pins = {entry["source"]["package"]: entry["source"].get("sha256")
