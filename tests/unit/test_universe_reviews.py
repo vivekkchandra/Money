@@ -93,7 +93,7 @@ def test_global_unsigned_templates_preserve_every_human_input_on_resume(ctx):
     assert rights["status"] == "UNRESOLVED"
     assert rights["review"]["reviewed_by"] is None
     assert rights["review"]["reviewed_at"] is None
-    assert ctx.read_json("inputs/universe/ethics.json")["instruments"] == []
+    assert ctx.read_json("inputs/universe/ethics.json") is None
     assert not result["production_qualified"]
     assert result["legacy_account_review"] == "DEPRECATED_IGNORED_NOT_APPROVED"
     assert (ctx.root / "outputs/REVIEW_TASKS.md").is_file()
@@ -135,7 +135,7 @@ def test_unapproved_source_content_is_not_copied_into_ethical_dossiers(ctx):
     assert dossier["sources"][0]["content_use"] == "REFERENCES_ONLY"
     assert "business text" not in json.dumps(dossier)
     assert "Untrusted derived text" not in json.dumps(dossier)
-    assert not dossier["ethical_clearance"]
+    assert not dossier["approval_granted_by_preparation"]
 
 
 def test_both_rights_reviews_admit_verified_facts_but_not_ethics_approval(ctx):
@@ -147,8 +147,8 @@ def test_both_rights_reviews_admit_verified_facts_but_not_ethics_approval(ctx):
     assert "Synthetic detailed business text" in json.dumps(dossier["approved_source_facts"])
     assert "Forged projection" not in json.dumps(dossier)
     assert dossier["status"] == "DOSSIER_PREPARATION_ONLY"
-    assert dossier["complete_material_exposure_review"] is None
-    assert ctx.read_json("inputs/universe/ethics.json")["instruments"] == []
+    assert "complete_material_exposure_review" not in dossier
+    assert ctx.read_json("inputs/universe/ethics.json") is None
 
 
 def test_recorded_ethical_state_is_not_overridden_by_preparation(ctx):
@@ -157,9 +157,9 @@ def test_recorded_ethical_state_is_not_overridden_by_preparation(ctx):
     dossier = dossiers(ctx)[0]
     assert dossier["members"][0]["recorded_ethical_state"] == "ETHICALLY_CLEARED"
     assert dossier["status"] == "DOSSIER_PREPARATION_ONLY"
-    assert dossier["human_review_status"] == "NOT_ASSESSED_BY_PREPARATION"
+    assert dossier["human_review_status"] == "NOT_REQUIRED"
     assert dossier["unresolved_exposures"] == dossier["required_exclusions"]
-    assert not dossier["ethical_clearance"]
+    assert not dossier["approval_granted_by_preparation"]
 
 
 @pytest.mark.parametrize("case", ["provider-unapproved", "rights-expired", "source-expired", "corrupt", "wrong-isin"])

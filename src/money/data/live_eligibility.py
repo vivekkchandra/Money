@@ -18,7 +18,13 @@ from pydantic import Field, model_validator
 from money.adapters.eligibility import Trading212EligibilityAdapter, eligibility_failures
 from money.data.identifiers import InstrumentIdentifiers
 from money.data.uk.live import Trading212MetadataProvider
-from money.schemas.contracts import Contract, InstrumentMetadata, ResearchMandate, utc_now
+from money.schemas.contracts import (
+    Contract,
+    InstrumentMetadata,
+    ResearchMandate,
+    content_hash,
+    utc_now,
+)
 
 
 class EligibilityReview(Contract):
@@ -35,14 +41,20 @@ class EligibilityReview(Contract):
             or self.metadata.provider == "money-demo"
         ):
             raise ValueError("LIVE_ELIGIBILITY_IDENTITY_MISMATCH")
+        clearance = self.metadata.ethical_clearance
+        if clearance is not None:
+            if self.identifiers.isin not in clearance.isins:
+                raise ValueError("ETHICAL_CLEARANCE_IDENTITY_MISMATCH")
+            if self.ethical_proof_hash != content_hash(clearance):
+                raise ValueError("ETHICAL_CLEARANCE_PROOF_MISMATCH")
         return self
 
 
 class Trading212LiveEligibilityService:
     """Refresh broker membership without inferring ethical verification.
 
-    The callback must supply independently verified, hash-checked reviews from
-    the administrator's catalogue. It is re-read on each access, so revocations
+    The callback must supply verified, hash-checked issuer screenings and
+    identity evidence. It is re-read on each access, so revocations
     take effect even while broker metadata is cached. Cache age never extends
     review freshness, and a failed broker refresh never serves stale membership.
     """
@@ -99,6 +111,10 @@ class Trading212LiveEligibilityService:
                 raise ValueError("LIVE_ELIGIBILITY_DUPLICATE_IDENTITY")
             verified = []
             for review in reviews:
+                try:
+                    review = EligibilityReview.model_validate(review.model_dump(mode="json"))
+                except ValueError:
+                    continue
                 identifiers, metadata = review.identifiers, review.metadata
                 try:
                     identifiers.require_current(now)

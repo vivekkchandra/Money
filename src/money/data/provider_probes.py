@@ -39,6 +39,9 @@ class ProviderAdmissionReview(Contract):
     rights_evidence_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     reviewed_at: AwareDatetime
     valid_until: AwareDatetime
+    ethical_research_datasets: tuple[str, ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class DatasetProbe(Contract):

@@ -33,12 +33,15 @@ the bundle, with bounded bytes matching SHA256. EODHD qualification must cover
 `ohlcv`, `corporate_action`, and `news`; Companies House must cover `filing`
 (plus `financial` when selected filing documents require it).
 
-**Current universe policy:** `money-t212-gbx-stock-universe-v3` admits identity-valid
+**Current universe policy:** `money-t212-gbx-stock-universe-v4` admits identity-valid
 `STOCK`/`GBX` members of a genuine fresh live Trading 212 metadata response to the
 qualification pipeline. Account type, ISA scope and ISA buyability are not required
 or asserted. Live timestamps, response hashes, credential/cache binding, exact
-identity, provider qualification and independently reviewed ethical evidence remain
-mandatory. Legacy account-scope files are audit-only. See [live universe](live-universe.md).
+identity and provider qualification remain mandatory. One evidence-based ethical
+screening per verified issuer records PASS/FAIL/UNKNOWN; only PASS proceeds and
+is reused downstream without a second ethical reviewer. Source licensing remains
+global and evidence-based. Legacy account-scope files are audit-only. See
+[live universe](live-universe.md) and [ethical policy](ethical-policy.md).
 
 ## Configuration inputs
 
@@ -47,8 +50,8 @@ mandatory. Legacy account-scope files are audit-only. See [live universe](live-u
    qualifications and `(sha256, relative-path)` qualification artifacts. Referenced
    files must exist, remain within the manifest directory, be bounded and match
    their digest; no symlink or missing-proof acceptance.
-2. Each instrument needs verified current live broker membership and deterministic
-   activity classification, proof hashes, provider-specific symbols, measured
+2. Each instrument needs verified current live broker membership and a valid
+   issuer ethical PASS, proof hashes, provider-specific symbols, measured
    spread evidence, corporate-action completeness and explicit cost applicability.
    Supplemental normalized financial facts need qualified provider provenance.
    This is an administrative source artifact, not an API caller's assertion.
@@ -58,10 +61,11 @@ mandatory. Legacy account-scope files are audit-only. See [live universe](live-u
    backdated; overlapping values must match exactly or the snapshot is rejected.
    Use `historical_dataset_hash` in `money.backtest.lean` for the reviewed LEAN
    corpus. It excludes per-job IDs but includes economic/source/publication facts.
-4. Register and independently approve the immutable Qlib artifact using
+4. When Qlib is enabled, register and independently approve the immutable Qlib artifact using
    `scripts/model_registry.py`. The manifest pins its registry ID and artifact
    hash. Withdrawal takes effect even for a request with an older cutoff; no
-   automatic promotion or fallback model exists.
+   automatic promotion or fallback model exists. With `MONEY_QLIB_ENABLED=false`,
+   no Qlib artifact/report is required or fabricated; LEAN remains mandatory.
 5. Select exact inference provider/model/endpoint/protocol and credential environment
    variable independently for TradingAgents, AI-HF and CrewAI. Configure token
    limits, temperature/reasoning, timeouts and rates only if known. Keys are read

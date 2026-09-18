@@ -376,6 +376,7 @@ def _rights_template(provider: str) -> dict[str, Any]:
             "provider": provider,
             "reviewed_by": None,
             "usage_purpose": None,
+            "ethical_research_datasets": None,
             "storage_policy": None,
             "redistribution": None,
             "attribution": None,

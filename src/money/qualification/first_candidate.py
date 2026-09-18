@@ -265,6 +265,11 @@ def prepare_first_candidate(
         "verified_observation_evidence": evidence,
         "recorded_qualification_state": recorded["qualification_state"],
         "recorded_qualification_reasons": recorded["reasons"],
+        # Raw normalization deliberately establishes identity, not ethical
+        # clearance. Preserve the matching master row's recorded screening
+        # alongside its qualification state; preparation never re-screens it.
+        "ethical_state": recorded.get("ethical_state", "NOT_YET_SCREENED"),
+        "ethical_screening": recorded.get("ethical_screening"),
         "remaining_blockers": remaining,
         "next_genuine_blocker": remaining[0] if remaining else None,
         "missing_evidence": [item["action"] for item in remaining],
@@ -296,8 +301,19 @@ def _remaining_work(
             "filing observations; public discovery notes alone are not provider evidence."
         ),
         "COMPLETE_APPROVED_MATERIAL_EXPOSURE_EVIDENCE_REQUIRED": (
-            "Review all material exposures in inputs/universe/ethics.json using independently "
-            "rights-approved issuer evidence; absence of keywords is not clearance."
+            "Reclassify under the one-pass issuer policy using admissible issuer-wide activity "
+            "evidence. No second ethical reviewer; absence of keywords is not clearance."
+        ),
+        "ISSUER_ETHICAL_SCREENING_REQUIRED": (
+            "Supply one admissible issuer-wide business/activity dossier identifying the exact "
+            "issuer and addressing every configured exclusion, then run the machine screening. "
+            "Global provider rights are reused; no independent second ethical reviewer is required."
+        ),
+        "ADMISSIBLE_ISSUER_BUSINESS_EVIDENCE_REQUIRED": (
+            "Missing ethical evidence item: one rights-admissible, exact-issuer business/activity "
+            "disclosure covering every configured excluded activity. Attach the genuine source "
+            "bytes in inputs/universe/ethical-evidence.json. Price/dividend/news observations "
+            "alone are not an issuer-wide material-exposure disclosure; no second reviewer is required."
         ),
     }
     reasons = [str(code) for code in row.get("reasons", [])]
@@ -310,6 +326,16 @@ def _remaining_work(
         )}
         for code in reasons
     }
+    screening = row.get("ethical_screening")
+    if isinstance(screening, dict) and screening.get("result") == "UNKNOWN":
+        for reason in screening.get("reasons", []):
+            code = str(reason)
+            blockers[code] = {
+                "code": code, "stage": "eligibility",
+                "action": actions.get(code, "Resolve the specific issuer screening evidence gap: " + code
+                + ". Supply admissible source bytes in inputs/universe/ethical-evidence.json; "
+                "do not sign an approval or infer PASS from the name, sector or absent keywords."),
+            }
     providers = ["eodhd"]
     if (
         row.get("companies_house_state") == "MAPPED"
@@ -326,7 +352,14 @@ def _remaining_work(
                 key = code + ":" + provider
                 blockers[key] = {
                     "code": key, "stage": "rights",
-                    "action": "Complete the genuine current rights review in " + path + ".",
+                    "action": (
+                        "Complete the genuine current global provider rights review in " + path + "."
+                        if field == "provider_rights_current" else
+                        "Explicitly cover the applicable ethical_research_datasets in "
+                        + rights["provider_review_file"] + " using actual licence evidence. "
+                        "The same global approval covers all issuers; a second review in "
+                        + path + " is not required (existing scope supplements remain compatible)."
+                    ),
                 }
     supplemental = ctx.read_json("inputs/universe/supplemental.json") or {}
     if not supplemental.get("instruments", {}).get(row.get("isin")):
@@ -357,6 +390,8 @@ def _write_first_stock_next(ctx: QualificationContext, output: dict[str, Any]) -
         "# First stock — genuine remaining work", "",
         f"{output['company']} ({output['trading212_id']}, {output['isin']}); policy {UNIVERSE_POLICY_VERSION}.",
         f"Recorded qualification state: {output['recorded_qualification_state']}.",
+        f"Ethical screening: {output.get('ethical_state', 'NOT_YET_SCREENED')}. "
+        "One issuer PASS is reused through snapshot, first pass, LEAN and CIO; no second ethical review.",
         "No account-type, ISA-scope or current-ISA-buyability review is required. Historical account reviews are ignored, not approved.",
         "",
         "Next genuine evidence blocker: " + (next_blocker["code"] if next_blocker else "No recorded eligibility reason; runner verification still required."),

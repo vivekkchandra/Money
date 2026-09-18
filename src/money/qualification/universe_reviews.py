@@ -1,9 +1,10 @@
-"""Bulk human-review preparation; never an admission or approval authority.
+"""Issuer evidence preparation and global rights diagnostics, never approval.
 
 Source references may be indexed without asserting permission to reuse their
-contents. Factual ethical dossiers require both the existing provider-rights
-review and a current independent ethical-use review. Names, descriptions and
-SIC codes never establish absence of excluded exposure.
+contents. A provider-wide rights approval can cover ethical use explicitly;
+there is no per-issuer licensing review. Names, descriptions and SIC codes never
+establish absence of excluded exposure. Screening outcomes are recorded once by
+the screening engine, not approved by this preparation layer.
 """
 
 from __future__ import annotations
@@ -32,13 +33,10 @@ DOCUMENTS = {
     ),
 }
 PROVIDERS = ("eodhd", "companies-house")
-ETHICAL_DATASETS = {"eodhd": ["issuer-profile"], "companies-house": ["company", "filing"]}
-
-
-def _stamp() -> dict[str, Any]:
-    return dict(
-        status="UNRESOLVED", prepared_by=None, reviewed_by=None, reviewed_at=None, valid_until=None
-    )
+ETHICAL_DATASETS = {
+    "eodhd": ["issuer-profile", "financial", "news"],
+    "companies-house": ["company", "filing", "financial"],
+}
 
 
 def _read(ctx: QualificationContext, path: str) -> dict[str, Any]:
@@ -70,6 +68,10 @@ def _rights(ctx: QualificationContext, provider: str) -> dict[str, Any]:
         "provider_rights_current": False,
         "ethical_use_current": False,
         "approved_datasets": [],
+        "ethical_scope_origin": None,
+        "rights_evidence": [],
+        "valid_until": None,
+        "approval_evidence_hashes": [],
     }
     try:
         value = _read(ctx, result["provider_review_file"])
@@ -85,6 +87,25 @@ def _rights(ctx: QualificationContext, provider: str) -> dict[str, Any]:
                 and review.reviewed_by.strip()
                 and review.reviewed_at <= ctx.now < review.valid_until
             )
+            if result["provider_rights_current"]:
+                result["rights_evidence"].append({
+                    "path": path, "sha256": hashlib.sha256(raw).hexdigest(),
+                    "review_file": result["provider_review_file"],
+                    "valid_until": review.valid_until.isoformat(),
+                })
+                result["valid_until"] = review.valid_until.isoformat()
+                review_raw = ctx.read_bytes(result["provider_review_file"])
+                assert review_raw is not None
+                result["approval_evidence_hashes"] = [ctx.artifact(raw)[0], ctx.artifact(review_raw)[0]]
+                # The existing signed provider review is sufficient when its
+                # typed dataset scopes explicitly cover ethical use. Free-text "research"
+                # and successful API access do not grant additional rights.
+                datasets = review.ethical_research_datasets
+                if datasets and all(item in ETHICAL_DATASETS[provider] for item in datasets):
+                    result["ethical_use_current"] = True
+                    result["approved_datasets"] = sorted(set(datasets))
+                    result["ethical_scope_origin"] = "PROVIDER_REVIEW"
+                    return result
         ethical = _read(ctx, result["ethical_review_file"])
         stamp = IndependentReview.model_validate(ethical.get("review"))
         stamp.require_current(ctx.now)
@@ -100,6 +121,20 @@ def _rights(ctx: QualificationContext, provider: str) -> dict[str, Any]:
             result["ethical_use_current"] = True
             if result["provider_rights_current"]:
                 result["approved_datasets"] = sorted(set(datasets))
+                result["ethical_scope_origin"] = "LEGACY_GLOBAL_SOURCE_REVIEW"
+                result["valid_until"] = min(review.valid_until, stamp.valid_until).isoformat()
+                ethical_raw = ctx.read_bytes(result["ethical_review_file"])
+                assert ethical_raw is not None
+                result["approval_evidence_hashes"].append(ctx.artifact(ethical_raw)[0])
+                for evidence_path in ethical["evidence_files"]:
+                    raw = ctx.read_bytes(evidence_path)
+                    assert raw is not None
+                    result["rights_evidence"].append({
+                        "path": evidence_path, "sha256": hashlib.sha256(raw).hexdigest(),
+                        "review_file": result["ethical_review_file"],
+                        "valid_until": stamp.valid_until.isoformat(),
+                    })
+                    result["approval_evidence_hashes"].append(ctx.artifact(raw)[0])
     except (ValueError, OSError, TypeError, KeyError):
         # Invalid/expired reviews remain unresolved, never unsigned approvals.
         pass
@@ -312,10 +347,9 @@ def _dossiers(
             "grouping_basis": "VERIFIED_COMPANY_NUMBER" if company_number else "SECURITY_IDENTITY_ONLY",
             "status": "DOSSIER_PREPARATION_ONLY", "members": [], "sources": [],
             "approved_source_facts": [], "source_errors": [],
-            "ethical_clearance": False, "complete_material_exposure_review": None,
+            "approval_granted_by_preparation": False,
             "required_exclusions": list(EXCLUDED_ACTIVITIES),
             "unresolved_exposures": list(EXCLUDED_ACTIVITIES),
-            "human_review_status": "NOT_ASSESSED_BY_PREPARATION",
             "limitation": (
                 "Preparation does not reassess or override recorded ethical state. "
                 "Descriptions/SIC/filing metadata alone cannot clear material exposure."
@@ -325,6 +359,7 @@ def _dossiers(
             "trading212_id": row.get("trading212_id"), "isin": isin, "name": row.get("name"),
             "qualification_state": row.get("qualification_state"),
             "recorded_ethical_state": row.get("ethical_state"),
+            "ethical_screening": row.get("ethical_screening"),
         })
         for source in sources:
             if source not in group["sources"]:
@@ -338,6 +373,27 @@ def _dossiers(
         group["members"].sort(key=lambda item: (str(item["isin"]), str(item["trading212_id"])))
         group["sources"].sort(key=lambda item: item["sha256"])
         group["approved_source_facts"].sort(key=lambda item: item["source_sha256"])
+        states = {
+            item["recorded_ethical_state"] for item in group["members"]
+            if item["recorded_ethical_state"] in {"PASS", "FAIL", "UNKNOWN", "NOT_YET_SCREENED"}
+        }
+        state = next(iter(states)) if len(states) == 1 else "UNKNOWN" if states else "NOT_YET_SCREENED"
+        group["screening_state"] = state
+        group["screening_state_conflict"] = len(states) > 1
+        # This is a view of the engine's outcome, not a second approval layer.
+        # Legacy clearance names are not silently promoted into new PASSes.
+        group["human_action_required"] = state == "UNKNOWN"
+        group["human_review_status"] = (
+            "EVIDENCE_RESOLUTION_REQUIRED" if state == "UNKNOWN" else "NOT_REQUIRED"
+        )
+        group["next_action"] = {
+            "PASS": "Reuse the persisted issuer screening; do not review again downstream.",
+            "FAIL": "Exclude the issuer; a reviewer cannot override supported excluded exposure.",
+            "UNKNOWN": "Resolve the missing or contradictory issuer evidence identified by the screening.",
+            "NOT_YET_SCREENED": "Acquire admissible issuer evidence and run the machine screening.",
+        }[state]
+        if state in {"PASS", "FAIL"}:
+            group["unresolved_exposures"] = []
         path = f"outputs/ethical-dossiers/{fingerprint(key)}.json"
         ctx.write_json(path, group)
         queue.append({
@@ -345,7 +401,10 @@ def _dossiers(
             "grouping_basis": group["grouping_basis"],
             "member_count": len(group["members"]), "source_count": len(group["sources"]),
             "approved_fact_sources": len(group["approved_source_facts"]),
-            "human_review_status": "NOT_ASSESSED_BY_PREPARATION",
+            "human_review_status": group["human_review_status"],
+            "screening_state": state,
+            "human_action_required": group["human_action_required"],
+            "next_action": group["next_action"],
         })
     return queue
 
@@ -359,19 +418,16 @@ def prepare_universe_reviews(
     offline: bool = False,
     fetcher: SafeFetcher | None = None,
 ) -> dict[str, Any]:
-    """Create resumable, unsigned global reviews and rights-aware issuer packets."""
-    ctx.template("inputs/universe/ethics.json", {"review": _stamp(), "instruments": []})
+    """Prepare global rights and issuer evidence without a second ethical review."""
     for provider in PROVIDERS:
         ctx.template(f"inputs/provider-rights/{provider}.json", _rights_template(provider))
-        ctx.template(f"inputs/universe/source-rights/{provider}.json", {
-            "review": _stamp(), "provider": provider, "permitted_use": "ethical-research",
-            "dataset_scopes": ETHICAL_DATASETS[provider], "evidence_files": [],
-        })
+        # Existing scoped global source reviews remain readable, but new runs
+        # do not create another approval task alongside the provider review.
     documents = _documents(ctx, fetch=fetch_documents, offline=offline, fetcher=fetcher)
     rights = {provider: _rights(ctx, provider) for provider in PROVIDERS}
     queue = _dossiers(ctx, rows, rights)
     summary = {
-        "version": "money-bulk-human-review-preparation-v2", "generated_at": ctx.now.isoformat(),
+        "version": "money-bulk-human-review-preparation-v3", "generated_at": ctx.now.isoformat(),
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "scope": "HUMAN_REVIEW_PREPARATION_ONLY",
         "legacy_account_review": "DEPRECATED_IGNORED_NOT_APPROVED",
@@ -393,10 +449,18 @@ def prepare_universe_reviews(
         "official_documents_captured": sum(item["status"] == "CAPTURED" for item in documents),
         "ethics_approved_by_preparation": False, "production_qualified": False,
         "ethics_queue": "outputs/ethics-work-queue.json",
+        "ethical_screening_counts": {
+            state: sum(item["screening_state"] == state for item in queue)
+            for state in ("PASS", "FAIL", "UNKNOWN", "NOT_YET_SCREENED")
+        },
+        "human_ethical_resolution_groups": sum(item["human_action_required"] for item in queue),
     }
     ctx.write_json("outputs/ethics-work-queue.json", {
-        "version": "money-ethical-review-queue-v1", "scope": "HUMAN_REVIEW_PREPARATION_ONLY",
-        "groups": queue, "ethical_clearance": False,
+        "version": "money-ethical-review-queue-v2", "scope": "ISSUER_SCREENING_WORK_QUEUE",
+        "groups": queue, "approval_granted_by_preparation": False,
+        "human_review_groups": [item for item in queue if item["human_action_required"]],
+        "machine_work_groups": [item for item in queue if item["screening_state"] == "NOT_YET_SCREENED"],
+        "counts": summary["ethical_screening_counts"],
     })
     ctx.write_json("outputs/universe-review-tasks.json", summary)
     ctx.write_bytes("outputs/REVIEW_TASKS.md", _instructions(summary).encode())
@@ -425,7 +489,7 @@ def prepare_universe_reviews(
 
 
 def _instructions(summary: dict[str, Any]) -> str:
-    return f"""# Required human reviews
+    return f"""# Remaining reviews and issuer evidence
 
 Prepared, not approved. Existing human inputs are never overwritten. No venue
 review is required. Public documentation and successful API calls grant no approval.
@@ -445,27 +509,30 @@ is required. Technical credential binding still protects live provenance.
    filing history do not establish licence permission or financial-document rights.
    If insufficient: retain UNRESOLVED and obtain clarification from the provider.
 
-2. **Ethical source use (provider-wide):** `inputs/universe/source-rights/eodhd.json`
-   and `inputs/universe/source-rights/companies-house.json`. Verify permitted_use,
-   provider, dataset_scopes and actual attached evidence_files authorise ethical
-   research. Only then independently sign review.status=REVIEWED with distinct
-   actual identities/current timestamps. No per-stock licence signature is needed.
-   Until both rights reviews pass, dossiers contain references, not source content.
+2. **Ethical source use belongs to that same provider-wide review.** Set
+   review.ethical_research_datasets only to the scopes the attached licence permits
+   for this use: EODHD issuer-profile/financial/news or Companies House
+   company/filing/financial. No additional ethical-source signature or per-issuer
+   rights review is required. Existing `inputs/universe/source-rights/*.json`
+   approvals remain readable as optional global scope supplements. Successful
+   requests, free-text "research", and public access alone do not grant reuse rights.
 
-3. **Issuer-grouped ethical coverage:** `outputs/ethics-work-queue.json` contains
+3. **One ethical screening per verified issuer:** `outputs/ethics-work-queue.json` contains
    {summary['issuer_groups']} conservative groups covering {summary['security_count']} securities;
    {summary['rights_approved_fact_sources']} rights-approved fact sources are available.
    Verified company numbers join share classes; otherwise groups remain per ISIN,
-   never merged by a similar name. Assess every existing defence/weapons/firearms/
-   military and oil exclusion with rights-approved company/annual-report evidence;
-   a description, SIC code or missing keyword cannot clear exposure. In
-   `inputs/universe/ethics.json`, fill instruments[].isin/company_name,
-   business_activities, assessed_exclusions (all policy exclusions), genuine
-   inputs/ evidence_files, source_rights_review_files and only when established
-   complete_material_exposure_review=true. Independently sign the top review with
-   actual identities/timestamps, within the existing 24-hour limit. Material
-   excluded activity must remain excluded; unknown exposure stays unresolved.
+   never merged by a similar name. The machine screening checks every configured
+   defence/weapons/firearms/military and oil exclusion using admissible issuer-wide
+   activity evidence. A name, SIC code or missing keyword cannot clear exposure.
+   PASS is reused downstream, FAIL is excluded, UNKNOWN needs the missing or
+   contradictory evidence resolved. No second independent ethical reviewer is needed.
+   NOT_YET_SCREENED is automatic acquisition/screening work, not a human sign-off.
+   Current issuer states: {summary['ethical_screening_counts']}.
+   UNKNOWN resolution groups: {summary['human_ethical_resolution_groups']}.
 
-This preparation changes no ethical, provider, Qlib, LEAN, native runtime,
-inference, first-pass, CIO, release or hosted-production qualification gate.
+The stored screening supplies its own validity period. Daily live broker/provider
+freshness does not require a daily ethical review. Re-screen on identity/material
+evidence/policy change, credible contradiction, or clearance expiry. These files
+record existing results; preparation grants no new PASS or approval. Provider,
+Qlib mode, mandatory LEAN, native/security, first-pass, CIO and release gates remain.
 """

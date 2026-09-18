@@ -62,6 +62,9 @@ class QualifiedUniverseSnapshot(Contract):
                 <= (member.instrument.verified_at + ELIGIBILITY_MAXIMUM_AGE)
             ):
                 raise ValueError("UNIVERSE_MEMBER_EXPIRED")
+            clearance = member.instrument.ethical_clearance
+            if clearance is not None and member.valid_until > clearance.valid_until:
+                raise ValueError("UNIVERSE_MEMBER_ETHICAL_EXPIRY_EXCEEDED")
             if (member.snapshot_hash is not None) != (member.evidence_status == "READY"):
                 raise ValueError("UNIVERSE_EVIDENCE_STATUS_INVALID")
         if self.members and self.valid_until != min(member.valid_until for member in self.members):
@@ -99,6 +102,8 @@ def freeze_qualified_universe(
             review.identifiers.valid_until,
             review.metadata.verified_at + ELIGIBILITY_MAXIMUM_AGE,
         )
+        if review.metadata.ethical_clearance is not None:
+            expiry = min(expiry, review.metadata.ethical_clearance.valid_until)
         reason = (missing_reasons or {}).get(review.metadata.ticker, "RESEARCH_EVIDENCE_REQUIRED")
         if snapshot is not None:
             if snapshot.instrument != review.metadata or snapshot.created_at > at:

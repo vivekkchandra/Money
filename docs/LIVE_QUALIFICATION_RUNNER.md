@@ -77,7 +77,8 @@ You do not write a manifest or calculate proof hashes yourself.
 
 | Input | Required operator decision/evidence |
 | --- | --- |
-| `inputs/instruments/*.json` | Legacy per-stock identity/ethical review inputs. The current bulk GBX policy uses fresh live broker membership, exact identity/provider joins and independent ethical evidence; it requires no ISA/account-scope/buyability attestation. |
+| `inputs/instruments/*.json` | Legacy per-stock identity/ethical review inputs, retained for compatibility. Current bulk qualification uses fresh live broker membership, exact identity/provider joins and one evidence-based issuer ethical screening; it requires no ISA/account-scope/buyability attestation. |
+| `inputs/universe/ethical-evidence.json` | Genuine source documents for a single automated issuer screening. PASS is reused; FAIL/UNKNOWN cannot proceed. No second ethical reviewer or per-stock signature. |
 | `inputs/instrument-evidence/` (generated per-candidate path) | Observed spread, applicable costs, corporate-action coverage and any genuine archived evidence. Use the exact path in `status.json`. |
 | `inputs/supplemental-sources.json` | Independently reviewed source identity, actual source bytes, dataset coverage and rights for supplied spread/archive records. Historical observations require original-publication evidence. |
 | `inputs/provider-rights/*.json` | Actual permitted use, storage and redistribution terms plus the rights evidence bytes. API success is not a licence. |
@@ -92,13 +93,16 @@ You do not write a manifest or calculate proof hashes yourself.
 
 Review templates intentionally contain `null`/`UNRESOLVED` values. These are **not**
 proof artifacts or placeholder manifest values. JSON schemas describe exact
-contracts. The runner only creates eligibility/ethical proof hashes once it has
-actual independently reviewed bytes and a matching current broker row.
+contracts. The runner only creates eligibility/ethical proof hashes from actual
+source and screening bytes with a matching current broker row. Ethics does not
+require an independent second reviewer; non-ethical independent reviews remain
+mandatory. Global provider review can explicitly cover ethical source reuse via
+`review.ethical_research_datasets`. See [the ethical policy](ethical-policy.md).
 
 ## Automated work and boundaries
 
 The runner discovers the current Trading 212 STOCK/GBX catalogue and joins it
-to fresh reviews, reuses the `qualify_providers.py` probe/admission functions,
+to current evidence and applicable reviews, reuses the `qualify_providers.py` probe/admission functions,
 tests each exact inference selection, and inspects native source/dependency/security
 status. EODHD must actually supply OHLCV, corporate actions and news. Companies
 House company/filing access and machine-readable financial conversion are separate

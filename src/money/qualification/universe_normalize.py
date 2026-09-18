@@ -230,7 +230,7 @@ def normalize_universe(
             "uk_venue": False,
             "venue_status": "UNRESOLVED",
             "venue_reasons": [],
-            "ethical_state": "ETHICAL_REVIEW_REQUIRED",
+            "ethical_state": "NOT_YET_SCREENED",
             "evidence_freshness": "FRESH_MEMBERSHIP_ONLY",
             "qualification_state": "UNRESOLVED_IDENTITY",
             "reasons": reasons,

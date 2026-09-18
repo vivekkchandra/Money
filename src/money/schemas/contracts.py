@@ -101,6 +101,47 @@ class ResearchState(StrEnum):
     EXPIRED = "EXPIRED"
 
 
+class EthicalClearance(Contract):
+    """One immutable issuer screening, reused rather than re-approved downstream.
+
+    The proof hash covers this entire summary. ``screening_hash`` also binds its
+    fields internally, allowing consumers of an already frozen snapshot to
+    detect accidental mutation without loading or re-assessing source evidence.
+    """
+
+    result: Literal["PASS", "FAIL", "UNKNOWN"]
+    issuer_key: str = Field(min_length=1, max_length=300)
+    isins: tuple[Annotated[str, Field(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")], ...] = (
+        Field(min_length=1)
+    )
+    screened_at: AwareDatetime
+    valid_until: AwareDatetime
+    policy_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    evidence_hashes: tuple[Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")], ...] = ()
+    assessed_exclusions: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    business_activities: tuple[str, ...] = ()
+    screening_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def consistent_screening(self) -> Self:
+        if self.valid_until <= self.screened_at:
+            raise ValueError("ETHICAL_CLEARANCE_INTERVAL_INVALID")
+        if len(self.isins) != len(set(self.isins)):
+            raise ValueError("ETHICAL_CLEARANCE_DUPLICATE_IDENTITY")
+        if self.result == "PASS" and (
+            not self.evidence_hashes
+            or not self.business_activities
+            or not set(EXCLUDED_ACTIVITIES).issubset(self.assessed_exclusions)
+        ):
+            raise ValueError("ETHICAL_CLEARANCE_EVIDENCE_INCOMPLETE")
+        if self.screening_hash != content_hash(
+            self.model_dump(mode="json", exclude={"screening_hash"})
+        ):
+            raise ValueError("ETHICAL_CLEARANCE_HASH_MISMATCH")
+        return self
+
+
 class InstrumentMetadata(Contract):
     ticker: Ticker
     company: str = Field(min_length=1, max_length=200)
@@ -117,6 +158,11 @@ class InstrumentMetadata(Contract):
     source: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
+    # Omission preserves historical snapshot hashes. New issuer screenings use
+    # their own lifetime; live broker membership retains its 24-hour limit.
+    ethical_clearance: EthicalClearance | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 class PriceBar(Contract):

@@ -128,6 +128,8 @@ class ReviewedStockUniverse:
                 item.identifiers.valid_until,
                 *(qualification.valid_until for qualification in self._catalogue.qualifications),
             )
+            if metadata.ethical_clearance is not None:
+                expiry = min(expiry, metadata.ethical_clearance.valid_until)
             instruments.append(
                 StockUniverseInstrument(
                     **item.result(now, synthetic=False).model_dump(exclude={"instrument_type"}),

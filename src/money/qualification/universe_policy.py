@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from money.qualification.core import QualificationContext
 
-UNIVERSE_POLICY_VERSION = "money-t212-gbx-stock-universe-v3"
+UNIVERSE_POLICY_VERSION = "money-t212-gbx-stock-universe-v4"
 MAXIMUM_PROJECTION_BYTES = 64_000_000
 MODE = "state/bulk-universe-mode.json"
 JOURNAL = "state/universe-policy-migration.json"

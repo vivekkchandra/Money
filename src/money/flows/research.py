@@ -177,6 +177,28 @@ def locked_reports(job_id: str, store: ResearchStore) -> tuple[FirstPassReport, 
     return reports
 
 
+def _require_current_ethical_clearance(
+    runtime: ResearchRuntime, instrument: InstrumentMetadata, mandate: ResearchMandate,
+) -> None:
+    """Check revocation, not another screening, against the current catalogue.
+
+    Frozen evidence remains immutable. Changed business evidence or a revoked
+    PASS requires a new snapshot/job; it cannot silently replace the screening
+    underlying already sealed independent reports. Historical snapshots without
+    this optional contract keep their original compatibility semantics.
+    """
+    frozen = instrument.ethical_clearance
+    if frozen is None:
+        return
+    current = runtime.eligibility.get_instrument_metadata(instrument.ticker)
+    if current is None or eligibility_failures(current, mandate, utc_now()):
+        raise ValueError("ETHICAL_CLEARANCE_NO_LONGER_CURRENT")
+    if current.ethical_clearance is None:
+        raise ValueError("ETHICAL_CLEARANCE_NO_LONGER_CURRENT")
+    if frozen.screening_hash != current.ethical_clearance.screening_hash:
+        raise ValueError("ETHICAL_CLEARANCE_CHANGED_REQUIRES_NEW_SNAPSHOT")
+
+
 def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) -> None:
     job = store.get_job(job_id)
     if job is None:
@@ -220,6 +242,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         )
         return
     assert instrument is not None
+    _require_current_ethical_clearance(runtime, instrument, mandate)
     if "eligibility" not in artifacts:
         store.save_artifact(job_id, "eligibility", instrument)
     if checkpoint["snapshot"] is None:
@@ -340,6 +363,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
             reservations[agent] = reservation
         budget.reserve_many(tuple(requests))
     if job["locked_at"] is None:
+        _require_current_ethical_clearance(runtime, snapshot.instrument, mandate)
         store.update_stage(job_id, JobStatus.FIRST_PASS_RESEARCH)
         try:
             run_first_pass(
@@ -367,6 +391,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
             )
             return
     reports = locked_reports(job_id, store)
+    _require_current_ethical_clearance(runtime, snapshot.instrument, mandate)
     if "lean" in artifacts:
         lean = LeanValidationReport.model_validate(artifacts["lean"])
     else:
@@ -383,6 +408,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
             else runtime.validate(snapshot, reports)
         )
         store.save_artifact(job_id, "lean", lean)
+    _require_current_ethical_clearance(runtime, snapshot.instrument, mandate)
     if "audit" in artifacts:
         audit = CIOAuditReport.model_validate(artifacts["audit"])
         if "red_team" not in artifacts:
@@ -429,6 +455,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
     if "cross_examination" in artifacts:
         examination = CrossExaminationPacket.model_validate(artifacts["cross_examination"])
     elif audit.completed:
+        _require_current_ethical_clearance(runtime, snapshot.instrument, mandate)
         store.update_stage(job_id, JobStatus.CROSS_EXAMINATION)
         examination = (
             runtime.cross_examine(job_id, mandate, snapshot, reports, lean, audit)
@@ -487,6 +514,7 @@ def run_research(job_id: str, store: ResearchStore, runtime: ResearchRuntime) ->
         cross_examination_hash=examination.hash if examination else None,
         cross_examination_rounds=len(examination.rounds) if examination else 0,
     )
+    _require_current_ethical_clearance(runtime, snapshot.instrument, mandate)
     store.complete_job(job_id, packet)
 
 

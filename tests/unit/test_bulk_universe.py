@@ -344,7 +344,7 @@ def test_review_with_unknown_activities_never_displays_ethically_cleared(
     reviewed_ethics(ctx, [instrument()], activities=("unknown_material_exposure",))
     rights_fixture(ctx, monkeypatch)
     result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
-    assert result["stocks"][0]["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
+    assert result["stocks"][0]["ethical_state"] == "UNKNOWN"
     assert result["stocks"][0]["qualification_state"] == "UNRESOLVED_ETHICAL"
     assert result["eligibility_reviews"] == []
 
@@ -432,7 +432,7 @@ def test_every_gbx_stock_reaches_provider_lookup_without_uk_venue(
     for row in result["stocks"]:
         assert row["universe_member"] is True
         assert row["qualification_state"] == "UNRESOLVED_ETHICAL"
-        assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
+        assert row["ethical_state"] == "UNKNOWN"
         assert row["identifiers"]["exchange"] == "TESTVENUE"
         assert not any("VENUE" in reason for reason in row["reasons"])
     assert result["eligibility_reviews"] == []
@@ -508,7 +508,7 @@ def test_repeated_fresh_discovery_never_approves_ethics(
         result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
         row = result["stocks"][0]
         assert row["qualification_state"] == "UNRESOLVED_ETHICAL"
-        assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
+        assert row["ethical_state"] == "UNKNOWN"
         assert row["eligibility_review"] is None
         assert result["eligibility_reviews"] == []
 
@@ -579,7 +579,7 @@ def test_every_existing_ethical_exclusion_still_rejects(
     reviewed_ethics(ctx, [instrument()], activities=(activity,))
     result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
     assert result["stocks"][0]["qualification_state"] == "EXCLUDED_ETHICAL"
-    assert result["stocks"][0]["ethical_state"] == "ETHICALLY_EXCLUDED"
+    assert result["stocks"][0]["ethical_state"] == "FAIL"
     assert result["eligibility_reviews"] == []
 
 
@@ -1020,3 +1020,84 @@ def test_shortest_evidence_deadline_propagates_into_eligibility_identifiers(
     )
     proof = json.loads(ctx.verify_artifact(review["eligibility_proof_hash"], proof_path))
     assert datetime.fromisoformat(proof["identifiers"]["valid_until"]) == deadline
+
+
+def test_one_actual_ethical_reviewer_suffices_without_an_independent_second(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewed_ethics(ctx, [instrument()])
+    value = ctx.read_json("inputs/universe/ethics.json")
+    value["review"].pop("prepared_by")
+    ctx.write_json("inputs/universe/ethics.json", value)
+    rights_fixture(ctx, monkeypatch)
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
+    assert result["summary"]["qualified"] == 1
+    assert result["stocks"][0]["ethical_state"] == "PASS"
+    assert ctx.read_json("inputs/universe/ethics.json") == value
+
+
+def test_ethical_age_is_not_broker_membership_age(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewed_ethics(ctx, [instrument()], review=stamp(
+        reviewed_at=(NOW - timedelta(days=7)).isoformat(),
+        valid_until=(NOW + timedelta(days=23)).isoformat(),
+    ))
+    rights_fixture(ctx, monkeypatch)
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
+    assert result["summary"]["qualified"] == 1
+    metadata = result["eligibility_reviews"][0]["metadata"]
+    assert datetime.fromisoformat(metadata["verified_at"]) == NOW
+    assert datetime.fromisoformat(metadata["ethical_clearance"]["screened_at"]) == NOW - timedelta(days=7)
+
+
+def test_machine_screening_without_any_ethical_review_file(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from money.qualification import universe_ethics
+
+    rights_fixture(ctx, monkeypatch)
+    disclosure = (
+        "Synthetic Example PLC (ISIN GB00BH4HKS39)'s only material activities, all group subsidiaries, "
+        "and 100% of revenue and assets are manufacture and sale of consumer soft drinks. "
+        "There are no other operating segments, investments or material businesses."
+    )
+    ctx.write_bytes("inputs/business.txt", disclosure.encode())
+    ctx.write_json("inputs/universe/ethical-evidence.json", {"documents": [{
+        "isin": instrument()["isin"], "provider": "eodhd", "dataset": "financial",
+        "evidence_file": "inputs/business.txt", "published_at": NOW.isoformat(),
+        "retrieved_at": NOW.isoformat(), "evidence_kind": "annual_report",
+    }]})
+    licence = ctx.artifact(b"Synthetic provider-wide licence for ethical-research")
+    monkeypatch.setattr(universe_ethics, "_rights", lambda _ctx, provider: {
+        "approved_datasets": ["financial"] if provider == "eodhd" else [],
+        "valid_until": (NOW + timedelta(days=90)).isoformat(),
+        "approval_evidence_hashes": [licence[0]],
+    })
+    calls = []
+
+    def evaluate(system: str, user: str) -> str:
+        data = json.loads(user)
+        calls.append(data)
+        source = data["documents"][0]
+        quote = {"source_id": source["source_id"], "evidence_hash": source["content_sha256"], "quote": source["content"]}
+        return json.dumps({
+            "issuer_key": data["verified_issuer"]["issuer_key"],
+            "legal_name": data["verified_issuer"]["legal_name"],
+            "complete_material_business_scope": True, "scope_citations": [quote],
+            "business_activities": [{"activity": "soft_drinks", "citations": [quote]}],
+            "assessments": [{
+                "category": category, "conclusion": "NO_MATERIAL_EXPOSURE",
+                "basis": "COMPLETE_BUSINESS_SCOPE", "citations": [quote],
+                "rationale": "All group businesses and revenue are consumer soft drinks only.",
+            } for category in EXCLUDED_ACTIVITIES],
+        })
+
+    monkeypatch.setattr(universe_ethics, "_evaluator", lambda _ctx: evaluate)
+    for _ in range(2):
+        result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
+        assert result["summary"]["qualified"] == 1
+        assert result["summary"]["ethical_screenings"]["PASS"] == 1
+        assert result["stocks"][0]["ethical_screening"]["result"] == "PASS"
+    assert len(calls) == 1
+    assert ctx.read_json("inputs/universe/ethics.json") is None

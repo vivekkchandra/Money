@@ -2,7 +2,7 @@
 
 `money.qualification.universe_reviews.prepare_universe_reviews` produces review
 work, not approval. It does not modify an existing human input or qualify a
-provider/security/runtime. Policy `money-t212-gbx-stock-universe-v3` does not
+provider/security/runtime. Policy `money-t212-gbx-stock-universe-v4` does not
 require or claim ISA account ownership, account type or buy availability.
 
 Generated outputs under the qualification root:
@@ -32,11 +32,13 @@ Credential binding remains a technical cache/retrieval integrity mechanism;
 genuine live response bytes, hash verification, original observation times and
 24-hour freshness remain mandatory. None of them assert account type.
 
-Provider rights remain global (`inputs/provider-rights/{provider}.json`). Reuse of
-source contents in ethical dossiers additionally requires independently reviewed
-ethical-use permission in `inputs/universe/source-rights/{provider}.json`, backed
-by actual attached rights evidence. These templates contain no signer or review
-timestamp. Existing edited files are preserved byte-for-byte on resume.
+Provider rights remain global (`inputs/provider-rights/{provider}.json`). A
+current provider review can explicitly cover ethical use through
+`review.ethical_research_datasets`, backed by actual licence evidence. That one
+approval is reused for all relevant issuers. Existing global
+`inputs/universe/source-rights/{provider}.json` approvals remain optional scope
+supplements, not another mandatory review. No duplicate template is generated;
+existing edited files remain byte-for-byte unchanged on resume.
 
 Dossiers rehash source artifacts, verify the source's exact identity against the
 mapped security, and preserve original observation/expiry times. Unapproved or
@@ -46,14 +48,19 @@ a verified issuer identity, grouping stays per ISIN rather than guessing from
 names, venue or incorporation prefix. Filing metadata is never represented as
 financial-document content or rights.
 
-Dossier status is `DOSSIER_PREPARATION_ONLY`, not a reassessment of an existing
-ethical decision. Member records preserve `recorded_ethical_state`; preparation
-lists every exclusion under `unresolved_exposures` because it resolves none of
-them itself. This does not revoke an existing independently validated approval or
-claim that such approval requires a duplicate review.
+Dossier status is `DOSSIER_PREPARATION_ONLY`, not a second assessment or approval.
+Member records preserve the screening result. `PASS` is reused, `FAIL` remains
+excluded, `UNKNOWN` requires the specific evidence gap/conflict resolved, and
+`NOT_YET_SCREENED` is machine acquisition/screening work. The human queue contains
+UNKNOWN groups, not a request for an independent second reviewer for every issuer.
 
-Even rights-approved descriptions and SIC codes do not establish complete ethical
-coverage. An independent reviewer still assesses every existing exclusion using
-appropriate approved evidence, records actual business activities, and signs the
-existing `inputs/universe/ethics.json` contract. Unknown exposure remains unresolved;
-excluded exposure remains excluded. No downstream production gate is bypassed.
+The screening engine checks every existing exclusion once using admissible
+issuer-wide evidence, recording exact source references, material activities,
+result, screening time and expiry. A name, SIC code or missing keyword does not
+establish PASS. Current document inputs use
+`inputs/universe/ethical-evidence.json`; legacy signed `ethics.json` evidence
+remains compatible without creating new signatures. Clearance normally lasts
+30 days (configurable), with earlier re-screening for identity, material evidence,
+policy changes or credible contradiction. Non-ethical independent supplemental,
+native/security, mandatory LEAN and release requirements remain unchanged. See
+[the ethical policy](ethical-policy.md).

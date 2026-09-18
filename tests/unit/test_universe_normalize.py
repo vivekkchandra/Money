@@ -53,7 +53,7 @@ def test_gbx_stock_is_normalized_without_issuer_country_filter() -> None:
     assert row["uk_venue"] is True
     assert row["mic"] == "XABC"  # No hard-coded XLON gate.
     assert row["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
-    assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
+    assert row["ethical_state"] == "NOT_YET_SCREENED"
     assert row["valid_until"] == (NOW + timedelta(hours=24)).isoformat()
     assert row["short_ticker"] == "TEST"
     assert row["max_open_quantity"] == 1000
@@ -81,7 +81,7 @@ def test_non_stock_types_are_excluded(kind: str) -> None:
 def test_names_do_not_replace_provider_classification() -> None:
     row = normalized(instrument(name="Military Oil Investment Fund Ordinary Shares"))[0]
     assert row["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
-    assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
+    assert row["ethical_state"] == "NOT_YET_SCREENED"
 
 
 @pytest.mark.parametrize("currency", ["GBP", "USD", "EUR", "GBx", " GBX ", None])
@@ -282,7 +282,7 @@ def test_venue_changes_do_not_grant_downstream_approvals() -> None:
     for venues in ([], [exchange()], [exchange(countryCode="US")]):
         row = normalized(instrument(), exchanges=venues)[0]
         assert "isa_provenance_state" not in row
-        assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
+        assert row["ethical_state"] == "NOT_YET_SCREENED"
         assert row["eodhd_symbol"] is None
         assert row["companies_house_number"] is None
         assert row["qualification_state"] != "QUALIFIED"

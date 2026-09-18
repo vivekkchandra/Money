@@ -22,13 +22,9 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
-from money.adapters.eligibility import (
-    _UNKNOWN_ACTIVITIES,
-    ELIGIBILITY_MAXIMUM_AGE,
-    eligibility_failures,
-)
+from money.adapters.eligibility import ELIGIBILITY_MAXIMUM_AGE, eligibility_failures
 from money.data.identifiers import InstrumentIdentifiers
 from money.data.live_eligibility import EligibilityReview
 from money.data.qualification import ProviderQualification
@@ -63,7 +59,7 @@ def _stamp() -> dict[str, Any]:
 
 
 class EthicalEntry(Contract):
-    """Structured evidence coverage, never an LLM/name/SIC absence heuristic."""
+    """Legacy signed screening input; not required by the issuer screening path."""
 
     isin: str = Field(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
     company_name: str = Field(min_length=1)
@@ -72,6 +68,16 @@ class EthicalEntry(Contract):
     complete_material_exposure_review: Literal[True]
     evidence_files: tuple[str, ...] = Field(min_length=1, max_length=20)
     source_rights_review_files: tuple[str, ...] = Field(min_length=1, max_length=10)
+
+
+class EthicalReviewStamp(Contract):
+    """A single actual screener suffices; never invent a second reviewer."""
+
+    status: Literal["REVIEWED"]
+    reviewed_by: str = Field(min_length=1)
+    reviewed_at: AwareDatetime
+    valid_until: AwareDatetime
+    prepared_by: str | None = None  # historical attribution only
 
 
 def credential_binding(environ: Mapping[str, str]) -> str | None:
@@ -112,7 +118,8 @@ def prepare_bulk_inputs(ctx: QualificationContext, binding: str | None) -> None:
     """Only bulk inputs and exception queues; never generate per-stock templates."""
     ctx.template(MODE, {"universe_policy_version": UNIVERSE_POLICY_VERSION})
     ctx.template("inputs/universe/venues.json", {"review": _stamp(), "venues": []})
-    ctx.template("inputs/universe/ethics.json", {"review": _stamp(), "instruments": []})
+    # Existing signed ethics files remain readable; new discovery needs no human stamp.
+    ctx.template("inputs/universe/ethical-evidence.json", {"documents": []})
     ctx.template("inputs/universe/supplemental.json", {"instruments": {}})
     ctx.write_json("inputs/universe/ethical-entry.schema.json", EthicalEntry.model_json_schema())
     ctx.write_json(
@@ -146,21 +153,22 @@ remain unresolved. Membership alone approves none of the reviews below.
 - `venues.json`: optional informational enrichment only. Existing reviewed
   exchange facts may be retained, but missing, foreign or unresolved venues
   never block admission or provider lookup. No venue review is required.
-- `ethics.json`: one independent review can cover many structured instruments.
-  Each entry: isin, company_name, business_activities, assessed_exclusions,
-  complete_material_exposure_review=true, evidence_files and
-  source_rights_review_files. Assess every existing policy exclusion using
-  approved company/filing/report evidence; name/SIC/description absence is not
-  clearance. Rights review files contain review, evidence_files and
-  permitted_use='ethical-research'. Unknown exposure stays unresolved.
+- `ethical-evidence.json`: optional additional issuer business documents, with
+  exact identity, source, original dates and evidence references. Cached provider
+  evidence is also consumed automatically under current global source rights.
+  One machine screening per verified issuer records PASS, FAIL or UNKNOWN and
+  checks every exclusion. Only PASS proceeds. No second reviewer is required.
+  MONEY_ETHICAL_CLEARANCE_DAYS defaults to 30; live broker freshness stays 24h.
+  See outputs/ethical-screenings.json and outputs/ethics-work-queue.json.
+- `ethics.json`: legacy optional signed screening evidence, preserved unchanged.
+  One actual reviewer is sufficient; new machine screening does not require it.
 - `supplemental.json`: instruments keyed by ISIN may reference existing
   independently reviewed SupplementalReview files. Full research still needs
   approved spread/cost/action/PIT/financial evidence. No individual template is
   generated until an operator needs to resolve a genuine exception.
 
-All review stamps require status=REVIEWED, distinct actual prepared_by and
-reviewed_by, actual timezone-aware reviewed_at and valid_until. Never backdate.
-No approval or secret should be manufactured to make a field validate.
+Non-ethical independent reviews retain their existing approval contracts.
+No approval, reviewer, historical timestamp or secret is manufactured.
 """,
         replace=True,
     )
@@ -195,14 +203,19 @@ def _venues(ctx: QualificationContext) -> list[dict[str, Any]]:
     return result
 
 
-def _ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
+def _legacy_ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
+    """Reuse genuine historical single-pass assessments without re-signing them."""
+    from money.qualification.universe_ethics import legacy_clearance, validity_days
+
     result: dict[str, dict[str, Any]] = {}
     try:
         value = ctx.read_json("inputs/universe/ethics.json")
         if not isinstance(value, dict):
             return result
-        stamp = _review(ctx, value["review"])
-        if ctx.now >= stamp.reviewed_at + ELIGIBILITY_MAXIMUM_AGE:
+        stamp = EthicalReviewStamp.model_validate(value["review"])
+        if not stamp.reviewed_by.strip() or not stamp.reviewed_at <= ctx.now < min(
+            stamp.valid_until, stamp.reviewed_at + timedelta(days=validity_days(ctx))
+        ):
             return {}
         entries = value["instruments"]
         counts = Counter(item.get("isin") for item in entries if isinstance(item, dict))
@@ -214,7 +227,9 @@ def _ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
                 ):
                     continue
                 refs = _attach(ctx, entry.evidence_files)
-                expires = stamp.valid_until
+                expires = min(
+                    stamp.valid_until, stamp.reviewed_at + timedelta(days=validity_days(ctx))
+                )
                 for path in entry.source_rights_review_files:
                     rights = ctx.read_json(path)
                     if not isinstance(rights, dict):
@@ -225,7 +240,7 @@ def _ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
                         raise ValueError("ETHICAL_SOURCE_RIGHTS_REQUIRED")
                     refs.extend(_attach(ctx, rights["evidence_files"]))
                     refs.extend(_attach(ctx, [path]))
-                proof = ctx.artifact(
+                legacy_proof = ctx.artifact(
                     {
                         "kind": "reviewed-material-exposure-v1",
                         "review": value["review"],
@@ -233,10 +248,13 @@ def _ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
                         "source_evidence": refs,
                     }
                 )
+                clearance, proof = legacy_clearance(ctx, entry, stamp, refs, expires)
                 result[entry.isin] = {
                     "entry": entry,
                     "stamp": stamp,
                     "proof": proof,
+                    "legacy_proof": legacy_proof,
+                    "clearance": clearance,
                     "valid_until": expires,
                 }
             except (ValueError, OSError, KeyError, TypeError):
@@ -244,6 +262,20 @@ def _ethics(ctx: QualificationContext) -> dict[str, dict[str, Any]]:
     except (ValueError, OSError, KeyError, TypeError):
         pass
     return result
+
+
+def _ethics(
+    ctx: QualificationContext,
+    rows: list[dict[str, Any]] | None = None,
+    *,
+    offline: bool = False,
+) -> dict[str, dict[str, Any]]:
+    from money.qualification.universe_ethics import screen_universe
+
+    legacy = _legacy_ethics(ctx)
+    if rows is None:
+        return legacy
+    return screen_universe(ctx, rows, legacy=legacy, offline=offline)
 
 
 def _store_response(ctx: QualificationContext, raw: bytes) -> tuple[str, str]:
@@ -324,7 +356,7 @@ def classify_row(
     """Admission consumes actual evidence; missing conditions remain explicit."""
     initial = row["qualification_state"]
     row.update(
-        ethical_state="ETHICAL_REVIEW_REQUIRED",
+        ethical_state="NOT_YET_SCREENED",
         evidence_freshness="CURRENT_METADATA",
         eligibility_review=None,
     )
@@ -354,33 +386,36 @@ def classify_row(
     if assessed is None:
         if state == "QUALIFIED":
             state = "UNRESOLVED_ETHICAL"
-        reasons.append("COMPLETE_APPROVED_MATERIAL_EXPOSURE_EVIDENCE_REQUIRED")
+        reasons.append("ISSUER_ETHICAL_SCREENING_REQUIRED")
     else:
-        entry = assessed["entry"]
+        clearance = assessed["clearance"]
+        row["ethical_state"] = clearance.result
+        row["ethical_screening"] = clearance.model_dump(mode="json")
+        legacy_company = assessed.get("entry")
         company = identifiers.company_name if identifiers else row.get("name", "")
-        if (
-            re.sub(r"\W", "", entry.company_name).casefold()
+        if row.get("isin") not in clearance.isins or (
+            legacy_company is not None
+            and re.sub(r"\W", "", legacy_company.company_name).casefold()
             != re.sub(r"\W", "", company).casefold()
         ):
             assessed = None
+            row["ethical_state"] = "UNKNOWN"
             state = "UNRESOLVED_ETHICAL"
             reasons.append("ETHICAL_COMPANY_IDENTITY_MISMATCH")
-        elif set(map(_activity, entry.business_activities)) & set(EXCLUDED_ACTIVITIES):
+        elif clearance.result == "FAIL":
             row.update(
                 qualification_state="EXCLUDED_ETHICAL",
-                ethical_state="ETHICALLY_EXCLUDED",
+                ethical_state="FAIL",
                 reasons=[*reasons, "PROHIBITED_MATERIAL_ACTIVITY"],
             )
             return None
-        elif set(map(_activity, entry.business_activities)) & _UNKNOWN_ACTIVITIES or any(
-            not activity.strip() for activity in entry.business_activities
-        ):
+        elif clearance.result != "PASS":
             assessed = None
             if state == "QUALIFIED":
                 state = "UNRESOLVED_ETHICAL"
-            reasons.append("UNKNOWN_MATERIAL_EXPOSURE_NOT_CLEARED")
+            reasons.extend(clearance.reasons or ("ISSUER_ETHICAL_EVIDENCE_INSUFFICIENT",))
         else:
-            row["ethical_state"] = "ETHICALLY_CLEARED"
+            row["ethical_state"] = "PASS"
     required = {"eodhd"}
     jurisdiction = row.get("issuer_facts", {}).get("CountryISO")
     if jurisdiction == "GB":
@@ -482,7 +517,7 @@ def classify_row(
         )
         return None
     try:
-        verified_at = min(observed, assessed["stamp"].reviewed_at)
+        verified_at = observed  # broker freshness is independent of ethical clearance age
         deadline = min(
             until,
             identifiers.valid_until,
@@ -505,8 +540,9 @@ def classify_row(
             instrument_type="STOCK",
             quote_currency=identifiers.quote_currency,
             currently_available=True,
-            business_activities=assessed["entry"].business_activities,
+            business_activities=assessed["clearance"].business_activities,
             activities_verified=True,
+            ethical_clearance=assessed["clearance"],
             verified_at=verified_at,
             source="hash-bound live broker membership and material-exposure evidence",
             provider="trading212",
@@ -634,8 +670,12 @@ def _summary(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
             reason for row in relevant for reason in provider_failures(row)
         ).items())),
         "ethical_review_required": sum(
-            r.get("ethical_state") == "ETHICAL_REVIEW_REQUIRED" for r in relevant
+            r.get("ethical_state") == "UNKNOWN" for r in relevant
         ),
+        "ethical_screenings": {
+            state: sum(r.get("ethical_state") == state for r in relevant)
+            for state in ("PASS", "FAIL", "UNKNOWN", "NOT_YET_SCREENED")
+        },
         "ethical_excluded": states["EXCLUDED_ETHICAL"],
         "datasets": {
             name: sum(current_dataset(r, name) for r in relevant)
@@ -705,10 +745,10 @@ def _review_work(rows: list[dict[str, Any]], provenance: dict[str, Any]) -> dict
                 "action": "Independently substantiate permitted use, retention and redistribution. API success is not permission; no per-stock rights signatures are requested.",
             },
             "ethical_evidence": {
-                "review_file": "inputs/universe/ethics.json",
-                "schema_file": "inputs/universe/ethical-entry.schema.json",
+                "evidence_file": "inputs/universe/ethical-evidence.json",
+                "screenings_file": "outputs/ethical-screenings.json",
                 "required_exclusions": list(EXCLUDED_ACTIVITIES),
-                "action": "One independent review may cover multiple instruments. Assess all material activities using rights-approved evidence; descriptions or absent keywords are not clearance.",
+                "action": "One evidence-based issuer screening is reused throughout research. Only UNKNOWN needs evidence resolution; no second ethical reviewer or per-stock rights signature. All exclusions remain required.",
             },
         },
         "instruments": [
@@ -1123,7 +1163,6 @@ def finalize_universe(
                 record_network_progress(ctx, row, binding)
     ctx.now = utc_now()
     # A long provider batch must not extend any review or membership lifetime.
-    ethics = _ethics(ctx)
     canonical_counts = Counter(
         row.get("identifiers", {}).get("ticker")
         for row in rows
@@ -1138,6 +1177,7 @@ def finalize_universe(
                 reasons=[*row.get("reasons", []), "CANONICAL_TICKER_COLLISION"],
             )
     rights = _qualify_rights(ctx, rows)
+    ethics = _ethics(ctx, rows, offline=offline)
     reviews = []
     for row in rows:
         reviewed = classify_row(
@@ -1457,6 +1497,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         for label, state in labels.items():
             print(f"{label}: {s['states'].get(state, 0)}")
         print(f"Ethical review required: {s['ethical_review_required']}")
+        print("\nISSUER ETHICAL SCREENING (candidate counts)")
+        for state, count in s["ethical_screenings"].items():
+            print(f"{state}: {count}")
         print(
             f"\nPROVIDERS\nEODHD mappings attempted: {s['eodhd_mapping_attempted']}/{s['gbx_stocks']} (network: {s['eodhd_lookups_network']}; cached: {s['eodhd_lookups_cached']})"
         )

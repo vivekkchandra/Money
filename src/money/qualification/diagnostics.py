@@ -66,7 +66,7 @@ CATEGORIES = {
     "provider_access": ["ROOT", "EXTERNAL_INFRASTRUCTURE"],
     "provider_enrichment": ["AUTOMATIC_RETRY"],
     "provider_rights": ["ROOT", "HUMAN_REVIEW"],
-    "ethical_evidence": ["HUMAN_REVIEW"],
+    "ethical_evidence": ["AUTOMATIC_RETRY"],
     "supplemental_evidence": ["HUMAN_REVIEW", "DOWNSTREAM/DERIVED"],
     "remote_inference": ["ROOT", "EXTERNAL_INFRASTRUCTURE"],
     "inference_review": ["HUMAN_REVIEW"],
@@ -123,7 +123,14 @@ def write_qualification_diagnostics(
     if enabled:
         stages["qlib"] = ("supplemental_evidence",)
         stages["first_pass"] = (*stages["first_pass"], "qlib")
-    nodes = []
+    nodes: list[dict[str, Any]] = []
+    ethical_counts = {
+        state: sum(
+            row.get("ethical_state") == state
+            for row in master.get("stocks", []) if row.get("universe_member") is True
+        )
+        for state in ("PASS", "FAIL", "UNKNOWN", "NOT_YET_SCREENED")
+    }
     for name, dependencies in stages.items():
         codes = []
         for item in report.get("blockers", []):
@@ -146,6 +153,17 @@ def write_qualification_diagnostics(
                 else "NOT_QUALIFIED_BY_DIAGNOSTICS",
             }
         )
+        if name == "ethical_evidence":
+            nodes[-1]["screening_counts"] = ethical_counts
+            nodes[-1]["classification"] = (
+                ["AUTOMATIC_RETRY", "HUMAN_REVIEW"]
+                if ethical_counts["UNKNOWN"] else ["AUTOMATIC_RETRY"]
+            )
+            nodes[-1]["action"] = (
+                "Run one machine screening per verified issuer using globally rights-approved evidence. "
+                "Reuse PASS; exclude FAIL. Human evidence resolution is only required for UNKNOWN/conflicts, "
+                "not a second ethical approval."
+            )
     mapped_codes = {code for node in nodes for code in node["reported_blockers"]}
     for item in report.get("blockers", []):
         if item.get("code") not in mapped_codes:
@@ -204,8 +222,8 @@ def write_qualification_diagnostics(
         "## Smallest legitimate sequence",
         "",
         "1. Resolve EODHD access first: inspect universe-enrichment-progress.json. HTTP 402 search / HTTP 403 fundamentals require the provider to confirm account entitlement, quota and endpoint access; they are not identity mismatches. No suffix guessing or automatic subscription purchase. Then resume bounded enrichment; cached current evidence is reused.",
-        "2. Complete global provider-rights reviews in inputs/provider-rights/{eodhd,companies-house}.json, including actual permitted-use/redistribution evidence. API access is not a licence. Ethical-source reuse also needs its explicit rights review. Account-type and ISA attestations are not requirements under the current policy; legacy account-scope artifacts are ignored, not approved.",
-        "3. Use outputs/ethics-work-queue.json to prepare one issuer dossier with exact provider identity, approved source bytes, all policy exposures and an independent human review in inputs/universe/ethics.json. Same-issuer evidence can be reused only for explicitly linked instruments. Dossiers never auto-clear exposure. Select by evidence completeness, not expected returns; the complete discovered universe remains in discovery.",
+        "2. Complete global provider-rights reviews in inputs/provider-rights/{eodhd,companies-house}.json, including actual permitted-use/redistribution evidence and ethical_research_datasets when licensed. One provider approval covers all issuers using those datasets; no duplicate per-issuer/source-use review. Existing global source-rights scope supplements remain compatible. API access is not a licence. Account-type and ISA attestations are not requirements; legacy account-scope artifacts are ignored, not approved.",
+        "3. Run one machine ethical screening per verified issuer from admissible source bytes via inputs/universe/ethical-evidence.json. Review outputs/ethics-work-queue.json: reuse PASS, exclude FAIL, acquire missing evidence for NOT_YET_SCREENED; human intervention only resolves UNKNOWN/conflicts. No independent second ethical reviewer or repeated downstream screening. Exact shared issuer identities reuse a clearance; similar names do not. Select by evidence completeness, not returns; the complete universe remains in discovery.",
         "4. Rerun the finalizer. One genuinely eligible member is enough; other unresolved members do not veto it. For that member attach the existing SupplementalReview via inputs/universe/supplemental.json: spread/cost/action/PIT/financial sources and up to four relevant accounts filing documents in inputs/financial-documents.json where applicable. Empty dataset samples are not qualifications.",
         "5. In parallel, resolve native dependency/security and pinned-source blockers (outputs/native-blocker-diagnosis.json). Provision a reviewed remote HTTPS inference endpoint for the existing private worker, exact role selections/budgets in reviews/inference.json, and real Linux/container allow/deny enforcement in reviews/native-egress.json. Local Ollama is NOT hosted inference; do not point Railway at Mac loopback or expose Ollama.",
         "6. Run build_live_qualification.py: complete qualified-universe snapshot → bounded screening → independent sealed TradingAgents / AI-Hedge-Fund reports"

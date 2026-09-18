@@ -66,7 +66,7 @@ Credentials are read from the process environment, not placed in review files.
 ## Policy migration and offline replay
 
 The active `universe_policy_version` is
-`money-t212-gbx-stock-universe-v3`. It is recorded in the authoritative universe
+`money-t212-gbx-stock-universe-v4`. It is recorded in the authoritative universe
 JSON, provenance, review queue, provider-stage result/checkpoint and bulk-mode
 marker. A missing or different version triggers automatic reclassification on
 the normal commands above; no manual directory deletion or rebuild flag is
@@ -89,7 +89,7 @@ The migration preserves raw broker and provider artifacts/caches, their hashes
 and original observation timestamps, operator inputs/reviews, snapshots and
 other quantitative/native outputs. Archived classifications are audit history,
 not reusable approvals. The new review queue is calculated from source evidence,
-not copied from obsolete venue or account-scope decisions. Appending `--rebuild-universe` to the
+not copied from obsolete venue, account-scope or multi-review ethical decisions. Appending `--rebuild-universe` to the
 finalizer forces this same narrowly scoped rebuild when explicitly needed.
 
 For a network-free diagnostic replay of already saved genuine responses:
@@ -154,7 +154,7 @@ templates**:
 
 | File under the qualification directory | Required review |
 |---|---|
-| `inputs/universe/ethics.json` | Assess all existing exclusion categories using rights-approved company, filing or annual-report evidence; one independent review may cover many structured entries. |
+| `inputs/universe/ethical-evidence.json` | Index genuine issuer/business source bytes for one machine-executable ethical screening per verified issuer; no ethical signature or second reviewer. |
 | `inputs/universe/supplemental.json` | Link independently reviewed spread, costs, corporate-action coverage, financial and archived point-in-time evidence by ISIN. |
 | `inputs/provider-rights/eodhd.json`, `inputs/provider-rights/companies-house.json` | Review explicit permitted use and retention/redistribution rights. Working API access is not licensing approval. |
 
@@ -180,19 +180,24 @@ optional. Neither an unresolved venue review nor missing country/MIC metadata
 blocks initial admission or provider lookup. Missing country/MIC facts are
 nullable enrichment, not venue-failure review tasks.
 
-Follow the generated schemas and `inputs/universe/README.md`. Approval requires
-real, distinct preparer/reviewer identities, actual review timestamps, finite
-validity and attached evidence. No discovery, model description, company name or
-SIC code supplies an ethical approval. Defence, weapons, firearms, material
-military contracting and the existing oil-related exclusions remain unchanged.
-Unknown material exposure remains `ETHICAL_REVIEW_REQUIRED` and is not admitted.
+Follow the generated schemas and `inputs/universe/README.md`. Non-ethical
+independent reviews, including supplemental evidence and release approval, still
+require their actual reviewer identities, timestamps, validity and evidence.
+Ethics uses one evidence-based issuer screening: `PASS`, `FAIL` or `UNKNOWN`.
+Only PASS proceeds and is reused downstream; humans resolve UNKNOWN/conflicting
+evidence, not a second ethical sign-off. No discovery, model description, company
+name or SIC code supplies clearance. Defence, weapons, firearms, material military
+contracting and the existing oil-related exclusions remain unchanged. See
+[the ethical policy](ethical-policy.md) for source scope and cache invalidation.
 
 Provider samples report actual accessible OHLCV, corporate-action and news
 observations. Empty action/news responses are not invented observations or
 automatic qualification. Companies House filing metadata is not financial
 coverage. Missing reviews, stale evidence and ambiguous joins stay explicitly
-unresolved; only the qualified subset can enter research. Membership and the
-existing eligibility/ethical freshness limits never extend beyond 24 hours.
+unresolved; only the qualified subset can enter research. Live broker membership
+and provider/identity freshness retain their existing limits, including the
+24-hour eligibility limit. Ethical clearance has its own configurable validity
+(`MONEY_ETHICAL_CLEARANCE_DAYS`, default 30), not a daily ethical-review requirement.
 
 The finalizer reports `raw_instruments`, `gbx_stocks`, `identity_valid`,
 `identity_unresolved`, `provider_stage_input_count`, `eodhd_attempted`,

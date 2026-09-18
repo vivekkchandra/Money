@@ -122,7 +122,8 @@ def test_account_review_is_not_required_and_remaining_rights_ethics_gates_are_ex
     codes = {item["code"] for item in result["remaining_blockers"]}
     assert "ETHICAL_SOURCE_RIGHTS_REVIEW_REQUIRED:eodhd" in codes
     assert "SUPPLEMENTAL_REVIEW_REQUIRED" in codes
-    assert "COMPLETE_APPROVED_MATERIAL_EXPOSURE_EVIDENCE_REQUIRED" in codes
+    assert "ADMISSIBLE_ISSUER_BUSINESS_EVIDENCE_REQUIRED" in codes
+    assert "COMPLETE_APPROVED_MATERIAL_EXPOSURE_EVIDENCE_REQUIRED" not in codes
     assert not any("ACCOUNT" in code or "ISA_SCOPE" in code for code in codes)
     assert result["recorded_qualification_state"] != "UNRESOLVED_ISA_SCOPE"
     assert not result["eligibility_granted"]
@@ -130,6 +131,23 @@ def test_account_review_is_not_required_and_remaining_rights_ethics_gates_are_ex
     assert "PROVIDER_RIGHTS_REVIEW_REQUIRED:eodhd" in instructions
     assert "mandatory LEAN" in instructions
     assert "FIRST_PASS_LOCKED" in instructions
+
+
+def test_preparation_preserves_actual_screening_instead_of_raw_normalizer_default(ctx):
+    master, _ = prepare(ctx)
+    recorded = master["stocks"][0]
+    assert recorded["ethical_state"] == "UNKNOWN"
+    assert recorded["ethical_screening"]["result"] == "UNKNOWN"
+
+    result = first_candidate.prepare_first_candidate(ctx)
+
+    assert result["ethical_state"] == recorded["ethical_state"]
+    assert result["ethical_screening"] == recorded["ethical_screening"]
+    assert not result["eligibility_granted"]
+    assert "Ethical screening: UNKNOWN." in ctx.read_bytes("outputs/FIRST_STOCK_NEXT.md").decode()
+    assert "Ethical screening: NOT_YET_SCREENED." not in ctx.read_bytes(
+        "outputs/FIRST_STOCK_NEXT.md"
+    ).decode()
 
 
 def test_legacy_account_classification_requires_rebuild_not_autoapproval(ctx):

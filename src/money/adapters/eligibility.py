@@ -5,8 +5,10 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from money.research.ethics import ethical_policy_hash
 from money.schemas.contracts import (
     EXCLUDED_ACTIVITIES,
+    EthicalClearance,
     InstrumentMetadata,
     ResearchMandate,
     utc_now,
@@ -56,7 +58,7 @@ class Trading212EligibilityService(Protocol):
 
 
 class Trading212EligibilityAdapter:
-    """Consumes current broker membership plus independently qualified ethics.
+    """Consumes current broker membership plus the cached issuer screening.
 
     A listing alone does not establish ethical/provider research qualification.
     Account type and purchase availability are deliberately not asserted.
@@ -142,8 +144,35 @@ def eligibility_failures(
     }
     if activities & exclusions:
         failures.append("PROHIBITED_ACTIVITY")
+    clearance = instrument.ethical_clearance
+    if clearance is not None:
+        # A screening is reused, not re-run or re-signed, at each boundary.
+        # Revalidate to catch unvalidated internal model_copy mutations too.
+        try:
+            clearance = EthicalClearance.model_validate(clearance.model_dump(mode="json"))
+        except ValueError:
+            failures.append("ETHICAL_CLEARANCE_INVALID")
+        else:
+            if clearance.result == "FAIL":
+                failures.append("PROHIBITED_ACTIVITY")
+            elif clearance.result != "PASS":
+                failures.append("ETHICAL_SCREEN_UNKNOWN")
+            if (
+                now.tzinfo is None
+                or now.utcoffset() is None
+                or not clearance.screened_at <= now < clearance.valid_until
+            ):
+                failures.append("ETHICAL_CLEARANCE_EXPIRED")
+            if clearance.policy_hash != ethical_policy_hash(tuple(sorted(exclusions))):
+                failures.append("ETHICAL_POLICY_CHANGED")
+            if {_activity(value) for value in clearance.business_activities} != activities:
+                failures.append("ETHICAL_CLEARANCE_ACTIVITY_MISMATCH")
+            if not exclusions.issubset(
+                {_activity(value) for value in clearance.assessed_exclusions}
+            ):
+                failures.append("ETHICAL_SCREEN_UNKNOWN")
     if not _provenance_valid(instrument):
         failures.append("ELIGIBILITY_PROVENANCE_MISSING")
     if not _current(instrument, now):
         failures.append("ELIGIBILITY_STALE")
-    return tuple(failures)
+    return tuple(dict.fromkeys(failures))
