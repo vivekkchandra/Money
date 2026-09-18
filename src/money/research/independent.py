@@ -320,6 +320,13 @@ def run_local_independent_research(
         "artifacts": [],
         "firm_failures": [],
         "firm_runs": [],
+        "execution_limits": {
+            "agent_timeout_seconds": settings.timeout_seconds,
+            "native_max_calls": settings.max_calls,
+            "inference_timeout_seconds": {
+                firm: selections[firm].timeout_seconds for firm in _FIRMS
+            },
+        },
         "debate_completed": False,
     }
     if not preflight["complete"]:
@@ -382,13 +389,24 @@ def run_local_independent_research(
             ctx.block(
                 "LOCAL_NATIVE_REPORT_REQUIRED_" + firm.upper(),
                 code + ": the bounded native firm did not return a valid, pinned, evidence-cited report. "
-                "Check its local model availability and installed runtime; peer reports remain sealed.",
+                + (
+                    f"Whole-firm budget {settings.timeout_seconds:g}s exhausted; "
+                    f"individual model timeout remains {selections[firm].timeout_seconds}s. "
+                    "Inspect outputs/research-first-pass.json firm_runs; incomplete accounting "
+                    "does not mean no LLM calls occurred. The local workflow budget is "
+                    "MONEY_RESEARCH_AGENT_TIMEOUT_SECONDS (maximum 1800). "
+                    if code == "NATIVE_AGENT_TIMEOUT" else
+                    "Check the reported failure category and local model/runtime diagnostics. "
+                )
+                + "Peer reports remain sealed.",
             )
         finally:
             result["firm_runs"].append({
                 "firm": firm, "status": "FAILED" if failure else "SUCCEEDED",
                 "duration_seconds": max(0.0, time.monotonic() - started),
                 "cache_hit": cache_hit, "error_code": failure,
+                "agent_timeout_seconds": settings.timeout_seconds,
+                "inference_timeout_seconds": selections[firm].timeout_seconds,
                 "llm_calls_recorded": sum(call.provider_calls for call in calls),
                 # Killing an agent may prevent its in-flight receipts returning.
                 "call_accounting_complete": failure not in {

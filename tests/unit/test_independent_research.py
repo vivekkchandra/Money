@@ -208,6 +208,10 @@ def test_each_report_is_preserved_and_only_missing_firm_resumes(
     failed = next(run for run in first["firm_runs"] if run["firm"] == "ai_hedge_fund")
     assert failed["error_code"] == "NATIVE_AGENT_TIMEOUT"
     assert failed["call_accounting_complete"] is False
+    assert failed["agent_timeout_seconds"] == 180
+    assert failed["inference_timeout_seconds"] == selections["ai_hedge_fund"].timeout_seconds
+    assert "Whole-firm budget 180s" in context.blockers[-1]["action"]
+    assert "incomplete accounting" in context.blockers[-1]["action"]
     first_bytes = context.read_bytes("outputs/research-reports/tradingagents.json")
     # The next real audit emits a new receipt timestamp/hash, but the same
     # approved source/runtime and frozen snapshot must reuse the original firm.
@@ -219,6 +223,34 @@ def test_each_report_is_preserved_and_only_missing_firm_resumes(
     assert cached["cache_hit"] is True
     assert cached["llm_calls_recorded"] == 0
     assert context.read_bytes("outputs/research-reports/tradingagents.json") == first_bytes
+
+
+def test_longer_agent_budget_is_part_of_execution_identity_not_provider_selection(
+    context: QualificationContext, snapshot: ResearchSnapshot,
+    selections: dict[str, InferenceSelection], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready(monkeypatch)
+    observed = []
+
+    def native(ctx: QualificationContext, firm: str, frozen: ResearchSnapshot,
+               selected: InferenceSelection, settings: NativeRunSettings, *args: Any) -> FirmReport:
+        observed.append((firm, settings.timeout_seconds))
+        assert selected == selections[firm]
+        assert settings.max_calls == 24 and settings.verify_source_pin
+        return report(firm, frozen)
+
+    monkeypatch.setattr(independent, "_report", native)
+    first = independent.run_local_independent_research(context, snapshot, selections)
+    updated = independent.run_local_independent_research(
+        context, snapshot, selections, NativeRunSettings(timeout_seconds=900),
+    )
+    assert first["complete"] and updated["complete"]
+    assert observed == [("tradingagents", 180), ("ai_hedge_fund", 180),
+                        ("tradingagents", 900), ("ai_hedge_fund", 900)]
+    assert updated["execution_limits"]["agent_timeout_seconds"] == 900
+    assert updated["execution_limits"]["native_max_calls"] == 24
+    assert all(run["agent_timeout_seconds"] == 900 for run in updated["firm_runs"])
+    assert updated["production_qualified"] is False
 
 
 def test_failed_inference_receipts_reach_both_firm_diagnostics_and_outer_accounting(

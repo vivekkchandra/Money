@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from money.adapters.native import parse_analysis, snapshot_payload
+from money.adapters.native import NativeRunSettings, parse_analysis, snapshot_payload
 from money.adapters.upstream import InvalidUpstreamReport, UnsupportedSnapshotData
 from money.qualification import research_testing, runner, universe
 from money.qualification.core import QualificationContext
@@ -142,6 +142,56 @@ def test_personal_runner_reaches_native_without_company_and_does_not_run_lean_ea
     dag = ctx.read_json("outputs/qualification-blocker-dag.json")
     assert next(s for s in dag["stages"] if s["id"] == "snapshot")["requires"] == ["basic_identity"]
     assert not ctx._path("manifest.json").exists()
+
+
+@pytest.mark.parametrize("configured,expected", [(None, 900), (600, 600), (1800, 1800)])
+def test_whole_agent_budget_is_separate_from_http_timeout_and_call_cap(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, configured: int | None, expected: int,
+) -> None:
+    from money.qualification import universe_providers
+    from money.research import independent
+
+    if configured is not None:
+        ctx.environ = dict(ctx.environ) | {"MONEY_RESEARCH_AGENT_TIMEOUT_SECONDS": str(configured)}
+    existing = master(ctx)
+    monkeypatch.setattr(universe, "finalize_universe", lambda *a, **k: existing)
+    monkeypatch.setattr(universe_providers, "BulkProviderEnricher", NoEnrichment)
+    recorded = []
+
+    def native(context: QualificationContext, frozen: ResearchSnapshot, selections: dict,
+               limits: NativeRunSettings) -> dict[str, Any]:
+        recorded.append(limits)
+        assert limits.timeout_seconds == expected
+        assert limits.max_calls == 24 and limits.verify_source_pin
+        assert all(s.timeout_seconds == 180 for s in selections.values())
+        assert all(s.inference({}).configuration.timeout_seconds == 180 for s in selections.values())
+        assert all(s.reasoning_effort == "none" for s in selections.values())
+        context.block("LOCAL_NATIVE_REPORT_REQUIRED", "Fixture does not execute native inference.")
+        return {"complete": False}
+
+    monkeypatch.setattr(independent, "run_local_independent_research", native)
+    monkeypatch.setattr(research_testing, "_run_lean", lambda *a: pytest.fail("LEAN ran without reports"))
+    result = runner.run(ctx)
+    assert len(recorded) == 1
+    assert result["state"] == "RESEARCH_ELIGIBLE"
+    assert result["qlib_enabled"] is False and result["lean_mandatory"] is True
+    assert ctx.read_json("outputs/research-mode.json")["agent_timeout_seconds"] == expected
+    assert ctx.read_json("outputs/research-mode.json")["native_max_calls"] == 24
+    assert not ctx._path("manifest.json").exists()
+    # The local runner passes explicit settings, never changing hosted defaults.
+    assert NativeRunSettings().timeout_seconds == 180
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1801", "1.5", "NaN", "fixture-private-invalid"])
+def test_invalid_agent_budget_rejected_before_any_retrieval_or_native_stage(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, value: str, capsys: Any,
+) -> None:
+    ctx.environ = dict(ctx.environ) | {"MONEY_RESEARCH_AGENT_TIMEOUT_SECONDS": value}
+    monkeypatch.setattr(universe, "finalize_universe", lambda *a, **k: pytest.fail("retrieval ran"))
+    assert runner.main(["--output", str(ctx.root)], environment=ctx.environ) == 2
+    output = capsys.readouterr().out
+    assert "RUNNER_INITIALIZATION_FAILED" in output
+    assert value not in output
 
 
 def test_no_current_universe_stops_every_native_and_backtest_stage(

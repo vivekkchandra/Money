@@ -117,6 +117,17 @@ Native diagnostics in `outputs/research-first-pass.json` include `firm_runs`:
 wall-clock duration, cache reuse, safe error code, recorded LLM calls and their
 timings. `PROVIDER_TIMEOUT` identifies a model request timeout;
 `NATIVE_AGENT_TIMEOUT` identifies the complete native workflow deadline.
+The personal `run_research_testing.py` workflow has a separate **900-second
+per-firm budget** (including child startup/integrity checks, imports, every
+specialist/persona call and report validation inside the child). Override it
+with `MONEY_RESEARCH_AGENT_TIMEOUT_SECONDS`, an integer from 1 to 1800; this does
+not alter the selected model's 180-second individual request timeout or the
+existing 24-call maximum. `execution_limits` and each `firm_runs` entry record
+both deadlines. The two firms run independently and sequentially, so the default
+allows up to 30 minutes across the two child processes, plus preflight/data work.
+This is a bounded opportunity to complete the native workflows, not a guarantee
+that this model/hardware will finish within the budget. The hosted manifest's
+reviewed timeouts and release/LEAN gates are unchanged.
 Empty visible responses, malformed structured reports, rejected tool calls,
 adapter exceptions and subprocess failures have distinct codes. A killed child
 may lose in-flight receipts: `call_accounting_complete: false` means a recorded

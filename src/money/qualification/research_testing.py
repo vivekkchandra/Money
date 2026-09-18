@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import Field
 
+from money.adapters.native import NativeRunSettings
 from money.qualification.core import QualificationContext
 from money.schemas.contracts import Contract, PriceBar, utc_now
 from money.usage_policy import UsageMode, usage_mode
@@ -16,6 +17,9 @@ from money.usage_policy import UsageMode, usage_mode
 class TestingSettings(Contract):
     shortlist_limit: int = Field(default=1, ge=1, le=20)
     enrichment_request_budget: int = Field(default=20, ge=0, le=300)
+    # Whole local firm, including startup and its sequence of model requests.
+    # Not an HTTP timeout or an override of hosted manifest execution limits.
+    agent_timeout_seconds: int = Field(default=900, ge=1, le=1800)
 
 
 def _selection(ctx: QualificationContext, rows: list[dict[str, Any]] | None = None) -> str | None:
@@ -201,11 +205,15 @@ def run_research_testing(ctx: QualificationContext) -> dict[str, Any]:
     settings = TestingSettings(
         shortlist_limit=int(ctx.environ.get("MONEY_RESEARCH_SHORTLIST_LIMIT", "1")),
         enrichment_request_budget=int(ctx.environ.get("MONEY_RESEARCH_ENRICHMENT_REQUESTS", "20")),
+        agent_timeout_seconds=int(ctx.environ.get("MONEY_RESEARCH_AGENT_TIMEOUT_SECONDS", "900")),
     )
+    native_settings = NativeRunSettings(timeout_seconds=settings.agent_timeout_seconds)
     ctx.write_json("outputs/research-mode.json", {
         "purpose": "RESEARCH_TESTING", "usage_mode": "PERSONAL_RESEARCH",
         "qlib_enabled": False, "lean_mandatory": True, "production_qualified": False,
         "commercial_release_permitted": False, "raw_data_redistribution_permitted": False,
+        "agent_timeout_seconds": native_settings.timeout_seconds,
+        "native_max_calls": native_settings.max_calls,
     })
     master = _execute(ctx, "research-universe", lambda: finalize_universe(ctx, max_requests=0, capture_documents=False))
     rows: list[dict[str, Any]] = []
@@ -246,7 +254,9 @@ def run_research_testing(ctx: QualificationContext) -> dict[str, Any]:
             reference = ctx.artifact(snapshot.model_dump(mode="json"))
             ctx.write_json("outputs/research-snapshot.json", {"artifact": reference, "snapshot_hash": snapshot.hash})
             selections = load_inference_selections(ctx.repo, ctx.environ)
-            firms = _execute(ctx, "research-first-pass", partial(run_local_independent_research, ctx, snapshot, selections))
+            firms = _execute(ctx, "research-first-pass", partial(
+                run_local_independent_research, ctx, snapshot, selections, native_settings,
+            ))
             result = {"trading212_id": row["trading212_id"], "state": "RESEARCH_ELIGIBLE", "snapshot_artifact": reference, "first_pass": firms, "lean": {"executed": False}}
             if firms.get("complete"):
                 result["state"] = "RESEARCHED"
