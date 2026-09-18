@@ -106,3 +106,56 @@ No Railway service, credential, package environment, source pin, review or
 production manifest was changed by this investigation. The native/qualification/
 optional-Qlib regression subset passed 138 tests with 26 visible CrewAI
 deprecation warnings; those tests are not live native qualification evidence.
+
+## Minimum path for the first genuine candidate
+
+Rechecked September 18 at 09:10 UTC: all five referenced resolver/audit artifacts
+match their SHA256, and all eight resolver input files still match the failed
+receipt. All three selected source checkouts still match their source pins;
+installed TradingAgents/AI-Hedge-Fund remain absent and installed CrewAI still
+differs. No runtime blocker was resolved by rechecking. The narrower diagnostic,
+network-boundary, native-qualification and optional-Qlib suite passed 74 tests.
+`outputs/native-runtime-readiness.json` records this bounded inspection, not a
+new qualification. The four linked security advisories were checked again and
+still identify no patched release.
+
+The minimum hosted inference selection is three independently configured roles
+using a public, authenticated HTTPS endpoint on port 443, an exact returned model
+identity, bounded requests and an independently reviewed selection. Public DNS
+must resolve only to permitted public addresses. The existing checked-in OpenAI
+records parse and satisfy the hosted **schema**; this check did not call that
+provider or validate its credential. They were not changed or selected for a run.
+A different hosted model requires its real endpoint/credential-variable name and
+qualification; do not insert an illustrative URL or fake credential into a review.
+
+Under the current `InferenceSelection`/transport contract, unauthenticated access
+is local-only, and `.internal`, loopback and private IP inference targets are
+rejected. Consequently, a Railway-private model endpoint is not a drop-in
+replacement today. This does **not** require exposing the research worker: keep
+`Money Research Worker` private and let only its enforced research namespace
+reach the reviewed HTTPS gateway. Do not expose the Mac's Ollama listener.
+
+After the source/dependency/security work is legitimately complete, that worker
+needs the existing Postgres queue, `python -m money.worker`, and its existing
+`python -m money.worker --healthcheck` probe. The exact native image, manifest,
+hosted selection and OS enforcement must be qualified together. Current
+`Dockerfile.research` does not copy `scripts/` or the pinned source checkouts;
+one cannot claim to run `scripts/build_live_qualification.py` inside that image
+without first implementing and verifying the qualification/build packaging.
+The LEAN runner additionally needs access to its separately pinned, order-free
+container runtime; a Python research image alone does not provide it.
+
+The read-only Railway 5.57.7 status check for the existing project failed on
+sandbox DNS after an OAuth-refresh network error. It did not verify whether a
+worker currently exists or whether any service is healthy; do not duplicate a
+worker based on that failure. The operator can inspect the current topology with:
+
+```bash
+railway status --project 57b5ce77-898d-40a7-9f4a-d864c84e73dc --environment production
+```
+
+No deployment/configuration change is the next corrective step while the pinned
+closure is unsatisfiable and the security audit fails. Required human/infrastructure
+decisions are the reviewed compatible native closure, real hosted inference
+selection, target enforcement/inspector, and independent LEAN/egress evidence.
+These requirements apply to one genuine candidate as well as a larger universe.
