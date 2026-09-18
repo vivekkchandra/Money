@@ -207,11 +207,23 @@ def run_snapshot_stage(
         else:
             current.append(review)
     if not current:
+        from money.qualification.universe_status import (
+            live_metadata_state,
+            no_qualified_snapshot_action,
+        )
+
+        metadata = live_metadata_state(ctx, provider_output)
         ctx.block(
             "SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED",
-            "Refresh the complete live universe; no current eligibility-qualified GBP/GBX stock is admitted.",
+            no_qualified_snapshot_action(bool(metadata["current"])),
         )
-        return {"complete": False, "qualified_count": 0, "expired_or_ineligible": sorted(expired)}
+        return {
+            "complete": False,
+            "qualified_count": 0,
+            "expired_or_ineligible": sorted(expired),
+            "universe_metadata": metadata,
+            "blocked_by": "ELIGIBILITY_QUALIFICATION" if metadata["current"] else "LIVE_METADATA_AND_ELIGIBILITY",
+        }
     source_universe_hash = None
     universe_reference = provider_output.get("universe_artifact")
     if universe_reference is not None:

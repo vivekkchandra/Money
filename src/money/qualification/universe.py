@@ -473,12 +473,22 @@ def classify_row(
                 state = "UNRESOLVED_PROVIDER_MAPPING"
             reasons.append("CURRENT_" + dataset.replace(":", "_").upper() + "_OBSERVATION_REQUIRED")
     if row.get("identifiers") is not None:
+        missing_timestamps = False
         try:
             first = _time(row["provider_evidence_observed_at"])
             last = _time(row["provider_evidence_valid_until"])
+        except (ValueError, TypeError, KeyError):
+            missing_timestamps = True
+        else:
             if not first <= ctx.now < min(last, first + ELIGIBILITY_MAXIMUM_AGE):
-                raise ValueError("PROVIDER_EVIDENCE_EXPIRED")
+                state = "STALE_EVIDENCE"
+                row["evidence_freshness"] = "STALE_PROVIDER_EVIDENCE"
+                reasons.append("PROVIDER_EVIDENCE_EXPIRED_OR_FUTURE")
+        try:
             latest_bar = _time(datasets["eodhd:ohlcv"]["latest_observation"])
+        except (ValueError, TypeError, KeyError):
+            missing_timestamps = True
+        else:
             # Preserve the existing market-quality 96-hour freshness requirement.
             from money.data.quality.market import MarketQualityPolicy
 
@@ -487,10 +497,14 @@ def classify_row(
                 <= ctx.now
                 <= latest_bar + timedelta(hours=MarketQualityPolicy().maximum_latest_age_hours)
             ):
-                raise ValueError("OHLCV_EVIDENCE_EXPIRED")
-        except (ValueError, TypeError, KeyError):
-            state = "STALE_EVIDENCE"
-            row["evidence_freshness"] = "STALE_PROVIDER_EVIDENCE"
+                state = "STALE_EVIDENCE"
+                row["evidence_freshness"] = "STALE_PROVIDER_EVIDENCE"
+                reasons.append("OHLCV_EVIDENCE_EXPIRED_OR_FUTURE")
+        if missing_timestamps:
+            if state == "QUALIFIED":
+                state = "UNRESOLVED_PROVIDER_MAPPING"
+            if state != "STALE_EVIDENCE":
+                row["evidence_freshness"] = "PROVIDER_OBSERVATIONS_MISSING"
             reasons.append("CURRENT_TIMESTAMPED_PROVIDER_OBSERVATIONS_REQUIRED")
     if state != "QUALIFIED" or identifiers is None or scope is None or assessed is None:
         row.update(qualification_state=state, reasons=sorted(set(reasons)))
@@ -742,15 +756,15 @@ def _review_work(
                     field: row.get(field)
                     for field in (
                         "trading212_id", "isin", "name", "quote_currency",
-                        "identity_valid", "eodhd_identity", "eodhd_symbol",
-                        "issuer_facts", "issuer_facts_source", "companies_house_state",
-                        "companies_house_number", "legal_company_name", "company_status",
-                        "recent_accounts_filings", "provider_evidence", "provider_datasets",
+                        "identity_valid", "eodhd_symbol", "companies_house_state",
+                        "companies_house_number", "provider_evidence", "provider_datasets",
                         "provider_stage_status", "provider_request_diagnostics",
                         "provider_reasons", "ethical_state",
                         "provider_evidence_observed_at", "provider_evidence_valid_until",
                     )
                 },
+                "source_content_use": "REFERENCES_ONLY",
+                "ethical_review_queue": "outputs/ethics-work-queue.json",
                 "human_approval_supplied": False,
             }
             for row in rows if row.get("universe_member") is True
@@ -979,6 +993,23 @@ def _write_provider_projection(ctx: QualificationContext, result: dict[str, Any]
         _large_write(ctx, path, json_bytes(result))
 
 
+def _update_universe_diagnostics(
+    ctx: QualificationContext, master: dict[str, Any], *, capture_documents: bool = False
+) -> None:
+    from money.qualification.diagnostics import write_qualification_diagnostics
+    from money.qualification.universe_progress import write_enrichment_progress
+    from money.qualification.universe_reviews import prepare_universe_reviews
+    from money.qualification.universe_status import reconcile_universe_status
+
+    write_enrichment_progress(ctx, master)
+    prepare_universe_reviews(
+        ctx, master.get("stocks", []), master.get("provenance", {}),
+        fetch_documents=capture_documents,
+    )
+    reconcile_universe_status(ctx, master, live_refresh=master.get("scope") == "LIVE_RETRIEVAL")
+    write_qualification_diagnostics(ctx, master=master)
+
+
 def finalize_universe(
     ctx: QualificationContext,
     *,
@@ -988,6 +1019,7 @@ def finalize_universe(
     enricher: Any = None,
     rebuild_universe: bool = False,
     replay_saved: bool = False,
+    capture_documents: bool = False,
 ) -> dict[str, Any]:
     """Refresh live membership, optionally enrich venues, and isolate bad rows."""
     from money.qualification.universe_normalize import normalize_universe
@@ -1069,6 +1101,7 @@ def finalize_universe(
             "TRADING212_LIVE_METADATA_REQUIRED",
             "Fetch live accessible instruments using the ISA credential; no old membership was served. Exchanges are optional enrichment.",
         )
+        _update_universe_diagnostics(ctx, failed, capture_documents=capture_documents and not replay_saved)
         return failed
     rows = normalize_universe(
         instruments, exchanges, observed_at=observed, venue_reviews=_venues(ctx)
@@ -1183,6 +1216,8 @@ def finalize_universe(
         "universe_artifact": membership,
         "universe_provenance": provenance_artifact,
         "provider_qualifications": list(rights.values()),
+        "provider_request_budget": max_requests,
+        "requests_per_minute": requests_per_minute,
         "artifact_refs": sorted(ctx.artifact_refs),
     }
     queue = {
@@ -1280,6 +1315,7 @@ def finalize_universe(
     )
     ctx.write_json("outputs/universe-provenance.json", provenance)
     _write_provider_projection(ctx, _provider_projection(result))
+    _update_universe_diagnostics(ctx, result, capture_documents=capture_documents and not replay_saved)
     return result
 
 
@@ -1410,6 +1446,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 requests_per_minute=args.requests_per_minute,
                 rebuild_universe=args.rebuild_universe,
                 replay_saved=args.replay_saved,
+                capture_documents=not args.replay_saved,
             )
         print(
             "TRADING 212 SAVED RESPONSE REPLAY"
@@ -1455,6 +1492,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{label}: {s['datasets'][name]}/{s['gbx_stocks']}")
         print("Universe qualification is not production/native/release qualification.")
         print("Bulk evidence and remaining reviews: outputs/universe-review-work.json")
+        print("Provider progress: outputs/universe-enrichment-progress.json")
+        print("Prioritized dependencies and human reviews: outputs/NEXT_ACTIONS.md; outputs/REVIEW_TASKS.md")
         if args.replay_saved:
             print(
                 "Saved-response replay only; original retrieval time preserved. No network access or eligibility approval."

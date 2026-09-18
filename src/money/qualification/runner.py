@@ -143,7 +143,13 @@ def assemble_manifest(
     if "qualified_universe" in providers:
         from money.qualification.universe_catalog import eligibility_catalogs
 
-        fields["eligibility_catalogs"] = eligibility_catalogs(ctx, providers["qualified_universe"])
+        # An empty, honestly unresolved universe is an upstream prerequisite,
+        # not an artifact serializer failure. Never call the nonempty admission
+        # contract with [] and mislabel it BUNDLE_OR_ACCEPTANCE_FAILED.
+        fields["eligibility_catalogs"] = (
+            eligibility_catalogs(ctx, providers["qualified_universe"])
+            if providers["qualified_universe"] else ()
+        )
         fields["universe_account_binding_sha256"] = providers.get("universe_account_binding_sha256")
         fields["universe_provenance"] = providers.get("universe_provenance")
     inputs_hash = hashlib.sha256(json_bytes(fields)).hexdigest()
@@ -447,15 +453,21 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
         ctx.now = utc_now()
         assembled = assemble_manifest(ctx, outputs)
         if assembled and validate_and_test(ctx, *assembled, outputs):
-            report = {
+            report: dict[str, Any] = {
                 "status": "QUALIFICATION COMPLETE",
                 "manifest_path": str(assembled[0]),
                 "manifest_sha256": assembled[1],
                 "blockers": [],
                 "hosted_acceptance": "NOT_RUN",
                 "production_ready": False,
+                "updated_at": ctx.now.isoformat(),
+                "last_update_stage": "qualification-runner",
+                "universe_provenance": providers.get("universe_provenance"),
             }
             ctx.write_json("status.json", report)
+            from money.qualification.diagnostics import write_qualification_diagnostics
+
+            write_qualification_diagnostics(ctx, report=report)
             return report
     except Exception:
         ctx.block(
@@ -467,8 +479,15 @@ def run(ctx: QualificationContext) -> dict[str, Any]:
         "blockers": ctx.blockers,
         "manifest_sha256": assembled[1] if assembled else None,
         "production_ready": False,
+        "updated_at": ctx.now.isoformat(),
+        "last_update_stage": "qualification-runner",
+        "universe_provenance": providers.get("universe_provenance"),
+        "downstream_stage_results_current": True,
     }
     ctx.write_json("status.json", report)
+    from money.qualification.diagnostics import write_qualification_diagnostics
+
+    write_qualification_diagnostics(ctx, report=report)
     return report
 
 

@@ -5,6 +5,12 @@ locked CrewAI extra, which is insufficient to run the four pinned native engines
 No successful image build, native production run or host-egress qualification is
 claimed here. The existing API/control-plane image is not expanded by this plan.
 
+For the current explicit `MONEY_QLIB_ENABLED=false` qualification path, Qlib
+source, compilation, training and promotion are not required. TradingAgents,
+AI-Hedge-Fund, CrewAI and LEAN remain required. The saved receipts and current
+advisory investigation are summarized in [native-blockers.md](native-blockers.md);
+neither that diagnosis nor a local scripted test is production qualification.
+
 ## Observed constraints
 
 - The read-only source trees for TradingAgents, AI-Hedge-Fund, Qlib and CrewAI
@@ -59,7 +65,7 @@ claimed here. The existing API/control-plane image is not expanded by this plan.
    | AI-Hedge-Fund | `hedge_fund/` |
    | CrewAI | `lib/crewai/src/crewai/` |
    | CrewAI core | `lib/crewai-core/src/crewai_core/` |
-   | CrewAI CLI | `lib/crewai-cli/src/crewai_cli/` |
+   | CrewAI CLI | `lib/cli/src/crewai_cli/` |
    | Qlib | `qlib/`, with compiled extensions from the same commit |
 
    Treat this as an explicit Money native-source distribution with its own

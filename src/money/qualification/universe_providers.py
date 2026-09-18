@@ -36,6 +36,7 @@ from money.schemas.contracts import utc_now
 
 _HOSTS = frozenset({"eodhd.com", "api.company-information.service.gov.uk"})
 _STOCK_TYPES = frozenset({"stock", "common stock", "ordinary shares"})
+_ACCESS_FAILURE_STATUSES = frozenset({401, 402, 403})
 _JOIN_ERRORS = frozenset(
     {
         "IDENTITY_INCOMPLETE",
@@ -61,9 +62,10 @@ def _name(value: Any) -> str:
 def _error(error: Exception) -> str:
     if isinstance(error, ProviderFailure):
         if error.http_status is not None:
-            if error.http_status in {401, 403, 404, 429}:
+            if error.http_status in {401, 402, 403, 404, 429}:
                 return {
                     401: "PROVIDER_AUTHENTICATION_REJECTED",
+                    402: "PROVIDER_PAYMENT_REQUIRED",
                     403: "PROVIDER_ACCESS_DENIED",
                     404: "PROVIDER_RESOURCE_NOT_FOUND",
                     429: "PROVIDER_RATE_LIMITED",
@@ -83,10 +85,12 @@ def _error(error: Exception) -> str:
                 "PROVIDER_RESPONSE_INVALID",
                 "PROVIDER_SOURCE_REJECTED",
                 "PROVIDER_AUTHENTICATION_REJECTED",
+                "PROVIDER_PAYMENT_REQUIRED",
                 "PROVIDER_ACCESS_DENIED",
                 "PROVIDER_RESOURCE_NOT_FOUND",
                 "PROVIDER_RATE_LIMITED",
                 "PROVIDER_UPSTREAM_UNAVAILABLE",
+                "PROVIDER_DNS_UNAVAILABLE",
             }
             else "PROVIDER_FAILED"
         )
@@ -99,6 +103,15 @@ def _error(error: Exception) -> str:
 
 def _ref(digest: str, path: str) -> dict[str, str]:
     return {"sha256": digest, "path": path}
+
+
+def _endpoint(host: str, path: str) -> str:
+    """Safe operation family only: never a query, credential or arbitrary URL."""
+    if host == "eodhd.com":
+        return path.split("/")[2]
+    if path == "/search/companies":
+        return "company-search"
+    return "filing-history" if path.endswith("/filing-history") else "company-profile"
 
 
 class _ContextArtifacts(QualificationArtifacts):
@@ -198,26 +211,24 @@ class _CachedFetcher(SafeFetcher):
         error_code: str | None = None,
         http_status: int | None = None,
         original_error_code: str | None = None,
+        backoff_scope: str | None = None,
     ) -> None:
         http_status = (
             http_status if type(http_status) is int and 100 <= http_status <= 599 else None
         )
         if original_error_code is not None:
-            original_error_code = _error(ProviderFailure(str(original_error_code)))
-        if host == "eodhd.com":
-            endpoint = path.split("/")[2]
-        elif path == "/search/companies":
-            endpoint = "company-search"
-        else:
-            endpoint = "filing-history" if path.endswith("/filing-history") else "company-profile"
+            original_error_code = _error(
+                ProviderFailure(str(original_error_code), http_status=http_status)
+            )
         self.diagnostics.append(
             {
                 "provider": "eodhd" if host == "eodhd.com" else "companies-house",
-                "endpoint": endpoint,
+                "endpoint": _endpoint(host, path),
                 "outcome": outcome,
                 "error_code": error_code,
                 "http_status": http_status,
                 "original_error_code": original_error_code,
+                "backoff_scope": backoff_scope,
                 "checked_at": self.ctx.now.isoformat(),
             }
         )
@@ -294,6 +305,23 @@ class _CachedFetcher(SafeFetcher):
                 host, parts.path, "NOT_REQUESTED", error_code="PROVIDER_CACHED_OBSERVATION_REQUIRED"
             )
             raise ProviderFailure("PROVIDER_CACHED_OBSERVATION_REQUIRED")
+        endpoint_key = fingerprint(
+            {"version": 1, "host": host, "endpoint": _endpoint(host, parts.path)}
+        )
+        endpoint_failure = self.ctx.cache(
+            "bulk-endpoint-cooldown-" + endpoint_key, endpoint_key, 300
+        )
+        if endpoint_failure:
+            self._diagnostic(
+                host,
+                parts.path,
+                "BACKOFF",
+                error_code="PROVIDER_BACKOFF_ACTIVE",
+                http_status=endpoint_failure.get("http_status"),
+                original_error_code=endpoint_failure.get("error"),
+                backoff_scope="ENDPOINT_FAMILY",
+            )
+            raise ProviderFailure("PROVIDER_BACKOFF_ACTIVE")
         failed = self.ctx.cache("bulk-failure-" + key, key, 300)
         if failed:
             self._diagnostic(
@@ -303,6 +331,7 @@ class _CachedFetcher(SafeFetcher):
                 error_code="PROVIDER_BACKOFF_ACTIVE",
                 http_status=failed.get("http_status"),
                 original_error_code=failed.get("error"),
+                backoff_scope="REQUEST",
             )
             raise ProviderFailure("PROVIDER_BACKOFF_ACTIVE")
         if host in self.backoff:
@@ -333,6 +362,7 @@ class _CachedFetcher(SafeFetcher):
                 }
             )
         except Exception as error:
+            self.refresh_clock()
             http_status = error.http_status if isinstance(error, ProviderFailure) else None
             self._diagnostic(
                 host, parts.path, "FAILED", error_code=_error(error), http_status=http_status
@@ -340,6 +370,16 @@ class _CachedFetcher(SafeFetcher):
             self.ctx.checkpoint(
                 "bulk-failure-" + key, key, {"error": _error(error), "http_status": http_status}
             )
+            if http_status in _ACCESS_FAILURE_STATUSES:
+                # One denied resource does not prove every peer is denied. A
+                # short, explicit operation-family cooldown prevents burning
+                # the whole run on a likely account/entitlement problem while
+                # preserving cached successes and other endpoint families.
+                self.ctx.checkpoint(
+                    "bulk-endpoint-cooldown-" + endpoint_key,
+                    endpoint_key,
+                    {"error": _error(error), "http_status": http_status},
+                )
             if isinstance(error, ProviderFailure) and error.retryable:
                 self.backoff.add(host)
             raise ProviderFailure(
@@ -480,6 +520,18 @@ class BulkProviderEnricher:
                     raise ValueError("EODHD_MAPPING_AMBIGUOUS")
                 matches[symbol] = item
         if len(matches) != 1:
+            diagnostics = row["eodhd_mapping_diagnostics"]
+            diagnostics["unresolved_reason"] = (
+                "AMBIGUOUS_EXACT_IDENTITY"
+                if matches
+                else "EMPTY_SEARCH_RESPONSE"
+                if not rows
+                else "ISIN_NOT_RETURNED"
+                if not same_isin
+                else "GBX_LINE_NOT_RETURNED"
+                if not diagnostics["exact_quote_count"]
+                else "STOCK_TYPE_SYMBOL_OR_CORROBORATION_REQUIRED"
+            )
             raise ValueError("EODHD_MAPPING_AMBIGUOUS" if matches else "EODHD_MAPPING_NOT_FOUND")
         symbol, item = next(iter(matches.items()))
         row["eodhd_symbol"], row["eodhd_mapping_state"] = symbol, "MAPPED"

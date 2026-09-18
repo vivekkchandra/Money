@@ -346,8 +346,7 @@ def test_successful_unchanged_joins_are_resumed_without_network(ctx):
 def test_offline_reuses_exact_cached_observations_without_credentials(ctx, monkeypatch):
     first = enricher(ctx).enrich(row())
     original_bytes = {
-        path.relative_to(ctx.root): path.read_bytes()
-        for path in ctx.root.rglob("*.json")
+        path.relative_to(ctx.root): path.read_bytes() for path in ctx.root.rglob("*.json")
     }
     ctx.environ = {}
     ctx.now += timedelta(hours=1)
@@ -378,8 +377,7 @@ def test_offline_reuses_exact_cached_observations_without_credentials(ctx, monke
     assert all("api_token" not in parse_qs(urlsplit(url).query) for url, _ in requests)
     assert all(headers is None for _, headers in requests)
     assert {
-        path.relative_to(ctx.root): path.read_bytes()
-        for path in ctx.root.rglob("*.json")
+        path.relative_to(ctx.root): path.read_bytes() for path in ctx.root.rglob("*.json")
     } == original_bytes
 
 
@@ -605,6 +603,7 @@ def test_no_credentials_means_no_requests_and_no_fake_failures(ctx):
     "status,code",
     [
         (401, "PROVIDER_AUTHENTICATION_REJECTED"),
+        (402, "PROVIDER_PAYMENT_REQUIRED"),
         (403, "PROVIDER_ACCESS_DENIED"),
         (404, "PROVIDER_RESOURCE_NOT_FOUND"),
         (429, "PROVIDER_RATE_LIMITED"),
@@ -646,7 +645,8 @@ def test_general_access_failure_does_not_claim_companies_house_mapping_failed(ct
     first = enricher(ctx, fetcher).enrich(row())
     assert first["eodhd_mapping_state"] == "MAPPED"
     assert first["provider_stage_status"]["issuer_profile"] == {
-        "status": "BLOCKED", "code": "PROVIDER_ACCESS_DENIED",
+        "status": "BLOCKED",
+        "code": "PROVIDER_ACCESS_DENIED",
     }
     assert first["companies_house_state"] == "UNRESOLVED_APPLICABILITY"
     assert not first["companies_house_mapping_attempted"]
@@ -658,7 +658,11 @@ def test_general_access_failure_does_not_claim_companies_house_mapping_failed(ct
 
     fetcher.calls.clear()
     second = enricher(ctx, fetcher).enrich(row())
-    diagnostic = next(item for item in second["provider_request_diagnostics"] if item["endpoint"] == "fundamentals")
+    diagnostic = next(
+        item
+        for item in second["provider_request_diagnostics"]
+        if item["endpoint"] == "fundamentals"
+    )
     assert diagnostic["outcome"] == "BACKOFF"
     assert diagnostic["http_status"] == 403
     assert diagnostic["original_error_code"] == "PROVIDER_ACCESS_DENIED"
@@ -685,7 +689,76 @@ def test_currency_mismatch_diagnostics_never_guess_gbp_is_pence(ctx):
         "returned_currencies": ["GBP"],
         "exact_quote_count": 0,
         "quote_unit_conversion_applied": False,
+        "unresolved_reason": "GBX_LINE_NOT_RETURNED",
     }
+
+
+@pytest.mark.parametrize("status", [401, 402, 403])
+def test_access_denial_defers_peer_searches_without_claiming_each_was_attempted(ctx, status):
+    fetcher = Fetcher()
+    fetcher.fail = ProviderFailure("PROVIDER_UNAVAILABLE", http_status=status)
+    worker = enricher(ctx, fetcher, max_requests=300)
+    first = worker.enrich(row())
+    peer = dict(row(), isin="AU000000CLA6", trading212_id="PEERl_EQ")
+    second = worker.enrich(peer)
+    assert first["eodhd_mapping_attempted"]
+    assert not second["eodhd_mapping_attempted"]
+    assert second["eodhd_lookup_origin"] == "NOT_PERFORMED"
+    assert worker.requests_used == 1
+    assert len(fetcher.calls) == 1
+    assert second["provider_reasons"] == ["PROVIDER_BACKOFF_ACTIVE"]
+    diagnostic = second["provider_request_diagnostics"][0]
+    assert diagnostic["outcome"] == "BACKOFF"
+    assert diagnostic["backoff_scope"] == "ENDPOINT_FAMILY"
+    assert diagnostic["http_status"] == status
+    assert second["eodhd_symbol"] is None
+    assert second["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+
+
+def test_endpoint_cooldown_resumes_after_bounded_expiry_and_keeps_cached_success(ctx):
+    good = Fetcher()
+    initial = enricher(ctx, good).enrich(row())
+    raw_before = {
+        ref["path"]: (ctx.root / ref["path"]).read_bytes() for ref in initial["provider_evidence"]
+    }
+    denied = Fetcher()
+    denied.fail = ProviderFailure("PROVIDER_UNAVAILABLE", http_status=402)
+    peer = dict(row(), isin="AU000000CLA6", trading212_id="PEERl_EQ")
+    assert enricher(ctx, denied).enrich(peer)["eodhd_mapping_attempted"]
+    denied.calls.clear()
+    resumed = enricher(ctx, denied)
+    assert resumed.enrich(row())["eodhd_mapping_state"] == "MAPPED"
+    assert not resumed.enrich(peer)["eodhd_mapping_attempted"]
+    assert resumed.requests_used == 0
+    assert denied.calls == []
+    assert all((ctx.root / path).read_bytes() == raw for path, raw in raw_before.items())
+    ctx.now += timedelta(seconds=301)
+    retried = enricher(ctx, denied).enrich(peer)
+    assert retried["eodhd_mapping_attempted"]
+    assert retried["provider_reasons"] == ["PROVIDER_PAYMENT_REQUIRED"]
+    assert len(denied.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "search,reason",
+    [
+        ([], "EMPTY_SEARCH_RESPONSE"),
+        ([{"ISIN": "AU000000CLA6", "Currency": "GBX"}], "ISIN_NOT_RETURNED"),
+        (
+            [{"ISIN": "GB00BH4HKS39", "Currency": "GBX"}],
+            "STOCK_TYPE_SYMBOL_OR_CORROBORATION_REQUIRED",
+        ),
+    ],
+)
+def test_mapping_diagnostics_explain_real_non_matches_without_relaxing_identity(
+    ctx, search, reason
+):
+    fetcher = Fetcher()
+    fetcher.search = search
+    result = enricher(ctx, fetcher).enrich(row())
+    assert result["provider_reasons"] == ["EODHD_MAPPING_NOT_FOUND"]
+    assert result["eodhd_mapping_diagnostics"]["unresolved_reason"] == reason
+    assert result["eodhd_symbol"] is None
 
 
 def test_authoritative_foreign_jurisdiction_is_not_a_failed_ch_request(ctx):
@@ -710,7 +783,8 @@ def test_companies_house_search_failure_is_distinct_from_issuer_profile(ctx):
     assert result["companies_house_mapping_attempted"]
     assert result["provider_stage_status"]["issuer_profile"]["status"] == "RETRIEVED"
     assert result["provider_stage_status"]["companies_house"] == {
-        "status": "BLOCKED", "code": "PROVIDER_AUTHENTICATION_REJECTED",
+        "status": "BLOCKED",
+        "code": "PROVIDER_AUTHENTICATION_REJECTED",
     }
 
 
