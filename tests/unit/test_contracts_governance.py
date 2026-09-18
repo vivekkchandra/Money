@@ -47,10 +47,10 @@ def test_mandate_cannot_expand_risk(change):
 
 def test_eligibility_unknown_and_business_exclusion_fail_closed(snapshot):
     mandate = ResearchMandate()
-    assert eligibility_failures(None, mandate, utc_now()) == ("ISA_ELIGIBILITY_UNKNOWN",)
+    assert eligibility_failures(None, mandate, utc_now()) == ("INSTRUMENT_ELIGIBILITY_UNKNOWN",)
     for change, failure in [
         ({"quote_currency": "USD"}, "CURRENCY_EXCLUDED"),
-        ({"isa_available": None}, "ISA_ELIGIBILITY_UNCONFIRMED"),
+        ({"quote_currency": "GBP"}, "CURRENCY_EXCLUDED"),
         ({"currently_available": None}, "INSTRUMENT_UNAVAILABLE"),
         ({"business_activities": ("weapons",)}, "PROHIBITED_ACTIVITY"),
         ({"activities_verified": False}, "ETHICAL_SCREEN_UNKNOWN"),
@@ -90,6 +90,17 @@ def test_snapshot_hash_and_no_opinion_fields(snapshot):
         snapshot.ticker = "OTHER.L"
     with pytest.raises(ValidationError):
         snapshot.evidence[0].payload.close = Decimal("200")
+
+
+def test_legacy_snapshot_isa_field_remains_hash_compatible(snapshot):
+    historical = demo_snapshot(snapshot.instrument.model_copy(update={"isa_available": True}))
+    serialized = historical.model_dump_json()
+    restored = ResearchSnapshot.model_validate_json(serialized)
+    assert restored.hash == historical.hash
+    assert restored.model_dump_json() == serialized
+    # Historical bytes are retained, but do not become a current account claim.
+    service = Trading212EligibilityAdapter((restored.instrument,))
+    assert service.is_available_in_isa(restored.ticker) is None
 
 
 def test_lookahead_and_unknown_publication_are_rejected(snapshot):

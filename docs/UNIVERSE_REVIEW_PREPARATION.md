@@ -1,8 +1,9 @@
 # Bulk review preparation
 
 `money.qualification.universe_reviews.prepare_universe_reviews` produces review
-work, not approval. It does not modify an existing human input, infer ISA account
-ownership or purchase availability, or qualify a provider/security/runtime.
+work, not approval. It does not modify an existing human input or qualify a
+provider/security/runtime. Policy `money-t212-gbx-stock-universe-v3` does not
+require or claim ISA account ownership, account type or buy availability.
 
 Generated outputs under the qualification root:
 
@@ -23,12 +24,13 @@ for seven days; unsuccessful attempts back off for five minutes. The safe
 transport enforces public destinations, bounded response size/deadline, and no
 redirects. Documentation access never establishes the operator's actual licence.
 
-There is one account review (`inputs/universe/account-scope.json`), not one per
-stock. Its existing independent-review, credential-binding, evidence and 24-hour
-freshness contract remains unchanged. The Trading 212 endpoint is documented as
-all available instruments; this does not establish which account owns a key,
-account-specific ISA membership, or current purchase availability. Do not attest
-those claims without account-specific evidence. `maxOpenQuantity` is not proof.
+Legacy `inputs/universe/account-scope.json` and its schema are deprecated and
+ignored, not approved. No account review template or signature is generated.
+An old `outputs/ACCOUNT_SCOPE_REVIEW.md` preparation is preserved in a hashed
+audit artifact before replacing its instructions with a deprecation notice.
+Credential binding remains a technical cache/retrieval integrity mechanism;
+genuine live response bytes, hash verification, original observation times and
+24-hour freshness remain mandatory. None of them assert account type.
 
 Provider rights remain global (`inputs/provider-rights/{provider}.json`). Reuse of
 source contents in ethical dossiers additionally requires independently reviewed

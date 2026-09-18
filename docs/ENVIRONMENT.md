@@ -2,7 +2,7 @@
 
 Examples in `.env.example` are placeholders only. Secrets are never Git assets.
 
-## Primary product: qualified GBP/GBX ISA research
+## Primary product: qualified live GBX stock research
 
 Use `MONEY_ENV=production`, `MONEY_DEPLOYMENT_ENV=hosted`, `MONEY_RESEARCH_MODE=live`,
 `MONEY_ENABLE_SYNTHETIC_DEMO=false` only with an actually qualified live manifest.
@@ -12,8 +12,8 @@ Do not change these settings merely to make readiness green. `live_rnd` remains 
 separate development experiment; USD/AAPL is not a production acceptance candidate.
 
 Read-only selection preflight:
-`MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run python scripts/check_live_isa.py --select-only`.
-This checks current reviewed ISA/GBP/GBX/stock/ethical membership; it does not fetch
+`MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run python scripts/check_live_stocks.py --select-only`.
+This checks current reviewed GBX/stock/broker/ethical membership; it does not fetch
 the complete broker universe or certify a provider, deployment or research run.
 Opt-in `tests/production` reuse that selection before any native inference.
 
@@ -92,7 +92,7 @@ losing it makes queued transactional email undecryptable.
 
 Company search uses the same hash-pinned `MONEY_LIVE_MANIFEST` as research, not a
 second provider directory or customer-supplied catalogue. API and worker must mount
-the same reviewed release. Expired identifiers/ISA verification/provider approval
+the same reviewed release. Expired identifiers/live membership/provider approval
 stop new requests; updating reviewed assets requires a validated release/restart.
 Market credentials default to `EODHD_API_KEY` (the manifest may explicitly choose
 another environment-variable name); the HTTP query parameter is `api_token`.

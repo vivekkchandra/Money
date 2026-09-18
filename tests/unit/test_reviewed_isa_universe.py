@@ -60,8 +60,7 @@ def test_verified_reviewed_subset_is_current_stock_only_with_provenance():
         ({"instrument_type": "ETF"}, "INSTRUMENT_TYPE_EXCLUDED"),
         ({"instrument_type": "FUND"}, "INSTRUMENT_TYPE_EXCLUDED"),
         ({"instrument_type": "WARRANT"}, "INSTRUMENT_TYPE_EXCLUDED"),
-        ({"isa_available": None}, "ISA_ELIGIBILITY_UNCONFIRMED"),
-        ({"isa_available": False}, "ISA_ELIGIBILITY_UNCONFIRMED"),
+        ({"quote_currency": "GBP"}, "CURRENCY_EXCLUDED"),
         ({"currently_available": None}, "INSTRUMENT_UNAVAILABLE"),
         ({"currently_available": False}, "INSTRUMENT_UNAVAILABLE"),
         ({"verified_at": NOW - timedelta(hours=24, seconds=1)}, "ELIGIBILITY_STALE"),
@@ -214,7 +213,7 @@ def test_current_eligibility_methods_never_return_stale_confirmation():
     clock = [NOW]
     entry = reviewed_entry()
     adapter = Trading212EligibilityAdapter((entry.metadata,), clock=lambda: clock[0])
-    assert adapter.is_available_in_isa(entry.metadata.ticker) is True
+    assert adapter.is_available_in_isa(entry.metadata.ticker) is None
     assert adapter.is_currently_available(entry.metadata.ticker) is True
     clock[0] = NOW + timedelta(days=1)
     assert adapter.is_available_in_isa(entry.metadata.ticker) is None
@@ -247,13 +246,12 @@ def test_narrower_user_mandate_can_remove_gbx_but_cannot_expand_it():
     assert page(universe(), mandate=ResearchMandate(quote_currencies=("GBP",))).total == 0
 
 
-def test_gbp_stock_keeps_raw_quote_unit_without_currency_guessing():
+def test_gbp_stock_is_not_admitted_under_gbx_only_policy():
     entry = reviewed_entry(quote_currency="GBP")
     entry = replace(
         entry, identifiers=entry.identifiers.model_copy(update={"quote_currency": "GBP"})
     )
-    row = page(universe((entry,))).instruments[0]
-    assert row.currency == "GBP" and row.research_allowed
+    assert page(universe((entry,))).instruments == ()
 
 
 def test_blank_provenance_cannot_claim_verified_isa_status():

@@ -45,7 +45,7 @@ def test_refresh_discovers_membership_and_removals_without_refreshing_reviews():
         metadata, lambda: tuple(reviews), clock=lambda: clock[0]
     )
     assert service.get_isa_universe() == (reviews[0].metadata,)
-    assert service.is_available_in_isa("FIXTURE.L") is True
+    assert service.is_available_in_isa("FIXTURE.L") is None
     assert metadata.calls == 1
     clock[0] += timedelta(minutes=10)
     metadata.rows = []
@@ -57,12 +57,11 @@ def test_refresh_discovers_membership_and_removals_without_refreshing_reviews():
     assert service.get_isa_universe()[0].verified_at == reviews[0].metadata.verified_at
 
 
-def test_metadata_presence_alone_does_not_prove_isa_or_ethics():
+def test_metadata_presence_alone_does_not_prove_ethics():
     provider = Metadata()
     service = Trading212LiveEligibilityService(provider, lambda: (), clock=lambda: NOW)
     assert service.get_isa_universe() == ()
     for updates in (
-        {"isa_available": None},
         {"currently_available": None},
         {"activities_verified": False},
         {"business_activities": ("defence",)},
@@ -72,6 +71,18 @@ def test_metadata_presence_alone_does_not_prove_isa_or_ethics():
             provider, lambda updates=updates: (review(**updates),), clock=lambda: NOW
         )
         assert service.get_isa_universe() == ()
+
+
+@pytest.mark.parametrize("legacy_isa", [None, False, True])
+def test_live_membership_can_progress_without_any_isa_attestation(legacy_isa):
+    expected = review(isa_available=legacy_isa)
+    service = Trading212LiveEligibilityService(
+        Metadata(), lambda: (expected,), clock=lambda: NOW,
+    )
+    assert service.get_universe() == (expected.metadata,)
+    # An old signature is neither interpreted nor turned into an approval.
+    assert service.is_available_in_isa("FIXTURE.L") is None
+    assert service.get_universe()[0].isa_available is legacy_isa
 
 
 @pytest.mark.parametrize(

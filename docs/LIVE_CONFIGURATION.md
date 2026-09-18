@@ -8,7 +8,7 @@ Never turn on live mode with fabricated qualification hashes or demo data.
 The owner reports `Money` CRASHED and `Postgres` ONLINE in the existing
 `incredible-flexibility / production` project. The configuration rejection is
 intentional: neither a running database nor a research dependency installation
-qualifies providers, ISA availability, models or native execution. Keep
+qualifies providers, current broker membership, models or native execution. Keep
 `MONEY_ENV=production`, `MONEY_DEPLOYMENT_ENV=hosted`, `MONEY_RESEARCH_MODE=live`,
 and `MONEY_ENABLE_SYNTHETIC_DEMO=false`; do not switch modes to clear this error.
 
@@ -33,16 +33,12 @@ the bundle, with bounded bytes matching SHA256. EODHD qualification must cover
 `ohlcv`, `corporate_action`, and `news`; Companies House must cover `filing`
 (plus `financial` when selected filing documents require it).
 
-**Unresolved current-universe defect:** `build_live_runtime` still constructs
-eligibility from reviewed manifest instruments. The documented
-[Trading 212 metadata response](https://docs.trading212.com/api/instruments/instruments)
-does not establish both account-specific current ISA eligibility and buy availability.
-The [ISA directory](https://www.trading212.com/trading-instruments/isa) identifies
-the relevant catalog, but no qualified machine feed/freshness/buy-status contract
-was established in this session. Listing membership, `addedOn`, or maximum quantity
-must not be converted into a fresh eligibility proof. A Trading 212-approved source
-and verified semantics are required before implementing/qualifying that replacement.
-Unknown remains rejected; no new unsupported endpoint or broker account access was added.
+**Current universe policy:** `money-t212-gbx-stock-universe-v3` admits identity-valid
+`STOCK`/`GBX` members of a genuine fresh live Trading 212 metadata response to the
+qualification pipeline. Account type, ISA scope and ISA buyability are not required
+or asserted. Live timestamps, response hashes, credential/cache binding, exact
+identity, provider qualification and independently reviewed ethical evidence remain
+mandatory. Legacy account-scope files are audit-only. See [live universe](live-universe.md).
 
 ## Configuration inputs
 
@@ -51,7 +47,7 @@ Unknown remains rejected; no new unsupported endpoint or broker account access w
    qualifications and `(sha256, relative-path)` qualification artifacts. Referenced
    files must exist, remain within the manifest directory, be bounded and match
    their digest; no symlink or missing-proof acceptance.
-2. Each instrument needs current verified ISA/availability and deterministic
+2. Each instrument needs verified current live broker membership and deterministic
    activity classification, proof hashes, provider-specific symbols, measured
    spread evidence, corporate-action completeness and explicit cost applicability.
    Supplemental normalized financial facts need qualified provider provenance.
@@ -100,8 +96,9 @@ Set backend `MONEY_ENV=production`, `MONEY_RESEARCH_MODE=live`,
 the independent `RESEARCH_API_TOKEN` and workspace configuration. Mount the
 read-only manifest/proofs in the API and worker. Provider secrets belong only to
 the worker: `EODHD_API_KEY`, `COMPANIES_HOUSE_API_KEY` and the explicitly selected
-inference credential variables. Optional Trading 212 metadata credentials are
-not necessary for the manifest eligibility reader and do not prove ISA coverage.
+inference credential variables. Trading 212 metadata credentials are required for
+current live membership refresh and technical credential-binding checks. They are
+never interpreted as account-type or ISA-eligibility verification.
 
 Production startup rejects an unconfigured/demo runtime, invalid manifest/hash,
 unqualified/stale providers, SQLite or missing API authentication. This is only a
@@ -185,7 +182,7 @@ MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run pytest tests/production -v
 Native test-specific input paths are documented in WORK_NATIVE.md. Test runners
 report `PASSED`, `FAILED`, `SKIPPED_MISSING_CREDENTIAL` or
 `BLOCKED_EXTERNAL_INFRA`; a skip is not successful qualification. Production
-tests first select a current reviewed GBP/GBX ISA stock from the qualified
+tests first select a current qualified GBX stock from the qualified
 manifest. They never default to its first entry or a global/US ticker.
 
 Offline baseline dataset preparation/training is documented in WORK_TRAINING.md.

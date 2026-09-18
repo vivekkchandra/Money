@@ -1,6 +1,6 @@
-"""Bulk, read-only ISA discovery and evidence admission, never trading authority.
+"""Bulk, read-only GBX stock discovery and evidence admission, never trading authority.
 
-Metadata membership, credential/account provenance, evidence rights and ethical
+Metadata membership, technical credential provenance, evidence rights and ethical
 coverage are different facts. None is inferred from the others. The master file
 is an operator artifact, not a replacement for a pinned production manifest.
 """
@@ -45,7 +45,9 @@ from money.schemas.contracts import (
     utc_now,
 )
 
-MASTER = "outputs/uk-isa-stock-universe.json"
+MASTER = "outputs/trading212-gbx-stock-universe.json"
+LEGACY_MASTER = "outputs/uk-isa-stock-universe.json"
+MASTER_CSV = "outputs/trading212-gbx-stock-universe.csv"
 MODE = "state/bulk-universe-mode.json"
 MAX_MASTER_BYTES = 64_000_000
 MAX_BROKER_RESPONSE_BYTES = 20_000_000
@@ -58,18 +60,6 @@ def _stamp() -> dict[str, Any]:
     return dict(
         status="UNRESOLVED", prepared_by=None, reviewed_by=None, reviewed_at=None, valid_until=None
     )
-
-
-class AccountScopeReview(Contract):
-    """One explicit account/endpoint attestation, not 1,000 identity signatures."""
-
-    review: dict[str, Any]
-    account_context: Literal["STOCKS_AND_SHARES_ISA"]
-    retrieval_environment: Literal["live"]
-    credential_binding_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    accessible_response_is_account_scoped: Literal[True]
-    accessible_response_confirms_current_buy_availability: Literal[True]
-    evidence_files: tuple[str, ...] = Field(min_length=1, max_length=10)
 
 
 class EthicalEntry(Contract):
@@ -85,7 +75,11 @@ class EthicalEntry(Contract):
 
 
 def credential_binding(environ: Mapping[str, str]) -> str | None:
-    """Bind a review to high-entropy credentials without persisting either key."""
+    """Bind cached retrievals to credentials without persisting either key.
+
+    The legacy HMAC domain is retained for raw-cache compatibility only; this
+    technical binding makes no assertion about account type or buy availability.
+    """
     key, secret = environ.get("TRADING212_API_KEY"), environ.get("TRADING212_API_SECRET")
     if not key or not secret:
         return None
@@ -117,25 +111,22 @@ def _review(ctx: QualificationContext, value: Any) -> Any:
 def prepare_bulk_inputs(ctx: QualificationContext, binding: str | None) -> None:
     """Only bulk inputs and exception queues; never generate per-stock templates."""
     ctx.template(MODE, {"universe_policy_version": UNIVERSE_POLICY_VERSION})
-    ctx.template(
-        "inputs/universe/account-scope.json",
-        {
-            "review": _stamp(),
-            "account_context": "STOCKS_AND_SHARES_ISA",
-            "retrieval_environment": "live",
-            "credential_binding_sha256": binding,
-            "accessible_response_is_account_scoped": None,
-            "accessible_response_confirms_current_buy_availability": None,
-            "evidence_files": [],
-        },
-    )
     ctx.template("inputs/universe/venues.json", {"review": _stamp(), "venues": []})
     ctx.template("inputs/universe/ethics.json", {"review": _stamp(), "instruments": []})
     ctx.template("inputs/universe/supplemental.json", {"instruments": {}})
-    ctx.write_json(
-        "inputs/universe/account-scope.schema.json", AccountScopeReview.model_json_schema()
-    )
     ctx.write_json("inputs/universe/ethical-entry.schema.json", EthicalEntry.model_json_schema())
+    ctx.write_json(
+        "outputs/universe-policy-retirements.json",
+        {
+            "universe_policy_version": UNIVERSE_POLICY_VERSION,
+            "ignored_legacy_inputs": [
+                "inputs/universe/account-scope.json",
+                "inputs/universe/account-scope.schema.json",
+            ],
+            "disposition": "PRESERVED_UNCHANGED_NOT_QUALIFICATION_AUTHORITY",
+            "review_approval_created": False,
+        },
+    )
     ctx.write_bytes(
         "inputs/universe/README.md",
         b"""# Bulk review inputs
@@ -148,11 +139,10 @@ accessible-instruments response. GBP is not admitted. Venue, MIC, country and
 ISIN prefix are not membership requirements; genuine identity conflicts still
 remain unresolved. Membership alone approves none of the reviews below.
 
-- `account-scope.json`: independently verify this credential binding is the
-  Stocks & Shares ISA key, that the endpoint response is account-specific, and
-  what genuine evidence establishes current purchase availability. Metadata has
-  no documented account-type/buy-enabled field. Never approve from listing alone.
-  Account review must also remain within the 24-hour eligibility freshness rule.
+- Legacy `account-scope.json` and its schema are deprecated audit artifacts.
+  They are ignored by the current policy, never required, approved or rewritten.
+  Technical credential binding protects raw-cache integrity only; membership
+  makes no account-type or purchase-availability claim.
 - `venues.json`: optional informational enrichment only. Existing reviewed
   exchange facts may be retained, but missing, foreign or unresolved venues
   never block admission or provider lookup. No venue review is required.
@@ -174,25 +164,6 @@ No approval or secret should be manufactured to make a field validate.
 """,
         replace=True,
     )
-
-
-def _scope(ctx: QualificationContext, binding: str | None) -> dict[str, Any] | None:
-    try:
-        value = ctx.read_json("inputs/universe/account-scope.json")
-        scope = AccountScopeReview.model_validate(value)
-        review = _review(ctx, scope.review)
-        if (
-            scope.credential_binding_sha256 != binding
-            or ctx.now >= review.reviewed_at + ELIGIBILITY_MAXIMUM_AGE
-        ):
-            raise ValueError("ISA_SCOPE_STALE_OR_DIFFERENT_KEY")
-        refs = _attach(ctx, scope.evidence_files)
-        ref = ctx.artifact(
-            {"kind": "reviewed-isa-account-provenance-v1", "review": value, "evidence": refs}
-        )
-        return {"review": review, "proof": ref}
-    except (ValueError, OSError, TypeError):
-        return None
 
 
 def _venues(ctx: QualificationContext) -> list[dict[str, Any]]:
@@ -345,17 +316,15 @@ def _time(value: Any) -> datetime:
 def classify_row(
     ctx: QualificationContext,
     row: dict[str, Any],
-    scope: dict[str, Any] | None,
     ethics: dict[str, dict[str, Any]],
     rights: dict[str, Any],
+    *,
+    admission_allowed: bool = True,
 ) -> EligibilityReview | None:
     """Admission consumes actual evidence; missing conditions remain explicit."""
     initial = row["qualification_state"]
     row.update(
         ethical_state="ETHICAL_REVIEW_REQUIRED",
-        isa_account_provenance_state=(
-            "REVIEWED_STOCKS_AND_SHARES_ISA" if scope else "UNRESOLVED_ISA_SCOPE"
-        ),
         evidence_freshness="CURRENT_METADATA",
         eligibility_review=None,
     )
@@ -412,9 +381,6 @@ def classify_row(
             reasons.append("UNKNOWN_MATERIAL_EXPOSURE_NOT_CLEARED")
         else:
             row["ethical_state"] = "ETHICALLY_CLEARED"
-    if scope is None:
-        state = "UNRESOLVED_ISA_SCOPE"
-        reasons.append("ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED")
     required = {"eodhd"}
     jurisdiction = row.get("issuer_facts", {}).get("CountryISO")
     if jurisdiction == "GB":
@@ -506,15 +472,20 @@ def classify_row(
             if state != "STALE_EVIDENCE":
                 row["evidence_freshness"] = "PROVIDER_OBSERVATIONS_MISSING"
             reasons.append("CURRENT_TIMESTAMPED_PROVIDER_OBSERVATIONS_REQUIRED")
-    if state != "QUALIFIED" or identifiers is None or scope is None or assessed is None:
+    if state != "QUALIFIED" or identifiers is None or assessed is None:
         row.update(qualification_state=state, reasons=sorted(set(reasons)))
         return None
+    if not admission_allowed:
+        row.update(
+            qualification_state="UNRESOLVED_LIVE_RETRIEVAL",
+            reasons=["LIVE_AUTHENTICATED_REFRESH_REQUIRED"],
+        )
+        return None
     try:
-        verified_at = min(observed, scope["review"].reviewed_at, assessed["stamp"].reviewed_at)
+        verified_at = min(observed, assessed["stamp"].reviewed_at)
         deadline = min(
             until,
             identifiers.valid_until,
-            scope["review"].valid_until,
             assessed["valid_until"],
             *provider_expiries,
             _time(row["provider_evidence_valid_until"]),
@@ -533,12 +504,11 @@ def classify_row(
             company=identifiers.company_name,
             instrument_type="STOCK",
             quote_currency=identifiers.quote_currency,
-            isa_available=True,
             currently_available=True,
             business_activities=assessed["entry"].business_activities,
             activities_verified=True,
             verified_at=verified_at,
-            source="hash-bound bulk ISA account and material-exposure evidence",
+            source="hash-bound live broker membership and material-exposure evidence",
             provider="trading212",
             source_id=identifiers.trading212_id,
         )
@@ -553,10 +523,10 @@ def classify_row(
             return None
         proof = ctx.artifact(
             {
-                "kind": "bulk-eligibility-join-v1",
+                "kind": "bulk-eligibility-join-v2",
+                "universe_policy_version": UNIVERSE_POLICY_VERSION,
                 "metadata": metadata.model_dump(mode="json"),
                 "identifiers": identifiers.model_dump(mode="json"),
-                "account_review": scope["proof"],
                 "broker_row_hash": row["instrument_row_sha256"],
                 "exchange_row_hash": row["exchange_row_sha256"],
                 "broker_responses": row["broker_response_refs"],
@@ -699,7 +669,6 @@ def _csv(rows: list[dict[str, Any]]) -> bytes:
         "eodhd_symbol",
         "qualification_state",
         "ethical_state",
-        "isa_account_provenance_state",
         "evidence_freshness",
         "reasons",
     )
@@ -719,9 +688,7 @@ def _csv(rows: list[dict[str, Any]]) -> bytes:
     return output.getvalue().encode()
 
 
-def _review_work(
-    rows: list[dict[str, Any]], provenance: dict[str, Any], scope_required: bool
-) -> dict[str, Any]:
+def _review_work(rows: list[dict[str, Any]], provenance: dict[str, Any]) -> dict[str, Any]:
     """Bulk factual dossiers and distinct global reviews, never signed inputs."""
     return {
         "version": "money-bulk-review-work-v1",
@@ -730,12 +697,6 @@ def _review_work(
         "source_provenance": provenance,
         "review_status": "UNREVIEWED_MACHINE_FACTS",
         "global_reviews": {
-            "account_scope": {
-                "required": scope_required,
-                "review_file": "inputs/universe/account-scope.json",
-                "facts_file": "outputs/universe-account-facts.json",
-                "action": "Verify ISA credential ownership, account-specific membership and current buy availability against genuine evidence. Metadata listing alone is insufficient.",
-            },
             "provider_rights": {
                 "review_files": [
                     "inputs/provider-rights/eodhd.json",
@@ -819,7 +780,7 @@ def _broker_metadata(
 
     Trading 212 documents one instruments request per 50 seconds and one
     exchanges request per 30 seconds. Successful unchanged metadata is reused
-    under the existing ten-minute refresh policy, bound to this exact ISA key.
+    under the existing ten-minute refresh policy, bound to these exact credentials.
     """
     if binding is None:
         # A credential-free diagnostic run cannot perform a live refresh, but
@@ -935,7 +896,7 @@ def _saved_broker_metadata(
     if recorded_binding is not None and (
         not isinstance(recorded_binding, str) or not re.fullmatch(r"[a-f0-9]{64}", recorded_binding)
     ):
-        raise ValueError("SAVED_ACCOUNT_BINDING_INVALID")
+        raise ValueError("SAVED_CREDENTIAL_BINDING_INVALID")
     return raw, instruments, exchange_raw, exchanges, observed, recorded_binding
 
 
@@ -1019,6 +980,7 @@ def finalize_universe(
     enricher: Any = None,
     rebuild_universe: bool = False,
     replay_saved: bool = False,
+    reclassify_saved: bool = False,
     capture_documents: bool = False,
 ) -> dict[str, Any]:
     """Refresh live membership, optionally enrich venues, and isolate bad rows."""
@@ -1026,20 +988,55 @@ def finalize_universe(
     from money.qualification.universe_progress import enrichment_order, record_network_progress
     from money.qualification.universe_providers import BulkProviderEnricher
 
+    if replay_saved and reclassify_saved:
+        raise ValueError("SAVED_MODE_CONFLICT")
+    offline = replay_saved or reclassify_saved
+    source_reference = None
+    if reclassify_saved:
+        prior = ctx.read_json("outputs/universe-provenance.json")
+        if isinstance(prior, dict):
+            source_reference = prior.get("source_provenance") or ctx.artifact(prior)
+        else:
+            preserved = ctx.read_json("state/universe-rebuild-source.json") or {}
+            source_reference = preserved.get("source_provenance")
     migration = ensure_universe_policy(ctx, force=rebuild_universe)
     binding = credential_binding(ctx.environ)
     prepare_bulk_inputs(ctx, binding)
     # A standalone finalizer also refreshes these projections. No prior ready
     # result survives an interrupted or failed provider-enrichment invocation.
-    scope_label = "SAVED_RESPONSE_REPLAY_ONLY" if replay_saved else "LIVE_RETRIEVAL"
+    scope_label = (
+        "SAVED_LIVE_DERIVED_RECLASSIFICATION" if reclassify_saved
+        else "SAVED_RESPONSE_REPLAY_ONLY" if replay_saved else "LIVE_RETRIEVAL"
+    )
     _write_provider_projection(ctx, _provider_projection({"scope": scope_label}))
     try:
-        if replay_saved:
+        if offline:
             if broker is not None or enricher is not None:
                 raise ValueError("OFFLINE_REPLAY_CANNOT_OVERRIDE_TRANSPORT")
             raw_instruments, instruments, raw_exchanges, exchanges, observed, binding = (
                 _saved_broker_metadata(ctx)
             )
+            current_binding = credential_binding(ctx.environ)
+            if current_binding is not None and current_binding != binding:
+                raise ValueError("CURRENT_CREDENTIAL_BINDING_MISMATCH")
+            if reclassify_saved:
+                if (
+                    not isinstance(source_reference, (list, tuple))
+                    or len(source_reference) != 2
+                    or not all(isinstance(value, str) for value in source_reference)
+                ):
+                    raise ValueError("RECORDED_LIVE_PROVENANCE_REQUIRED")
+                source = json.loads(ctx.verify_artifact(source_reference[0], source_reference[1]))
+                if (
+                    source.get("scope") != "LIVE_RETRIEVAL"
+                    or source.get("retrieval_environment") != "live"
+                    or source.get("credential_binding_verified_this_run") is not True
+                    or source.get("credential_binding_sha256") != binding
+                    or source.get("instrument_response_hash")
+                    != hashlib.sha256(raw_instruments).hexdigest()
+                    or _time(source.get("retrieved_at")) != observed
+                ):
+                    raise ValueError("RECORDED_LIVE_PROVENANCE_REQUIRED")
         elif broker is None:
             raw_instruments, instruments, raw_exchanges, exchanges, observed = _broker_metadata(
                 ctx, binding
@@ -1074,20 +1071,19 @@ def finalize_universe(
             "errors": ["TRADING212_LIVE_METADATA_REQUIRED"],
         }
         _large_write(ctx, MASTER, json_bytes(failed))
-        _large_write(ctx, "outputs/uk-isa-stock-universe.csv", _csv([]))
+        _large_write(ctx, MASTER_CSV, _csv([]))
         ctx.write_json(
             "outputs/universe-review-queue.json",
             {
                 "universe_policy_version": UNIVERSE_POLICY_VERSION,
                 "status": "REFRESH_FAILED",
-                "account_scope_required": True,
                 "venue_review_required": False,
                 "instruments": [],
                 "errors": failed["errors"],
             },
         )
         _write_provider_projection(ctx, _provider_projection(failed))
-        for path in ("outputs/universe-review-work.json", "outputs/universe-account-facts.json"):
+        for path in ("outputs/universe-review-work.json", "outputs/universe-retrieval-facts.json"):
             ctx.write_json(
                 path,
                 {
@@ -1099,23 +1095,23 @@ def finalize_universe(
             )
         ctx.block(
             "TRADING212_LIVE_METADATA_REQUIRED",
-            "Fetch live accessible instruments using the ISA credential; no old membership was served. Exchanges are optional enrichment.",
+            "Fetch live accessible instruments using the configured Trading 212 credentials; no old membership was served. Exchanges are optional enrichment.",
         )
-        _update_universe_diagnostics(ctx, failed, capture_documents=capture_documents and not replay_saved)
+        _update_universe_diagnostics(ctx, failed, capture_documents=capture_documents and not offline)
         return failed
     rows = normalize_universe(
         instruments, exchanges, observed_at=observed, venue_reviews=_venues(ctx)
     )
     enricher = enricher or BulkProviderEnricher(
         ctx,
-        max_requests=0 if replay_saved else max_requests,
+        max_requests=0 if offline else max_requests,
         requests_per_minute=requests_per_minute,
-        offline=replay_saved,
+        offline=offline,
     )
     for row in rows:
         row["broker_response_refs"] = responses
         row["provider_enrichment_input"] = row["universe_member"] and row["identity_valid"]
-    for index in enrichment_order(ctx, rows, binding, replay=replay_saved):
+    for index in enrichment_order(ctx, rows, binding, replay=offline):
         row = rows[index]
         before = getattr(enricher, "requests_used", 0)
         try:
@@ -1123,11 +1119,11 @@ def finalize_universe(
         except Exception:
             row["provider_reasons"] = ["PROVIDER_ROW_FAILED"]
         finally:
-            if not replay_saved and getattr(enricher, "requests_used", 0) > before:
+            if not offline and getattr(enricher, "requests_used", 0) > before:
                 record_network_progress(ctx, row, binding)
     ctx.now = utc_now()
     # A long provider batch must not extend any review or membership lifetime.
-    scope, ethics = None if replay_saved else _scope(ctx, binding), _ethics(ctx)
+    ethics = _ethics(ctx)
     canonical_counts = Counter(
         row.get("identifiers", {}).get("ticker")
         for row in rows
@@ -1144,24 +1140,19 @@ def finalize_universe(
     rights = _qualify_rights(ctx, rows)
     reviews = []
     for row in rows:
-        reviewed = classify_row(ctx, row, scope, ethics, rights)
+        reviewed = classify_row(
+            ctx, row, ethics, rights, admission_allowed=not offline and binding is not None
+        )
         if reviewed is not None:
             reviews.append(reviewed.model_dump(mode="json"))
     provenance = {
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "scope": scope_label,
-        "account_context": "STOCKS_AND_SHARES_ISA" if scope else "UNVERIFIED",
-        "account_context_source": "OPERATOR_ATTESTATION"
-        if scope
-        else "OPERATOR_ATTESTATION_REQUIRED",
-        "account_type_returned_by_api": False,
-        "credential_binding_verified_this_run": not replay_saved and binding is not None,
-        "requested_account_context": "STOCKS_AND_SHARES_ISA",
+        "credential_binding_verified_this_run": not offline and binding is not None,
         "retrieval_environment": "live",
         "retrieved_at": observed.isoformat(),
         "reclassified_at": ctx.now.isoformat(),
         "credential_binding_sha256": binding,
-        "account_review_hash": scope["proof"][0] if scope else None,
         "instrument_response_hash": hashlib.sha256(raw_instruments).hexdigest(),
         "exchange_response_hash": hashlib.sha256(raw_exchanges).hexdigest()
         if raw_exchanges is not None
@@ -1171,6 +1162,7 @@ def finalize_universe(
         else "UNAVAILABLE_OR_INVALID",
         "initial_filter": INITIAL_FILTER,
         "response_artifacts": responses,
+        **({"source_provenance": source_reference} if reclassify_saved else {}),
     }
     summary = _summary(rows, ctx.now)
     summary["provider_requests_this_run"] = getattr(enricher, "requests_used", 0)
@@ -1205,7 +1197,7 @@ def finalize_universe(
         "scope": scope_label,
         "policy_migration": migration,
         "initial_filter": INITIAL_FILTER,
-        "status": "REPLAYED" if replay_saved else "REFRESHED",
+        "status": "RECLASSIFIED" if reclassify_saved else "REPLAYED" if replay_saved else "REFRESHED",
         "observed_at": provenance["retrieved_at"],
         "valid_until": (_time(provenance["retrieved_at"]) + ELIGIBILITY_MAXIMUM_AGE).isoformat(),
         "production_qualified": False,
@@ -1223,17 +1215,6 @@ def finalize_universe(
     queue = {
         "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "scope": scope_label,
-        "account_scope_required": scope is None,
-        "account_scope": {
-            "required": scope is None,
-            "review_file": "inputs/universe/account-scope.json",
-            "requested_context": "STOCKS_AND_SHARES_ISA",
-            "source": "OPERATOR_ATTESTATION",
-            "account_type_returned_by_api": False,
-            "credential_binding_sha256": binding,
-            "instrument_response_hash": provenance["instrument_response_hash"],
-            "retrieved_at": provenance["retrieved_at"],
-        },
         "credential_binding_sha256": binding,
         "bulk_evidence_work_file": "outputs/universe-review-work.json",
         "provider_rights_reviews": [
@@ -1281,8 +1262,6 @@ def finalize_universe(
                     for reason in r.get("reasons", [])
                     if reason
                     not in {
-                        "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED",
-                        "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED",
                         "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED",
                     }
                 ],
@@ -1296,26 +1275,23 @@ def finalize_universe(
         ],
     }
     _large_write(ctx, MASTER, json_bytes(result))
-    _large_write(ctx, "outputs/uk-isa-stock-universe.csv", _csv(rows))
+    _large_write(ctx, MASTER_CSV, _csv(rows))
     _large_write(ctx, "outputs/universe-review-queue.json", json_bytes(queue))
     _large_write(
-        ctx, "outputs/universe-review-work.json", json_bytes(_review_work(rows, provenance, scope is None))
+        ctx, "outputs/universe-review-work.json", json_bytes(_review_work(rows, provenance))
     )
     ctx.write_json(
-        "outputs/universe-account-facts.json",
+        "outputs/universe-retrieval-facts.json",
         {
             "universe_policy_version": UNIVERSE_POLICY_VERSION,
             "status": "UNREVIEWED_MACHINE_FACTS",
             "provenance": provenance,
-            "account_type_returned_by_api": False,
-            "accessible_response_is_account_scoped": None,
-            "accessible_response_confirms_current_buy_availability": None,
-            "instruction": "Use the recorded credential binding when preparing account-scope.json. This file proves retrieval, not account type, endpoint scope or purchase availability. Existing operator inputs have not been overwritten.",
+            "instruction": "Technical retrieval provenance only. No account-type or current-purchase claim is made. Legacy account-scope reviews are ignored and preserved unchanged.",
         },
     )
     ctx.write_json("outputs/universe-provenance.json", provenance)
     _write_provider_projection(ctx, _provider_projection(result))
-    _update_universe_diagnostics(ctx, result, capture_documents=capture_documents and not replay_saved)
+    _update_universe_diagnostics(ctx, result, capture_documents=capture_documents and not offline)
     return result
 
 
@@ -1397,7 +1373,7 @@ def run_bulk_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
     if not reviews:
         ctx.block(
             "BULK_UNIVERSE_NO_QUALIFIED_MEMBERS",
-            "Resolve the bulk account, provider and ethical evidence queue; venue enrichment is optional and no ticker selection is required.",
+            "Resolve provider and ethical evidence for current members; venue enrichment is optional and no account attestation is required.",
         )
     if not result["instruments"]:
         ctx.block(
@@ -1426,6 +1402,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Reclassify hash-verified saved responses without network access. Diagnostic replay only; cannot approve eligibility or production.",
     )
+    parser.add_argument(
+        "--reclassify-saved",
+        action="store_true",
+        help="Migrate derived classifications from hash-verified recorded live evidence without network access, new retrieval claims or eligibility approval.",
+    )
     args = parser.parse_args(argv)
     try:
         if not 1 <= args.max_provider_requests <= 100000 or not 1 <= args.requests_per_minute <= 60:
@@ -1446,15 +1427,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 requests_per_minute=args.requests_per_minute,
                 rebuild_universe=args.rebuild_universe,
                 replay_saved=args.replay_saved,
-                capture_documents=not args.replay_saved,
+                reclassify_saved=args.reclassify_saved,
+                capture_documents=not (args.replay_saved or args.reclassify_saved),
             )
         print(
             "TRADING 212 SAVED RESPONSE REPLAY"
-            if args.replay_saved
-            else "TRADING 212 LIVE ISA UNIVERSE"
+            if args.replay_saved or args.reclassify_saved
+            else "TRADING 212 LIVE GBX STOCK UNIVERSE"
         )
         print(f"Universe policy: {UNIVERSE_POLICY_VERSION}")
-        if result["status"] not in {"REFRESHED", "REPLAYED"}:
+        if result["status"] not in {"REFRESHED", "REPLAYED", "RECLASSIFIED"}:
             print("Live refresh failed; counts unavailable. No stale membership admitted.")
             return 2
         s = result["summary"]
@@ -1468,7 +1450,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Qualified": "QUALIFIED",
             "Identity unresolved": "UNRESOLVED_IDENTITY",
             "Provider unresolved": "UNRESOLVED_PROVIDER_MAPPING",
-            "ISA scope unresolved": "UNRESOLVED_ISA_SCOPE",
             "Ethically excluded": "EXCLUDED_ETHICAL",
             "Stale": "STALE_EVIDENCE",
             "Expired": "EXPIRED",
@@ -1494,7 +1475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Bulk evidence and remaining reviews: outputs/universe-review-work.json")
         print("Provider progress: outputs/universe-enrichment-progress.json")
         print("Prioritized dependencies and human reviews: outputs/NEXT_ACTIONS.md; outputs/REVIEW_TASKS.md")
-        if args.replay_saved:
+        if args.replay_saved or args.reclassify_saved:
             print(
                 "Saved-response replay only; original retrieval time preserved. No network access or eligibility approval."
             )

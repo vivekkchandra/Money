@@ -53,10 +53,12 @@ Fraction = Annotated[float, Field(ge=0, le=1)]
 class ResearchMandate(Contract):
     version: int = Field(default=1, ge=1)
     broker: Literal["Trading212"] = "Trading212"
-    account_type: Literal["StocksAndSharesISA"] = "StocksAndSharesISA"
+    # Read legacy mandates without changing their sealed bytes. Account type is
+    # not a research qualification and new mandates make no account assertion.
+    account_type: Literal["StocksAndSharesISA"] | None = None
     maximum_capital_gbp: Decimal = Field(default=Decimal("200"), gt=0, le=200)
     instrument_types: tuple[Literal["STOCK"], ...] = ("STOCK",)
-    quote_currencies: tuple[Literal["GBP", "GBX"], ...] = ("GBP", "GBX")
+    quote_currencies: tuple[Literal["GBP", "GBX"], ...] = ("GBX",)
     excluded_activities: tuple[str, ...] = EXCLUDED_ACTIVITIES
     minimum_horizon_days: int = Field(default=1, ge=1, le=30)
     maximum_horizon_days: int = Field(default=30, ge=1, le=30)
@@ -104,7 +106,10 @@ class InstrumentMetadata(Contract):
     company: str = Field(min_length=1, max_length=200)
     instrument_type: str
     quote_currency: str
+    # Legacy historical evidence only; ignored by current qualification. Keep
+    # its serialization stable so old immutable snapshot hashes still verify.
     isa_available: bool | None = None
+    # Current presence in the live broker universe, NOT an ISA/buyability claim.
     currently_available: bool | None = None
     business_activities: tuple[str, ...] = ()
     activities_verified: bool = False

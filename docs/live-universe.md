@@ -1,4 +1,4 @@
-# Live Trading 212 ISA universe
+# Live Trading 212 GBX stock universe
 
 Money discovers the entire current GBX individual-stock universe from the
 authenticated **live** Trading 212 accessible-instruments response. Initial
@@ -20,8 +20,9 @@ railway run --service Money --environment production sh -c 'MONEY_INFERENCE_CONF
 
 The explicit local inference configuration selects
 `data/qualified/local-inference`. The authoritative output is
-`outputs/uk-isa-stock-universe.json`; the legacy filename is retained for
-resumability and does **not** imply a UK-venue requirement. Its CSV is only a
+`outputs/trading212-gbx-stock-universe.json`; readers accept the historical
+`outputs/uk-isa-stock-universe.json` filename only for migration/compatibility.
+Neither filename establishes an ISA or UK-venue claim. Its CSV is only a
 viewing aid. The provenance
 and exception queue are `outputs/universe-provenance.json` and
 `outputs/universe-review-queue.json`. A failed broker refresh never establishes
@@ -37,13 +38,13 @@ against actual artifact bytes, and do not consume the new-request budget.
 Failures have a short five-minute backoff; an unavailable provider or ambiguous
 stock does not turn other stock results into failures.
 
-New network work uses an account-bound, policy-versioned round-robin cursor in
+New network work uses a credential-bound, policy-versioned round-robin cursor in
 `state/universe-enrichment-cursor.json`. Each run starts after the last identity
 that consumed network budget, so repeated failures at the head of the catalogue
 cannot starve the remaining stocks. All identity-valid members still receive
 an enrichment attempt, including cache reuse after the budget is exhausted.
 The cursor contains no approvals; replay does not advance it, and a changed
-policy or account binding invalidates its ordering. Partial evidence still has
+policy or credential binding invalidates its ordering. Partial evidence still has
 its original expiry, and incomplete observations never become qualified.
 
 Safe provider diagnostics distinguish numeric HTTP failures (authentication,
@@ -65,17 +66,19 @@ Credentials are read from the process environment, not placed in review files.
 ## Policy migration and offline replay
 
 The active `universe_policy_version` is
-`money-t212-gbx-stock-universe-v2`. It is recorded in the authoritative universe
+`money-t212-gbx-stock-universe-v3`. It is recorded in the authoritative universe
 JSON, provenance, review queue, provider-stage result/checkpoint and bulk-mode
 marker. A missing or different version triggers automatic reclassification on
 the normal commands above; no manual directory deletion or rebuild flag is
 required. CSV is regenerated from the versioned JSON, never read as authority.
 
-Only these seven derived paths are moved into recoverable audit history beneath
-`state/universe-policy-history/` before rebuilding:
+Derived universe/classification/checkpoint paths are moved into recoverable audit
+history beneath `state/universe-policy-history/` before rebuilding, including:
 
 - `outputs/uk-isa-stock-universe.json`
 - `outputs/uk-isa-stock-universe.csv`
+- `outputs/trading212-gbx-stock-universe.json`
+- `outputs/trading212-gbx-stock-universe.csv`
 - `outputs/universe-provenance.json`
 - `outputs/universe-review-queue.json`
 - `outputs/providers-result.json`
@@ -86,7 +89,7 @@ The migration preserves raw broker and provider artifacts/caches, their hashes
 and original observation timestamps, operator inputs/reviews, snapshots and
 other quantitative/native outputs. Archived classifications are audit history,
 not reusable approvals. The new review queue is calculated from source evidence,
-not copied from obsolete venue decisions. Appending `--rebuild-universe` to the
+not copied from obsolete venue or account-scope decisions. Appending `--rebuild-universe` to the
 finalizer forces this same narrowly scoped rebuild when explicitly needed.
 
 For a network-free diagnostic replay of already saved genuine responses:
@@ -99,9 +102,16 @@ Replay verifies the stored raw response hashes and uses applicable cached
 provider evidence only. It requires no fake credentials, does not refresh any
 observation timestamp and records `status: REPLAYED` with
 `scope: SAVED_RESPONSE_REPLAY_ONLY`. It cannot generate an `EligibilityReview`
-or grant account, ethical or production approval. Its counts describe the saved
+or grant ethical or production approval. Its counts describe the saved
 response, not a newly fetched live universe. Run the normal live command before
 continuing qualification.
+
+`--reclassify-saved` instead migrates derived classifications from a hash-verified
+genuine prior live retrieval without network access. It preserves original
+retrieval timestamps and labels the result `SAVED_LIVE_DERIVED_RECLASSIFICATION`,
+not a current authenticated refresh. It cannot produce admitted eligibility
+reviews. Raw evidence and human inputs are preserved; a live finalizer run is
+still required before admission.
 
 ## Bulk facts and genuine review boundaries
 
@@ -112,12 +122,13 @@ requirement. Venue names, exchange IDs and MICs are retained where verified;
 missing venue enrichment alone never creates `UNRESOLVED_IDENTITY`. Genuine
 identifier conflicts or malformed identifiers still fail identity qualification.
 
-Initial membership is not ISA approval, permission to buy, ethical clearance or
-full qualification. Account binding/current purchase availability and every
-downstream evidence and review gate remain independently mandatory.
+Initial membership is not permission to buy, ethical clearance or full
+qualification. ISA/account-type/current-ISA-buyability are no longer qualification
+concepts. Technical credential binding protects cache/replay integrity only.
+Every non-ISA downstream evidence and review gate remains independently mandatory.
 
 EODHD joins receive every identity-valid GBX candidate before final qualification,
-without waiting for venue resolution or an account/ethical approval.
+without waiting for venue resolution or ethical approval.
 They use exact ISIN, the returned provider exchange/code, quote-unit agreement
 and company/ticker corroboration; ambiguous matches stay unresolved. Money never
 manufactures an EODHD `.LSE` suffix. Companies House
@@ -143,22 +154,19 @@ templates**:
 
 | File under the qualification directory | Required review |
 |---|---|
-| `inputs/universe/account-scope.json` | Confirm the credential binding belongs to the Stocks & Shares ISA; substantiate account-specific accessible membership and current purchase availability. Listing alone does not establish either. |
 | `inputs/universe/ethics.json` | Assess all existing exclusion categories using rights-approved company, filing or annual-report evidence; one independent review may cover many structured entries. |
 | `inputs/universe/supplemental.json` | Link independently reviewed spread, costs, corporate-action coverage, financial and archived point-in-time evidence by ISIN. |
 | `inputs/provider-rights/eodhd.json`, `inputs/provider-rights/companies-house.json` | Review explicit permitted use and retention/redistribution rights. Working API access is not licensing approval. |
 
-Account scope is **one universe-level review** in
-`inputs/universe/account-scope.json`, not a separate review for every stock.
-The explicit `STOCKS_AND_SHARES_ISA` operator attestation is bound to the
-credential HMAC and source-response hashes/retrieval evidence in provenance.
-It is identified as an operator attestation, never as account type returned by
-the metadata API. The review queue carries this requirement once at its top
-level while individual entries describe their remaining instrument issues.
+Legacy `inputs/universe/account-scope.json` and its schema are retained unchanged
+for audit but ignored under the current policy. Their absence, expiration or
+unresolved status cannot affect qualification, research or release. They are not
+converted into approvals. The technical credential HMAC and live-response
+hashes/retrieval timestamps remain independently verified.
 
-`outputs/universe-account-facts.json` supplies the actual non-secret credential
-binding and hash-bound retrieval facts, without changing an existing operator
-review. `outputs/universe-review-work.json` groups the global account/rights
+The live provenance artifact supplies non-secret technical credential binding
+and hash-bound retrieval facts, without claiming an account type or changing any
+operator review. `outputs/universe-review-work.json` groups the global rights
 reviews and provides one bulk factual dossier of returned provider identities,
 issuer descriptions, profile facts, recent accounts metadata and evidence
 references. It is explicitly unreviewed and is never an approval input.

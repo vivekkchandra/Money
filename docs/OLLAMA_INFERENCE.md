@@ -124,7 +124,7 @@ remain a startup blocker for a live research worker.
 
 Money stays research-only. It does not place orders, fetch broker balances or
 positions, or add trading execution. Individual STOCK, GBP/GBX, current buy
-availability, Stocks & Shares ISA eligibility and ethical exclusions still need
+live broker membership and ethical exclusions still need
 fresh verified evidence; unknown/stale entries are rejected. Defence, weapons,
 military and oil exclusions are unchanged.
 

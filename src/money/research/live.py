@@ -165,6 +165,7 @@ class LiveManifest(Contract):
     # remain individually bounded and hash-pinned like every other proof.
     eligibility_catalogs: tuple[tuple[str, str], ...] = Field(default=(), max_length=512)
     _catalog_eligibility: tuple[EligibilityReview, ...] | None = PrivateAttr(default=None)
+    # Legacy serialized name: this binds retrieval credentials, not account type.
     universe_account_binding_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     universe_provenance: tuple[str, str] | None = None
     provider_qualifications: tuple[ProviderQualification, ...] = Field(min_length=1)
@@ -243,9 +244,9 @@ class LiveManifest(Contract):
         if self.eligibility_catalogs and (
             self.universe_account_binding_sha256 is None or self.universe_provenance is None
         ):
-            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_REQUIRED")
+            raise ValueError("LIVE_UNIVERSE_PROVENANCE_REQUIRED")
         if (self.universe_account_binding_sha256 is None) != (self.universe_provenance is None):
-            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_REQUIRED")
+            raise ValueError("LIVE_UNIVERSE_PROVENANCE_REQUIRED")
         if self.lean_parameters.scenario_policy != self.signal_policy:
             raise ValueError("LEAN_SCENARIO_POLICY_MISMATCH")
         validate_invocation_budgets(
@@ -326,6 +327,59 @@ def read_qualification_bytes(root: Path, relative: str, maximum: int) -> bytes:
         raise ValueError("QUALIFICATION_ARTIFACT_INVALID") from error
 
 
+def _verify_live_universe_provenance(
+    root: Path, provenance: dict[str, Any], binding: str | None, verified: set[str],
+) -> None:
+    """Require genuine current retrieval bytes; account attestations are irrelevant."""
+    try:
+        observed = datetime.fromisoformat(provenance["retrieved_at"])
+        if (
+            provenance["credential_binding_sha256"] != binding
+            or provenance["retrieval_environment"] != "live"
+            or provenance["scope"] != "LIVE_RETRIEVAL"
+            or provenance["credential_binding_verified_this_run"] is not True
+            or observed.utcoffset() is None
+            or not observed <= utc_now() < observed + timedelta(hours=24)
+        ):
+            raise ValueError("LIVE_UNIVERSE_PROVENANCE_INVALID")
+        reference = provenance["response_artifacts"]["instruments"]
+        if not isinstance(reference, (list, tuple)) or len(reference) != 2:
+            raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+        digest, relative = reference
+        descriptor_bytes = read_qualification_bytes(root, relative, 2_000_000)
+        if digest not in verified or hashlib.sha256(descriptor_bytes).hexdigest() != digest:
+            raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+        descriptor = json.loads(descriptor_bytes)
+        if descriptor["kind"] != "exact-response-chunks-v1":
+            raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+        length = descriptor["bytes"]
+        chunks = descriptor["chunks"]
+        if (
+            type(length) is not int or not 0 < length <= 64_000_000
+            or not isinstance(chunks, list) or not 1 <= len(chunks) <= 64
+        ):
+            raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+        response = bytearray()
+        for chunk_hash, chunk_path in chunks:
+            chunk = read_qualification_bytes(root, chunk_path, 2_000_000)
+            if chunk_hash not in verified or hashlib.sha256(chunk).hexdigest() != chunk_hash:
+                raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+            response.extend(chunk)
+            if len(response) > length:
+                raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+        actual = hashlib.sha256(response).hexdigest()
+        rows = json.loads(response)
+        if (
+            len(response) != length or descriptor["sha256"] != actual
+            or provenance["instrument_response_hash"] != actual
+            or not isinstance(rows, list) or not rows
+            or not all(isinstance(row, dict) for row in rows)
+        ):
+            raise ValueError("LIVE_UNIVERSE_RESPONSE_INVALID")
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise ValueError("LIVE_UNIVERSE_PROVENANCE_INVALID") from error
+
+
 def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
     try:
         root = path.parent.resolve()
@@ -355,7 +409,7 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
         if manifest.universe_provenance == (digest, relative):
             provenance = json.loads(artifact)
             if not isinstance(provenance, dict):
-                raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID")
+                raise ValueError("LIVE_UNIVERSE_PROVENANCE_INVALID")
             universe_provenance = provenance
     instruments = manifest.reviewed_instruments
     if not instruments:
@@ -363,19 +417,10 @@ def load_manifest(path: Path, expected_hash: str) -> LiveManifest:
     manifest.validate_instrument_coverage(instruments)
     if manifest.universe_provenance is not None:
         if universe_provenance is None:
-            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_NOT_LOADED")
-        try:
-            observed = datetime.fromisoformat(universe_provenance["retrieved_at"])
-            now = utc_now()
-            if (universe_provenance["credential_binding_sha256"] != manifest.universe_account_binding_sha256
-                    or universe_provenance["account_context"] != "STOCKS_AND_SHARES_ISA"
-                    or universe_provenance["retrieval_environment"] != "live"
-                    or observed.utcoffset() is None
-                    or not observed <= now < observed + timedelta(hours=24)
-                    or universe_provenance["account_review_hash"] not in verified):
-                raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID")
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID") from error
+            raise ValueError("LIVE_UNIVERSE_PROVENANCE_NOT_LOADED")
+        _verify_live_universe_provenance(
+            root, universe_provenance, manifest.universe_account_binding_sha256, verified,
+        )
     if manifest.eligibility_catalogs:
         if set(eligibility_parts) != set(manifest.eligibility_catalogs):
             raise ValueError("LIVE_ELIGIBILITY_CATALOG_NOT_LOADED")
@@ -820,7 +865,7 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
             from money.qualification.universe import credential_binding
 
             if credential_binding(os.environ) != manifest.universe_account_binding_sha256:
-                raise ValueError("LIVE_ISA_ACCOUNT_BINDING_MISMATCH")
+                raise ValueError("LIVE_UNIVERSE_CREDENTIAL_BINDING_MISMATCH")
         return manifest.eligibility_reviews
 
     # Check before even issuing metadata requests with a possibly different key.
@@ -840,7 +885,7 @@ def build_live_runtime(store: ResearchStore, manifest: LiveManifest) -> Research
                 qualification.require(dataset, checked_at)
 
     snapshots = UniverseSnapshotBuilder(
-        eligibility.get_isa_universe, bound_reviews,
+        eligibility.get_universe, bound_reviews,
         LiveSnapshotBuilder(manifest, store, qlib_enabled=manifest.qlib_enabled),
         validate_sources=validate_sources,
     )

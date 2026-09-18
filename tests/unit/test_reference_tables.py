@@ -26,7 +26,14 @@ from money.schemas.contracts import ResearchSnapshot
 @pytest.fixture
 def assets(tmp_path):
     target = tmp_path / "assets"
-    shutil.copytree(default_data_root(), target)
+    # Only copy the immutable reference release under test. The live
+    # qualification workspace is unrelated and may be writing atomic evidence
+    # artifacts concurrently; copying it introduces races and huge fixtures.
+    target.mkdir()
+    source = default_data_root()
+    shutil.copy2(source / "manifest.json", target / "manifest.json")
+    for directory in ("reference", "metadata", "schemas"):
+        shutil.copytree(source / directory, target / directory)
     return target
 
 

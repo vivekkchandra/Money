@@ -1,4 +1,4 @@
-"""Personal R&D Yahoo adapter. Never production-qualified or an ISA authority.
+"""Personal R&D Yahoo adapter. Never production-qualified or a live broker authority.
 
 All native I/O runs in a bounded child process; only Money contracts cross that
 boundary. History is provider-as-returned with yfinance adjustment/repair off,
@@ -41,7 +41,7 @@ _US_EXCHANGES = frozenset(
 _PERIODS = frozenset({"1mo", "3mo", "6mo", "1y", "2y"})
 _LIMITATIONS = (
     "Personal research and development only; not production-qualified market data.",
-    "ISA eligibility and material ethical exposure have not been verified.",
+    "Live broker membership and material ethical exposure have not been verified.",
     "Yahoo prices may be delayed or revised; original historical publication times are unknown.",
     "Auto-adjust, back-adjust and repair are disabled; provider bars may already reflect splits.",
     "Dividend and split observations are not a complete corporate-action history.",

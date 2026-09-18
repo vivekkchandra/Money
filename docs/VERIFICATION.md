@@ -1,5 +1,12 @@
 # CI blocker fixes — 2026-09-17
 
+> Policy update: ISA/account-scope and ISA-buyability requirements in historical
+> entries below are superseded by `money-t212-gbx-stock-universe-v3`.
+> Current qualification uses fresh live Trading 212 STOCK/GBX membership without
+> account-type approval. All non-ISA evidence/security/release gates remain.
+> See [current live-universe policy](live-universe.md); these records are retained
+> as historical audit evidence, not current ISA review instructions.
+
 **PRODUCTION BLOCKED.** Continuing from the same unpublished tree and main
 `3ab2ff9`. Railway/Netlify discovery still reports DISABLED_BY_ADMIN; Git metadata
 remains read-only. No deploy, migration, model promotion or proof bundle was made.

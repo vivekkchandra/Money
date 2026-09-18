@@ -1,8 +1,8 @@
-"""Bounded reviewed ISA subset, never an inferred complete broker universe.
+"""Bounded qualified GBX stock subset, not the complete accessible broker universe.
 
-The Trading 212 metadata endpoint has no documented ISA eligibility field. This
-service only consumes the separately reviewed, hashed Money live manifest. It
-does not fetch an account, broaden the mandate, or promote public R&D listings.
+This service consumes the separately qualified, hashed Money live manifest. It
+does not assert account type or purchase availability, fetch an account, broaden
+the mandate, or promote public R&D listings.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from money.data.instruments import InstrumentCatalogue, InstrumentSearchResult, 
 from money.schemas.contracts import Contract, ResearchMandate, content_hash
 
 
-class IsaUniverseQuery(Contract):
+class StockUniverseQuery(Contract):
     query: str = Field(default="", max_length=80, pattern=r"^[^\x00-\x1f\x7f]*$")
     limit: int = Field(default=20, ge=1, le=50)
     offset: int = Field(default=0, ge=0, le=10000)
@@ -29,7 +29,7 @@ class IsaUniverseQuery(Contract):
         return value.strip()
 
 
-class IsaUniverseInstrument(InstrumentSearchResult):
+class StockUniverseInstrument(InstrumentSearchResult):
     eligibility: Literal["VERIFIED_ELIGIBLE"] = "VERIFIED_ELIGIBLE"
     research_allowed: Literal[True] = True
     synthetic: Literal[False] = False
@@ -44,8 +44,8 @@ class IsaUniverseInstrument(InstrumentSearchResult):
     verified_until: AwareDatetime
 
 
-class IsaUniversePage(Contract):
-    instruments: tuple[IsaUniverseInstrument, ...]
+class StockUniversePage(Contract):
+    instruments: tuple[StockUniverseInstrument, ...]
     total: int = Field(ge=0)
     limit: int = Field(ge=1, le=50)
     offset: int = Field(ge=0, le=10000)
@@ -56,7 +56,7 @@ class IsaUniversePage(Contract):
     catalogue_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
-class ReviewedIsaUniverse:
+class ReviewedStockUniverse:
     """Read-time eligibility checks over an immutable reviewed release catalogue.
 
     The caller must use the validated manifest loader and retain its commercial
@@ -96,11 +96,11 @@ class ReviewedIsaUniverse:
 
     def page(
         self,
-        query: IsaUniverseQuery,
+        query: StockUniverseQuery,
         *,
         mandate: ResearchMandate,
         now: datetime,
-    ) -> IsaUniversePage:
+    ) -> StockUniversePage:
         """Return only current, verified, mandate-compliant reviewed instruments."""
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("ELIGIBILITY_TIMESTAMP_INVALID")
@@ -129,7 +129,7 @@ class ReviewedIsaUniverse:
                 *(qualification.valid_until for qualification in self._catalogue.qualifications),
             )
             instruments.append(
-                IsaUniverseInstrument(
+                StockUniverseInstrument(
                     **item.result(now, synthetic=False).model_dump(exclude={"instrument_type"}),
                     instrument_type="STOCK",
                     source=metadata.source,
@@ -141,7 +141,7 @@ class ReviewedIsaUniverse:
                     verified_until=expiry,
                 )
             )
-        return IsaUniversePage(
+        return StockUniversePage(
             instruments=tuple(instruments),
             total=len(entries),
             limit=query.limit,
@@ -149,3 +149,10 @@ class ReviewedIsaUniverse:
             evaluated_at=now,
             catalogue_hash=self._hash,
         )
+
+
+# Import compatibility only. None of these aliases asserts ISA qualification.
+IsaUniverseQuery = StockUniverseQuery
+IsaUniverseInstrument = StockUniverseInstrument
+IsaUniversePage = StockUniversePage
+ReviewedIsaUniverse = ReviewedStockUniverse

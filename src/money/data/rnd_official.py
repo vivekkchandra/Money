@@ -276,7 +276,7 @@ class SecEdgarProvider:
                 url,
                 data,
                 retrieved_at,
-                "SEC ticker association is not current listing or ISA eligibility verification.",
+                "SEC ticker association is not current live broker membership verification.",
             ),
         )
 
@@ -714,7 +714,7 @@ class UKFiling(Contract):
 class UKCompanyNumberProvider(CompaniesHouseProvider):
     """Reuse CH authentication/transport for an explicitly reviewed number mapping.
 
-    This deliberately does not manufacture ISA, ISIN or other instrument metadata
+    This deliberately does not manufacture broker membership, ISIN or other instrument metadata
     required by the stricter production CompaniesHouseProvider.filings interface.
     """
 
@@ -760,7 +760,7 @@ class UKCompanyNumberProvider(CompaniesHouseProvider):
                 url,
                 data,
                 retrieved_at,
-                "Operator-reviewed ticker/company-number mapping; no ISA eligibility assertion.",
+                "Operator-reviewed ticker/company-number mapping; no live broker membership assertion.",
                 "First 100 index entries only, not statement contents or extracted fundamentals.",
                 "Filing dates have day precision; original publication availability is unverified.",
             ),

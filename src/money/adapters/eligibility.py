@@ -1,4 +1,4 @@
-"""Verified ISA universe only: this interface has no account or order capability."""
+"""Verified live GBX stock universe; no account or order capability."""
 
 import re
 from collections.abc import Callable
@@ -48,8 +48,7 @@ def _provenance_valid(instrument: InstrumentMetadata) -> bool:
 
 
 class Trading212EligibilityService(Protocol):
-    def get_isa_universe(self) -> tuple[InstrumentMetadata, ...]: ...
-    def is_available_in_isa(self, ticker: str) -> bool | None: ...
+    def get_universe(self) -> tuple[InstrumentMetadata, ...]: ...
     def is_currently_available(self, ticker: str) -> bool | None: ...
     def get_instrument_type(self, ticker: str) -> str | None: ...
     def get_quote_currency(self, ticker: str) -> str | None: ...
@@ -57,7 +56,11 @@ class Trading212EligibilityService(Protocol):
 
 
 class Trading212EligibilityAdapter:
-    """Consumes a verified ISA-specific export; a generic ticker listing is insufficient."""
+    """Consumes current broker membership plus independently qualified ethics.
+
+    A listing alone does not establish ethical/provider research qualification.
+    Account type and purchase availability are deliberately not asserted.
+    """
 
     def __init__(
         self,
@@ -70,7 +73,7 @@ class Trading212EligibilityAdapter:
         self._instruments = {i.ticker: i for i in instruments}
         self._clock = clock
 
-    def get_isa_universe(self) -> tuple[InstrumentMetadata, ...]:
+    def get_universe(self) -> tuple[InstrumentMetadata, ...]:
         now = self._clock()
         return tuple(
             item
@@ -78,18 +81,19 @@ class Trading212EligibilityAdapter:
             if not eligibility_failures(item, ResearchMandate(), now)
         )
 
+    def get_isa_universe(self) -> tuple[InstrumentMetadata, ...]:
+        """Deprecated compatibility alias; results make no ISA eligibility claim."""
+        return self.get_universe()
+
     def get_instrument_metadata(self, ticker: str) -> InstrumentMetadata | None:
         return self._instruments.get(ticker)
 
     def is_available_in_isa(self, ticker: str) -> bool | None:
-        item = self.get_instrument_metadata(ticker)
-        return (
-            item.isa_available
-            if item and _provenance_valid(item) and _current(item, self._clock())
-            else None
-        )
+        """Deprecated compatibility method: current policy does not verify ISAs."""
+        return None
 
     def is_currently_available(self, ticker: str) -> bool | None:
+        """Return verified live membership, never permission to purchase."""
         item = self.get_instrument_metadata(ticker)
         return (
             item.currently_available
@@ -112,10 +116,8 @@ def eligibility_failures(
     now: datetime,
 ) -> tuple[str, ...]:
     if instrument is None:
-        return ("ISA_ELIGIBILITY_UNKNOWN",)
+        return ("INSTRUMENT_ELIGIBILITY_UNKNOWN",)
     failures: list[str] = []
-    if instrument.isa_available is not True:
-        failures.append("ISA_ELIGIBILITY_UNCONFIRMED")
     if instrument.currently_available is not True:
         failures.append("INSTRUMENT_UNAVAILABLE")
     if (
@@ -124,7 +126,7 @@ def eligibility_failures(
     ):
         failures.append("INSTRUMENT_TYPE_EXCLUDED")
     if (
-        instrument.quote_currency not in {"GBP", "GBX"}
+        instrument.quote_currency != "GBX"
         or instrument.quote_currency not in mandate.quote_currencies
     ):
         failures.append("CURRENCY_EXCLUDED")

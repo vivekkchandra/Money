@@ -100,6 +100,7 @@ def test_offline_preparation_verifies_exact_bytes_without_mutating_reviews_or_un
     assert after.keys() == before.keys() | {
         first_candidate.OUTPUT,
         "outputs/first-candidate-lean-readiness.json",
+        "outputs/FIRST_STOCK_NEXT.md",
     }
     readiness = result["lean_preparation"]
     assert readiness["status"] == "NOT_EXECUTED"
@@ -111,6 +112,53 @@ def test_offline_preparation_verifies_exact_bytes_without_mutating_reviews_or_un
     assert all(after[path] == raw for path, raw in before.items())
     assert not (ctx.root / "manifest.json").exists()
     assert not (ctx.root / "outputs/snapshot.json").exists()
+
+
+def test_account_review_is_not_required_and_remaining_rights_ethics_gates_are_explicit(ctx):
+    prepare(ctx)
+    assert ctx.read_json("inputs/universe/account-scope.json") is None
+    result = first_candidate.prepare_first_candidate(ctx)
+    assert result["next_genuine_blocker"]["code"] == "PROVIDER_RIGHTS_REVIEW_REQUIRED:eodhd"
+    codes = {item["code"] for item in result["remaining_blockers"]}
+    assert "ETHICAL_SOURCE_RIGHTS_REVIEW_REQUIRED:eodhd" in codes
+    assert "SUPPLEMENTAL_REVIEW_REQUIRED" in codes
+    assert "COMPLETE_APPROVED_MATERIAL_EXPOSURE_EVIDENCE_REQUIRED" in codes
+    assert not any("ACCOUNT" in code or "ISA_SCOPE" in code for code in codes)
+    assert result["recorded_qualification_state"] != "UNRESOLVED_ISA_SCOPE"
+    assert not result["eligibility_granted"]
+    instructions = ctx.read_bytes("outputs/FIRST_STOCK_NEXT.md").decode()
+    assert "PROVIDER_RIGHTS_REVIEW_REQUIRED:eodhd" in instructions
+    assert "mandatory LEAN" in instructions
+    assert "FIRST_PASS_LOCKED" in instructions
+
+
+def test_legacy_account_classification_requires_rebuild_not_autoapproval(ctx):
+    master, _ = prepare(ctx)
+    master["stocks"][0]["qualification_state"] = "UNRESOLVED_ISA_SCOPE"
+    ctx.write_json(universe.MASTER, master)
+    with pytest.raises(ValueError, match="POLICY_RECLASSIFICATION_REQUIRED"):
+        first_candidate.prepare_first_candidate(ctx)
+    assert ctx.read_json(first_candidate.OUTPUT) is None
+
+
+def test_saved_live_reclassification_allows_only_diagnostic_preparation(ctx, monkeypatch):
+    original, _ = prepare(ctx)
+    ctx.environ = {}
+    deny_network(monkeypatch)
+    migrated = universe.finalize_universe(ctx, reclassify_saved=True)
+    assert migrated["observed_at"] == original["observed_at"]
+    assert migrated["scope"] == "SAVED_LIVE_DERIVED_RECLASSIFICATION"
+    result = first_candidate.prepare_first_candidate(ctx, refresh_providers=True)
+    assert result["membership"]["source_current"]
+    assert not result["membership"]["current"]
+    assert result["provider_retry"] == {
+        "status": "AUTHENTICATED_LIVE_REFRESH_REQUIRED", "network_requests": 0
+    }
+    assert not result["eligibility_granted"]
+    assert not result["production_qualified"]
+    assert result["recorded_qualification_state"] != "UNRESOLVED_ISA_SCOPE"
+    assert not (ctx.root / "outputs/snapshot.json").exists()
+    assert not (ctx.root / "outputs/lean-result.json").exists()
 
 
 @pytest.mark.parametrize("target", ["broker", "provider_report", "provider_dataset", "search"])

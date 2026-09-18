@@ -1,4 +1,4 @@
-"""Read-only provider admission probes; never invent rights/ISA/history evidence.
+"""Read-only provider admission probes; never invent rights/eligibility/history evidence.
 
 Supply a JSON array of independently verified InstrumentIdentifiers as --samples.
 Credentials are read only from the named environment variables. Output contains

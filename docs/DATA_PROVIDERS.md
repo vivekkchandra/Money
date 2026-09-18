@@ -9,7 +9,7 @@ There is no silent provider fallback.
 
 | Source | Implemented use | Limitation / licensing decision |
 | --- | --- | --- |
-| Trading 212 instrument metadata | Optional authenticated GET metadata only; bounded whitelisted fields and explicit ISIN/ticker mapping | No ISA flag inferred. Independently reviewed ISA/current availability proof is required. No balance/positions/orders/portfolio endpoints exist in Money |
+| Trading 212 instrument metadata | Optional authenticated GET metadata only; bounded whitelisted fields and explicit ISIN/ticker mapping | Current LIVE STOCK/GBX membership and technical response/credential integrity are required. No ISA/account-type/buyability review is required or inferred. No balance/positions/orders/portfolio endpoints exist in Money |
 | Companies House public/Document APIs | API-key Basic auth, bounded filing index, exact reviewed accounts-document retrieval, negotiated machine-readable representation and streaming XBRL conversion into snapshot facts | Reviewed GBP accounting units must match exact document bytes; exact storage hosts need review; PDF-only filings fail closed. Retrieval is not original historical publication. Raw redistribution stays prohibited |
 | EODHD | Explicit `.LSE` mapping, historical raw OHLCV, news links/titles, splits/dividends | Subscription/UK entitlement and licence must be verified. Raw OHLC and split-adjusted volume cannot be mixed across splits: those windows fail closed. Rights/spin-offs/delistings need separately verified coverage |
 | Reviewed publication archive | Hash-referenced Money OHLCV records with original-publication qualification | No timestamp inferred/backdated. Overlap with current provider must match exactly. Stable economic dataset hash survives snapshot rebinding |

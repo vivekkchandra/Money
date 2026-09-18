@@ -20,6 +20,7 @@ from money.data.provider_probes import ProviderAdmissionReview
 from money.data.security import ProviderFailure, SafeFetcher, SourceSecurityError
 from money.qualification.core import QualificationContext, fingerprint
 from money.qualification.providers import IndependentReview, _rights_template
+from money.qualification.universe_policy import UNIVERSE_POLICY_VERSION
 from money.schemas.contracts import EXCLUDED_ACTIVITIES, utc_now
 
 DOCUMENTS = {
@@ -166,16 +167,15 @@ def _documents(
     ctx.write_json(
         "outputs/universe-review-documents.json",
         {
-            "version": "money-review-documents-v1",
+            "version": "money-review-documents-v2",
+            "universe_policy_version": UNIVERSE_POLICY_VERSION,
             "documents": results,
-            "account_binding_established": False,
-            "current_buy_availability_established": False,
             "rights_approved": False,
             "limitation": (
                 "The instruments documentation describes all available instruments. "
-                "Public endpoint documentation does not establish which account owns this key, "
-                "account-specific ISA membership, or current purchase availability. "
-                "Do not approve those claims from metadata presence or maxOpenQuantity."
+                "Live response integrity and freshness remain required. "
+                "This policy does not assert account type, ISA eligibility or buy availability. "
+                "Public documentation and successful API access do not establish reuse rights."
             ),
         },
     )
@@ -360,12 +360,6 @@ def prepare_universe_reviews(
     fetcher: SafeFetcher | None = None,
 ) -> dict[str, Any]:
     """Create resumable, unsigned global reviews and rights-aware issuer packets."""
-    ctx.template("inputs/universe/account-scope.json", {
-        "review": _stamp(), "account_context": None, "retrieval_environment": "live",
-        "credential_binding_sha256": provenance.get("credential_binding_sha256"),
-        "accessible_response_is_account_scoped": None,
-        "accessible_response_confirms_current_buy_availability": None, "evidence_files": [],
-    })
     ctx.template("inputs/universe/ethics.json", {"review": _stamp(), "instruments": []})
     for provider in PROVIDERS:
         ctx.template(f"inputs/provider-rights/{provider}.json", _rights_template(provider))
@@ -377,9 +371,11 @@ def prepare_universe_reviews(
     rights = {provider: _rights(ctx, provider) for provider in PROVIDERS}
     queue = _dossiers(ctx, rows, rights)
     summary = {
-        "version": "money-bulk-human-review-preparation-v1", "generated_at": ctx.now.isoformat(),
-        "scope": "HUMAN_REVIEW_PREPARATION_ONLY", "account_review_file": "inputs/universe/account-scope.json",
-        "account_machine_facts": {
+        "version": "money-bulk-human-review-preparation-v2", "generated_at": ctx.now.isoformat(),
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
+        "scope": "HUMAN_REVIEW_PREPARATION_ONLY",
+        "legacy_account_review": "DEPRECATED_IGNORED_NOT_APPROVED",
+        "live_retrieval_machine_facts": {
             key: provenance.get(key) for key in (
                 "credential_binding_sha256", "instrument_response_hash", "exchange_response_hash",
                 "retrieved_at", "retrieval_environment", "raw_instruments", "gbx_stocks",
@@ -395,7 +391,6 @@ def prepare_universe_reviews(
         "security_count": sum(item["member_count"] for item in queue),
         "rights_approved_fact_sources": sum(item["approved_fact_sources"] for item in queue),
         "official_documents_captured": sum(item["status"] == "CAPTURED" for item in documents),
-        "account_scope_approved_by_preparation": False,
         "ethics_approved_by_preparation": False, "production_qualified": False,
         "ethics_queue": "outputs/ethics-work-queue.json",
     }
@@ -405,6 +400,27 @@ def prepare_universe_reviews(
     })
     ctx.write_json("outputs/universe-review-tasks.json", summary)
     ctx.write_bytes("outputs/REVIEW_TASKS.md", _instructions(summary).encode())
+    legacy_path = "outputs/ACCOUNT_SCOPE_REVIEW.md"
+    historical = ctx.read_bytes(legacy_path)
+    archived = None
+    if historical and not historical.startswith(b"# Deprecated account-scope review"):
+        digest, path = ctx.artifact(historical)
+        archived = {"sha256": digest, "path": path}
+    if archived or historical is None:
+        notice = (
+            "# Deprecated account-scope review\n\n"
+            f"Policy {UNIVERSE_POLICY_VERSION} no longer requires account-type, ISA-scope "
+            "or current-ISA-buyability attestation. Legacy account-scope inputs and schemas "
+            "are ignored, not approved. No reviewer or timestamp must be supplied.\n\n"
+            "Live Trading 212 response integrity, original timestamps, freshness and technical "
+            "credential binding remain required; all other evidence and review gates remain.\n"
+        )
+        if archived:
+            notice += (
+                "\nSuperseded preparation retained for audit only: "
+                f"{archived['path']} (SHA256 {archived['sha256']}).\n"
+            )
+        ctx.write_bytes(legacy_path, notice.encode())
     return summary
 
 
@@ -414,24 +430,11 @@ def _instructions(summary: dict[str, Any]) -> str:
 Prepared, not approved. Existing human inputs are never overwritten. No venue
 review is required. Public documentation and successful API calls grant no approval.
 
-1. **One account review:** `inputs/universe/account-scope.json`.
-   Evidence: `outputs/universe-account-facts.json` and
-   `outputs/universe-review-tasks.json` (current credential binding, exact response
-   hashes and retrieval time); documentation: `outputs/universe-review-documents.json`.
-   Verify this binding belongs to STOCKS_AND_SHARES_ISA, that the metadata response
-   is account-specific, and that attached evidence actually establishes current
-   purchase availability. Public “all available instruments” documentation proves
-   neither account ownership nor buy availability; maxOpenQuantity is not proof.
-   Only if supported: account_context=STOCKS_AND_SHARES_ISA,
-   accessible_response_is_account_scoped=true,
-   accessible_response_confirms_current_buy_availability=true; attach non-secret
-   inputs/ evidence_files and the matching credential_binding_sha256. Set
-   review.status=REVIEWED with distinct actual prepared_by/reviewed_by and actual
-   reviewed_at/valid_until (aware timestamps, existing 24-hour freshness limit).
-   If insufficient: leave unresolved; obtain broker/account-specific evidence,
-   never tick these fields merely to unblock.
+Legacy `inputs/universe/account-scope.json` and its schema are deprecated and
+ignored, not approved. No account-type, ISA-scope or purchase-availability review
+is required. Technical credential binding still protects live provenance.
 
-2. **Two provider-wide rights reviews:** `inputs/provider-rights/eodhd.json` and
+1. **Two provider-wide rights reviews:** `inputs/provider-rights/eodhd.json` and
    `inputs/provider-rights/companies-house.json`. Evidence: captured official
    documentation links/hashes above plus the operator's actual subscription/licence.
    Verify datasets, usage_purpose, storage_policy, redistribution, attribution and
@@ -442,14 +445,14 @@ review is required. Public documentation and successful API calls grant no appro
    filing history do not establish licence permission or financial-document rights.
    If insufficient: retain UNRESOLVED and obtain clarification from the provider.
 
-3. **Ethical source use (provider-wide):** `inputs/universe/source-rights/eodhd.json`
+2. **Ethical source use (provider-wide):** `inputs/universe/source-rights/eodhd.json`
    and `inputs/universe/source-rights/companies-house.json`. Verify permitted_use,
    provider, dataset_scopes and actual attached evidence_files authorise ethical
    research. Only then independently sign review.status=REVIEWED with distinct
    actual identities/current timestamps. No per-stock licence signature is needed.
    Until both rights reviews pass, dossiers contain references, not source content.
 
-4. **Issuer-grouped ethical coverage:** `outputs/ethics-work-queue.json` contains
+3. **Issuer-grouped ethical coverage:** `outputs/ethics-work-queue.json` contains
    {summary['issuer_groups']} conservative groups covering {summary['security_count']} securities;
    {summary['rights_approved_fact_sources']} rights-approved fact sources are available.
    Verified company numbers join share classes; otherwise groups remain per ISIN,
@@ -463,6 +466,6 @@ review is required. Public documentation and successful API calls grant no appro
    actual identities/timestamps, within the existing 24-hour limit. Material
    excluded activity must remain excluded; unknown exposure stays unresolved.
 
-This preparation changes no ISA, ethical, provider, Qlib, LEAN, native runtime,
+This preparation changes no ethical, provider, Qlib, LEAN, native runtime,
 inference, first-pass, CIO, release or hosted-production qualification gate.
 """

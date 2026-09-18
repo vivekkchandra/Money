@@ -23,7 +23,9 @@ class Trading212MetadataProvider:
     """Only the documented instrument/exchange metadata GETs, never account APIs.
 
     The official schema does not establish ISA/current purchase eligibility.
-    Callers MUST retain separate verified ISA eligibility evidence.
+    Neither account type nor ISA purchase availability is a Money qualification
+    requirement. Callers still verify current membership, identity and all
+    independent provider/ethical evidence.
     """
 
     def __init__(self, api_key: str, api_secret: str, fetcher: SafeFetcher | None = None) -> None:

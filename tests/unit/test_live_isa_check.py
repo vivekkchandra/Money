@@ -57,8 +57,7 @@ def test_selection_never_uses_first_invalid_entry_or_default_us_symbol():
         {"quote_currency": "USD"},
         {"quote_currency": "EUR"},
         {"instrument_type": "ETF"},
-        {"isa_available": None},
-        {"isa_available": False},
+        {"quote_currency": "GBP"},
         {"currently_available": False},
         {"activities_verified": False},
         {"business_activities": ("Defence",)},
@@ -70,7 +69,13 @@ def test_no_current_qualified_candidate_is_failure_not_missing_credential_skip(u
     with pytest.raises(MODULE["LiveAcceptanceFailure"]) as caught:
         MODULE["select_candidates"](manifest(candidate(**updates)), NOW)
     assert caught.value.status == "FAILED"
-    assert caught.value.code == "NO_CURRENT_VERIFIED_ISA_CANDIDATE"
+    assert caught.value.code == "NO_CURRENT_VERIFIED_STOCK_CANDIDATE"
+
+
+@pytest.mark.parametrize("legacy_isa", [None, False, True])
+def test_selection_does_not_require_or_assert_account_eligibility(legacy_isa):
+    selected = candidate(isa_available=legacy_isa)
+    assert MODULE["select_candidates"](manifest(selected), NOW) == (selected,)
 
 
 def test_native_snapshot_must_match_exact_eligible_reviewed_ticker():
@@ -81,12 +86,12 @@ def test_native_snapshot_must_match_exact_eligible_reviewed_ticker():
     )
     for ticker in ("MATCH", "UNKNOWN.L", "AAPL", "DEMO.L"):
         with pytest.raises(
-            MODULE["LiveAcceptanceFailure"], match="NO_CURRENT_VERIFIED_ISA_CANDIDATE"
+            MODULE["LiveAcceptanceFailure"], match="NO_CURRENT_VERIFIED_STOCK_CANDIDATE"
         ):
             MODULE["select_candidates"](specification, NOW, ticker=ticker)
 
 
-def test_document_selection_is_also_filtered_by_current_isa_mandate():
+def test_document_selection_is_also_filtered_by_current_stock_mandate():
     disallowed = candidate("EXCLUDED.L", documents=True, business_activities=("weapons",))
     no_documents = candidate("ALLOWED.L")
     allowed = candidate("QUALIFIED.L", documents=True)
@@ -96,7 +101,7 @@ def test_document_selection_is_also_filtered_by_current_isa_mandate():
         require_filing_documents=True,
     )
     assert selected == (allowed,)
-    with pytest.raises(MODULE["LiveAcceptanceFailure"], match="NO_CURRENT_VERIFIED_ISA_CANDIDATE"):
+    with pytest.raises(MODULE["LiveAcceptanceFailure"], match="NO_CURRENT_VERIFIED_STOCK_CANDIDATE"):
         MODULE["select_candidates"](
             manifest(disallowed, no_documents),
             NOW,
@@ -118,7 +123,7 @@ def test_future_expired_or_unqualified_catalogue_fails_without_substitution():
     specification.provider_qualifications = (
         fixture_qualification().model_copy(update={"production_qualified": False}),
     )
-    with pytest.raises(MODULE["LiveAcceptanceFailure"], match="QUALIFIED_ISA_UNIVERSE_INVALID"):
+    with pytest.raises(MODULE["LiveAcceptanceFailure"], match="QUALIFIED_STOCK_UNIVERSE_INVALID"):
         MODULE["select_candidates"](specification, NOW)
 
 
@@ -208,11 +213,11 @@ def test_cli_missing_real_manifest_returns_nonzero_and_no_fabricated_candidate(m
 
 def test_cli_configured_empty_universe_fails_instead_of_skipping(monkeypatch, capsys):
     monkeypatch.setitem(
-        NAMESPACE, "configured_manifest", lambda: manifest(candidate(isa_available=None))
+        NAMESPACE, "configured_manifest", lambda: manifest(candidate(currently_available=False))
     )
     monkeypatch.setitem(NAMESPACE, "utc_now", lambda: NOW)
     assert MODULE["main"](["--select-only"]) == 1
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "FAILED"
-    assert result["reason"] == "NO_CURRENT_VERIFIED_ISA_CANDIDATE"
+    assert result["reason"] == "NO_CURRENT_VERIFIED_STOCK_CANDIDATE"
     assert result["candidates"] == [] and result["research_execution"] == "NOT_RUN"

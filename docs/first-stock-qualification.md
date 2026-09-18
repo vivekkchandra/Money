@@ -30,12 +30,24 @@ budget, not EODHD's weighted credit allowance. It does not advance the all-stock
 cursor, refresh Trading 212, change reviews/the master universe, run research
 engines or create a manifest. Its successful exit means **preparation only**.
 
-Read the generated `outputs/FIRST_STOCK_NEXT.md`, `ACCOUNT_SCOPE_REVIEW.md`,
+Read the generated `outputs/FIRST_STOCK_NEXT.md`,
 `PROVIDER_RIGHTS_REVIEW.md`, `EODHD_ACCESS_NEXT.md` and
 `native-runtime-readiness.json` for the real remaining work. Do not interpret
 public issuer/register discovery as an authenticated provider qualification or
 a document-data licence. Proposed filing selections are kept separate from
 existing operator inputs until deliberately reviewed and adopted.
+
+Policy `money-t212-gbx-stock-universe-v3` removes account-type, ISA-scope and
+current-ISA-buyability attestations. Legacy `inputs/universe/account-scope.json`
+and its schema are ignored, not approved. `outputs/ACCOUNT_SCOPE_REVIEW.md` is
+now a deprecation notice; superseded preparation is retained for audit.
+Credential binding still protects live-cache integrity and does not assert an
+account type. Raw live membership, identity and freshness remain mandatory.
+
+After a safe offline policy reclassification, preparation may inspect the
+hash-verified original live source while it remains fresh. Such a receipt is
+explicitly not a new authenticated retrieval, cannot grant eligibility, and
+cannot enable provider network retries. Run the live finalizer before admission.
 
 The existing admission and runner remain authoritative. Snapshot creation
 freezes all genuinely qualified members before screening; independent

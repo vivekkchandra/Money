@@ -3,8 +3,8 @@
 Trading 212's accessible-instrument response alone establishes initial market
 membership. Exchange, country, and MIC are optional enrichment, never membership
 gates. The caller validates any optional ``venue_reviews`` and their source
-bytes. Neither membership nor an ISIN prefix establishes incorporation, ISA
-eligibility, purchase availability, provider identity, or ethical clearance.
+bytes. Neither membership nor an ISIN prefix establishes incorporation,
+purchase availability, provider identity, or ethical clearance.
 """
 
 from __future__ import annotations
@@ -167,8 +167,8 @@ def normalize_universe(
     when a subsequent identity check fails. ``identity_valid`` is independently
     established by the broker identifier, ISIN, name, and duplicate checks only;
     provider enrichment may run before final qualification. Valid candidates remain
-    ``UNRESOLVED_ISA_SCOPE`` until account, purchase availability, providers,
-    ethics, and freshness gates are verified. Venue facts are informational.
+    ``UNRESOLVED_PROVIDER_MAPPING`` until providers, ethics, and freshness
+    gates are verified. Venue facts are informational.
     Never strips or invents ticker suffixes and never filters by ISIN prefix.
     """
     if observed_at.utcoffset() is None:
@@ -231,7 +231,6 @@ def normalize_universe(
             "venue_status": "UNRESOLVED",
             "venue_reasons": [],
             "ethical_state": "ETHICAL_REVIEW_REQUIRED",
-            "isa_provenance_state": "UNRESOLVED_ISA_SCOPE",
             "evidence_freshness": "FRESH_MEMBERSHIP_ONLY",
             "qualification_state": "UNRESOLVED_IDENTITY",
             "reasons": reasons,
@@ -262,8 +261,7 @@ def normalize_universe(
         # never select a preferred line using provider order or ticker heuristics.
         economic_keys[isin].append(row)
         row["identity_valid"] = True
-        row["qualification_state"] = "UNRESOLVED_ISA_SCOPE"
-        reasons.append("ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED")
+        row["qualification_state"] = "UNRESOLVED_PROVIDER_MAPPING"
 
     for groups, reason in (
         (broker_keys.values(), "DUPLICATE_BROKER_ID"),
@@ -275,11 +273,6 @@ def normalize_universe(
                     row["identity_valid"] = False
                     if row["universe_member"]:
                         row["qualification_state"] = "UNRESOLVED_IDENTITY"
-                    row["reasons"] = [
-                        value
-                        for value in row["reasons"]
-                        if value != "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED"
-                    ]
                     if reason not in row["reasons"]:
                         row["reasons"].append(reason)
     return rows

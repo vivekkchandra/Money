@@ -980,7 +980,7 @@ class BulkProviderEnricher:
         row["provider_request_diagnostics"] = list(self.fetcher.diagnostics)
         row["provider_network_requests_used"] = self.requests_used - requests_before
         # Output is observations only; the caller retains every rights, ethics,
-        # ISA, review and production gate before changing qualification_state.
+        # Review and production gates before changing qualification_state.
         self.ctx.check_secrets(json.dumps(row, allow_nan=False).encode())
         return row
 

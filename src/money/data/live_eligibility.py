@@ -1,9 +1,9 @@
-"""Current broker metadata joined to independent, expiring ISA/ethical reviews.
+"""Current broker membership joined to independent, expiring research reviews.
 
-Trading 212's documented metadata API has no ISA eligibility flag. Neither a
-listing nor a successful metadata request establishes ISA purchase eligibility.
-The review source is independent of the startup research manifest and may be
-refreshed by an operator; unknown, stale, missing and conflicting rows fail closed.
+Account type and purchase availability are not qualification requirements.
+The research review source is independent of the startup manifest and may be
+refreshed by an operator; unknown ethics, stale, missing and conflicting rows
+still fail closed. Metadata presence never proves ethical clearance.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class EligibilityReview(Contract):
 
 
 class Trading212LiveEligibilityService:
-    """Refresh broker membership without inferring ISA/ethical verification.
+    """Refresh broker membership without inferring ethical verification.
 
     The callback must supply independently verified, hash-checked reviews from
     the administrator's catalogue. It is re-read on each access, so revocations
@@ -116,14 +116,19 @@ class Trading212LiveEligibilityService:
                 verified.append(metadata)
             return Trading212EligibilityAdapter(tuple(verified), clock=self._clock)
 
+    def get_universe(self) -> tuple[InstrumentMetadata, ...]:
+        return self._adapter().get_universe()
+
     def get_isa_universe(self) -> tuple[InstrumentMetadata, ...]:
-        return self._adapter().get_isa_universe()
+        """Deprecated alias for generic research eligibility, not ISA approval."""
+        return self.get_universe()
 
     def get_instrument_metadata(self, ticker: str) -> InstrumentMetadata | None:
         return self._adapter().get_instrument_metadata(ticker)
 
     def is_available_in_isa(self, ticker: str) -> bool | None:
-        return self._adapter().is_available_in_isa(ticker)
+        """Legacy call surface; no current account eligibility is asserted."""
+        return None
 
     def is_currently_available(self, ticker: str) -> bool | None:
         return self._adapter().is_currently_available(ticker)

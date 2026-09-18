@@ -74,11 +74,11 @@ def reviewed_instrument(ctx):
         "discovered": broker_row(),
         "metadata": entry.metadata.model_dump(mode="json"),
         "identifiers": sample().model_dump(mode="json"),
-        "eligibility_evidence_files": ["inputs/test-isa-evidence.txt"],
+        "eligibility_evidence_files": ["inputs/test-identity-evidence.txt"],
         "ethical_evidence_files": ["inputs/test-ethics-evidence.txt"],
     }
     ctx.write_json(review_path(), value)
-    ctx.write_bytes("inputs/test-isa-evidence.txt", b"Synthetic reviewed ISA test evidence")
+    ctx.write_bytes("inputs/test-identity-evidence.txt", b"Synthetic reviewed identity test evidence")
     ctx.write_bytes("inputs/test-ethics-evidence.txt", b"Synthetic reviewed ethical test evidence")
     return value
 
@@ -126,7 +126,7 @@ def codes(ctx):
     return {item["code"] for item in ctx.blockers}
 
 
-def test_discovery_keeps_only_individual_gbp_gbx_candidates_and_no_inference(tmp_path, monkeypatch):
+def test_discovery_keeps_only_individual_gbx_candidates_and_no_inference(tmp_path, monkeypatch):
     ctx = context(tmp_path)
     mock_broker(
         monkeypatch,
@@ -138,7 +138,7 @@ def test_discovery_keeps_only_individual_gbp_gbx_candidates_and_no_inference(tmp
         ),
     )
     result = providers.run_provider_stages(ctx)
-    assert result["candidate_counts"] == {"GBP": 1, "GBX": 1}
+    assert result["candidate_counts"] == {"GBP": 0, "GBX": 1}
     assert result["eligible_counts"] == {"GBP": 0, "GBX": 0}
     assert result["eligibility_reviews"] == []
     value = ctx.read_json(review_path())
@@ -146,8 +146,8 @@ def test_discovery_keeps_only_individual_gbp_gbx_candidates_and_no_inference(tmp
     assert value["identifiers"]["isin"] is None
     assert value["identifiers"]["companies_house_number"] is None
     assert value["identifiers"]["provider_symbols"] == []
-    assert value["metadata"]["isa_available"] is None
-    assert value["metadata"]["currently_available"] is None
+    assert "isa_available" not in value["metadata"]
+    assert value["metadata"]["currently_available"] is True
     assert value["metadata"]["business_activities"] == []
     assert "LIVE_METADATA_AND_FRESH_REVIEW_JOIN_REQUIRED" in codes(ctx)
     assert "CH_FINANCIAL_DOCUMENT_QUALIFICATION_REQUIRED" in codes(ctx)
@@ -200,7 +200,7 @@ def test_review_proof_hashes_match_actual_bytes_and_rights_resume_reuses_probes(
 
 @pytest.mark.parametrize(
     "change",
-    ["same_reviewer", "expired", "wrong_isin", "false_isa", "unknown_ethics", "missing_bytes"],
+    ["same_reviewer", "expired", "wrong_isin", "unknown_ethics", "missing_bytes"],
 )
 def test_unverified_or_conflicting_review_never_enters_universe(tmp_path, monkeypatch, change):
     ctx = context(tmp_path)
@@ -213,8 +213,6 @@ def test_unverified_or_conflicting_review_never_enters_universe(tmp_path, monkey
         value["identifiers"]["valid_until"] = NOW.isoformat()
     elif change == "wrong_isin":
         value["discovered"]["isin"] = "GB00WRONG000"
-    elif change == "false_isa":
-        value["metadata"]["isa_available"] = False
     elif change == "unknown_ethics":
         value["metadata"]["business_activities"] = ["unknown"]
     else:
@@ -224,6 +222,23 @@ def test_unverified_or_conflicting_review_never_enters_universe(tmp_path, monkey
     assert result["eligibility_reviews"] == []
     assert "INSTRUMENT_REVIEW_REJECTED" in codes(ctx)
     assert calls == {"eodhd": 0, "companies-house": 0}
+
+
+@pytest.mark.parametrize("legacy_isa", [None, False, True])
+def test_live_presence_does_not_require_legacy_isa_or_buy_attestation(tmp_path, monkeypatch, legacy_isa):
+    ctx = context(tmp_path)
+    mock_broker(monkeypatch)
+    mock_probes(monkeypatch)
+    value = reviewed_instrument(ctx)
+    value["metadata"]["isa_available"] = legacy_isa
+    value["metadata"]["currently_available"] = None
+    ctx.write_json(review_path(), value)
+    original = ctx.read_bytes(review_path())
+    result = providers.run_provider_stages(ctx)
+    assert result["eligibility_reviews"][0]["metadata"]["currently_available"] is True
+    assert result["eligibility_reviews"][0]["metadata"]["isa_available"] is None
+    assert ctx.read_bytes(review_path()) == original
+    assert not ctx._path("inputs/universe/account-scope.json").exists()
 
 
 def test_removed_broker_stock_cannot_resume_from_old_discovery(tmp_path, monkeypatch):

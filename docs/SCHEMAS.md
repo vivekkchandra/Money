@@ -4,8 +4,8 @@ Canonical contracts live in `src/money/schemas/contracts.py`; Pydantic rejects u
 
 | Contract | Invariant |
 | --- | --- |
-| ResearchMandate | Trading212 ISA, individual stocks, GBP/GBX; capital ≤ £200; horizons 1–30 days; exclusions cannot be removed; stretch target cannot change risk |
-| InstrumentMetadata | Explicit current ISA availability, currency, business activities and verification provenance |
+| ResearchMandate | Trading212 live GBX individual stocks; capital ≤ £200; horizons 1–30 days; exclusions cannot be removed; stretch target cannot change risk. Legacy account_type is read-only compatibility, not a requirement |
+| InstrumentMetadata | Current broker membership, currency, business activities and verification provenance. Legacy isa_available is ignored by qualification and not populated for new records |
 | EvidenceRecord | Objective typed payload plus source identities, timestamps and stable hash |
 | ResearchSnapshot | Frozen common evidence; no firm opinions; cutoff checks and deterministic digest |
 | Firm report | Firm identity, snapshot digest, claims referencing evidence, versions and usage |

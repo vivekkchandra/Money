@@ -155,8 +155,8 @@ def _candidate_template(row: dict[str, Any]) -> dict[str, Any]:
             "company": None,
             "instrument_type": None,
             "quote_currency": None,
-            "isa_available": None,
-            "currently_available": None,
+            # Objective presence in this live response, not permission to buy.
+            "currently_available": True,
             "business_activities": [],
             "activities_verified": False,
             "verified_at": None,
@@ -233,7 +233,12 @@ def _eligibility(
     review = InstrumentReview.model_validate(value)
     review.review.require_current(ctx.now)
     review.identifiers.require_current(ctx.now)
-    metadata, identifiers = review.metadata, review.identifiers
+    # This path is called only with a row from the successful current live
+    # retrieval below. Presence is machine evidence, not a human buy attestation.
+    # Keep the reviewed file and its timestamp untouched; its other facts are
+    # independently checked against this row before the derived join is admitted.
+    metadata = review.metadata.model_copy(update={"currently_available": True, "isa_available": None})
+    identifiers = review.identifiers
     # The independent review must concern exactly this still-listed instrument.
     # Display-name changes do not confer or revoke an identity mapping.
     keys = ("ticker", "isin", "type", "currencyCode")
@@ -1001,6 +1006,7 @@ def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
         ctx._path(path).exists()
         for path in (
             "state/bulk-universe-mode.json",
+            "outputs/trading212-gbx-stock-universe.json",
             "outputs/uk-isa-stock-universe.json",
             "outputs/universe-provenance.json",
             "state/universe-rebuild-source.json",
@@ -1065,7 +1071,7 @@ def run_provider_stages(ctx: QualificationContext) -> dict[str, Any]:
                     (
                         row
                         for row in rows
-                        if row.get("type") == "STOCK" and row.get("currencyCode") in {"GBP", "GBX"}
+                        if row.get("type") == "STOCK" and row.get("currencyCode") == "GBX"
                     ),
                     key=lambda row: row["ticker"],
                 )

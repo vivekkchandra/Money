@@ -31,7 +31,7 @@ from money.data.instruments import (
     InstrumentSearchResult,
 )
 from money.data.security import ProviderFailure
-from money.data.universe import IsaUniverseQuery, ReviewedIsaUniverse
+from money.data.universe import ReviewedStockUniverse, StockUniverseQuery
 from money.product.api import router as product_router
 from money.product.api import safe_product_error
 from money.product.billing import BillingUnavailable
@@ -723,21 +723,21 @@ def create_app(settings: Settings | None = None, store: ResearchStore | None = N
     @application.get("/research/universe")
     def universe(
         request: Request, db: Annotated[ResearchStore, Depends(repository)],
-        query: Annotated[IsaUniverseQuery, Query()],
+        query: Annotated[StockUniverseQuery, Query()],
     ) -> dict[str, Any]:
         if request.app.state.settings.money_research_mode == "live":
             if len(request.query_params.multi_items()) != len(request.query_params):
                 raise AccountError("INVALID_REQUEST", "Use each page parameter once", 422)
-            rate = db.consume_rate_limit("isa-universe", 60, 60)
+            rate = db.consume_rate_limit("stock-universe", 60, 60)
             if not rate["allowed"]:
                 raise HTTPException(429, "Please wait before refreshing", headers={"Retry-After": "60"})
             try:
-                return ReviewedIsaUniverse(current_catalogue(request)).page(
+                return ReviewedStockUniverse(current_catalogue(request)).page(
                     query, mandate=ResearchMandate(), now=utc_now(),
                 ).model_dump(mode="json")
             except ValueError as error:
                 raise AccountError(
-                    "UNIVERSE_UNAVAILABLE", "Verified ISA coverage is temporarily unavailable", 503,
+                    "UNIVERSE_UNAVAILABLE", "Qualified stock coverage is temporarily unavailable", 503,
                 ) from error
         result = db.list_universe()
         require_result_rights(request, db, [item["job_id"] for item in result])

@@ -673,7 +673,6 @@ def build_runtime(
                 company="Demonstration plc (synthetic)",
                 instrument_type="STOCK",
                 quote_currency="GBX",
-                isa_available=True,
                 currently_available=True,
                 business_activities=("software",),
                 activities_verified=True,

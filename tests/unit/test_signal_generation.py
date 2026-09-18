@@ -3,10 +3,13 @@ from decimal import Decimal
 
 import pytest
 
+from money.adapters.eligibility import eligibility_failures
+from money.data.normalization.prices import normalize_gbp
 from money.data.quality.market import evaluate_market_quality
 from money.flows.research import DemoFirm, build_runtime, demo_snapshot
 from money.policy.governance import consensus, evidence_independence
 from money.risk.costs import CostApplicability
+from money.scanner.technical import calculate_technical
 from money.schemas.contracts import (
     AuditFinding,
     CIOAuditReport,
@@ -155,17 +158,32 @@ def test_real_atr_scenario_preserves_raw_gbx_and_normalized_gbp():
     )
 
 
-def test_gbp_gbx_equivalent_scenarios_and_stretch_never_changes_risk():
-    gbx = generate_signal(**fixture("GBX"))
-    params = fixture("GBP")
-    gbp = generate_signal(**params)
-    assert gbp.signal is not None and gbx.signal is not None
-    assert gbp.entry_high_gbp == gbx.entry_high_gbp
-    assert gbp.signal.illustrative_allocation_gbp == gbx.signal.illustrative_allocation_gbp
+def test_gbp_gbx_numeric_normalization_does_not_admit_gbp_stocks():
+    pounds, pence = fixture("GBP"), fixture("GBX")
+    # Numeric evidence/scanner support for both units is independent of the
+    # current GBX-only stock admission policy. Do not bypass that policy to
+    # test normalization by publishing an excluded GBP security.
+    assert calculate_technical(pounds["snapshot"]).values == calculate_technical(pence["snapshot"]).values
+    for params in (pounds, pence):
+        latest = [item for item in params["snapshot"].evidence if item.payload.kind == "ohlcv"][-1]
+        assert normalize_gbp(latest.payload.close, latest.payload.currency).gbp == Decimal("1.59")
+    assert "CURRENCY_EXCLUDED" in eligibility_failures(
+        pounds["snapshot"].instrument, pounds["mandate"], pounds["issued_at"],
+    )
+    assert generate_signal(**pounds).signal is None
+    assert generate_signal(**pence).signal is not None
+
+
+def test_stretch_never_changes_qualified_gbx_scenario_risk():
+    params = fixture("GBX")
+    baseline = generate_signal(**params)
+    assert baseline.signal is not None
     params["mandate"] = params["mandate"].model_copy(update={"stretch_profit_gbp": Decimal("0")})
     ambitious = generate_signal(**params)
-    assert ambitious.signal.illustrative_allocation_gbp == gbp.signal.illustrative_allocation_gbp
-    assert ambitious.signal.modelled_downside_gbp == gbp.signal.modelled_downside_gbp
+    assert ambitious.signal is not None
+    assert ambitious.entry_high_gbp == baseline.entry_high_gbp
+    assert ambitious.signal.illustrative_allocation_gbp == baseline.signal.illustrative_allocation_gbp
+    assert ambitious.signal.modelled_downside_gbp == baseline.signal.modelled_downside_gbp
 
 
 @pytest.mark.parametrize("failure", ["demo", "lean", "audit", "veto", "costs", "strong", "spread"])

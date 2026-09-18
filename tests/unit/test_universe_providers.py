@@ -31,7 +31,7 @@ def row():
         "mic": "XLON",
         "country": "GB",
         "observed_at": NOW.isoformat(),
-        "qualification_state": "UNRESOLVED_ISA_SCOPE",
+        "qualification_state": "UNRESOLVED_PROVIDER_MAPPING",
         "reasons": ["ISA_REVIEW_REQUIRED"],
     }
 
@@ -171,7 +171,7 @@ def test_exact_identity_join_collects_real_probe_contracts_without_approval(ctx)
     assert result["eodhd_lookup_origin"] == "NETWORK"
     assert set(result["provider_reports"]) == {"eodhd", "companies-house"}
     assert all(item["status"] == "RETRIEVED" for item in result["provider_datasets"].values())
-    assert result["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert result["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
     assert result["reasons"] == ["ISA_REVIEW_REQUIRED"]
     assert not result["provider_rights_verified"]
     assert not result["financial_documents_verified"]
@@ -224,7 +224,7 @@ def test_venue_is_informational_and_never_prevents_exact_provider_lookup(ctx, ve
     assert result["eodhd_symbol"] == "FIX.LSE"
     assert result["identifiers"]["exchange"] == "LSE"
     assert result["companies_house_state"] == "MAPPED"
-    assert result["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert result["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
     assert not result["provider_rights_verified"]
     assert not any(path == "/api/exchanges-list/" for path, _ in fetcher.calls)
 
@@ -299,7 +299,7 @@ def test_foreign_isin_quoted_in_gbx_maps_without_broker_venue(ctx):
     assert result["companies_house_state"] == "NOT_APPLICABLE"
     assert result["companies_house_number"] is None
     assert result["identifiers"]["isin"] == "US0378331005"
-    assert result["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert result["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
 
 
 def test_search_country_does_not_imply_issuer_incorporation(ctx):
@@ -369,7 +369,7 @@ def test_offline_reuses_exact_cached_observations_without_credentials(ctx, monke
     assert result["provider_reports"] == first["provider_reports"]
     assert result["provider_evidence_observed_at"] == first["provider_evidence_observed_at"]
     assert result["provider_evidence_valid_until"] == first["provider_evidence_valid_until"]
-    assert result["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert result["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
     assert not result["provider_rights_verified"]
     assert fetcher.calls == []
     assert worker.requests_used == 0
@@ -712,7 +712,7 @@ def test_access_denial_defers_peer_searches_without_claiming_each_was_attempted(
     assert diagnostic["backoff_scope"] == "ENDPOINT_FAMILY"
     assert diagnostic["http_status"] == status
     assert second["eodhd_symbol"] is None
-    assert second["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert second["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
 
 
 def test_endpoint_cooldown_resumes_after_bounded_expiry_and_keeps_cached_success(ctx):

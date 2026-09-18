@@ -20,7 +20,6 @@ def fixture_entry(now=NOW, **updates):
         company="Café Research Fixture",
         instrument_type="STOCK",
         quote_currency="GBX",
-        isa_available=True,
         currently_available=True,
         business_activities=("telecommunications",),
         activities_verified=True,
@@ -82,8 +81,6 @@ def test_company_ticker_broker_and_isin_search_are_casefolded(query):
 @pytest.mark.parametrize(
     "updates,eligibility",
     [
-        ({"isa_available": None}, "UNKNOWN"),
-        ({"isa_available": False}, "VERIFIED_INELIGIBLE"),
         ({"currently_available": None}, "UNKNOWN"),
         ({"currently_available": False}, "VERIFIED_INELIGIBLE"),
         ({"verified_at": NOW - timedelta(hours=24, seconds=1)}, "UNKNOWN"),
@@ -121,7 +118,7 @@ def test_custom_mandate_checked_again_before_admission():
         "FIXTURE.L", ResearchMandate(quote_currencies=("GBP",)), NOW
     ) == ("CURRENCY_EXCLUDED",)
     assert fixture_catalogue().admission_failures("MISSING.L", ResearchMandate(), NOW) == (
-        "ISA_ELIGIBILITY_UNKNOWN",
+        "INSTRUMENT_ELIGIBILITY_UNKNOWN",
     )
 
 
@@ -213,3 +210,26 @@ def test_demo_is_explicit_and_cannot_be_promoted_to_live():
     assert [entry.ticker for entry in page.instruments] == ["DEMO.L"]
     with pytest.raises(ValueError, match="LIVE_INSTRUMENT_INVALID"):
         InstrumentCatalogue(demo.entries, "live")
+
+
+@pytest.mark.parametrize("legacy_isa", [None, False, True])
+def test_catalogue_qualification_does_not_depend_on_legacy_isa(legacy_isa):
+    catalogue = fixture_catalogue(isa_available=legacy_isa)
+    result = catalogue.search(InstrumentSearchQuery(query="fixture"), NOW).instruments[0]
+    assert result.eligibility == "VERIFIED_ELIGIBLE" and result.research_allowed
+    assert not catalogue.admission_failures("FIXTURE.L", ResearchMandate(), NOW)
+    assert catalogue.entries[0].metadata.isa_available is legacy_isa
+
+
+def test_new_metadata_and_mandate_make_no_isa_assertion():
+    assert fixture_entry().metadata.isa_available is None
+    assert InstrumentCatalogue.demonstration(NOW).entries[0].metadata.isa_available is None
+    assert ResearchMandate().account_type is None
+    assert ResearchMandate().quote_currencies == ("GBX",)
+
+
+def test_historical_mandate_and_metadata_preserve_serialized_assertions():
+    metadata = fixture_entry(isa_available=True).metadata
+    assert InstrumentMetadata.model_validate_json(metadata.model_dump_json()) == metadata
+    legacy = ResearchMandate(account_type="StocksAndSharesISA", quote_currencies=("GBP", "GBX"))
+    assert ResearchMandate.model_validate_json(legacy.model_dump_json()).model_dump() == legacy.model_dump()

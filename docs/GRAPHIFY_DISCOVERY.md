@@ -1,5 +1,12 @@
 # Graphify integration discovery
 
+> Policy update: ISA/account-scope and ISA-buyability requirements in historical
+> entries below are superseded by `money-t212-gbx-stock-universe-v3`.
+> Current qualification uses fresh live Trading 212 STOCK/GBX membership without
+> account-type approval. All non-ISA evidence/security/release gates remain.
+> See [current live-universe policy](live-universe.md); these records are retained
+> as historical audit evidence, not current ISA review instructions.
+
 Audit date: 2026-09-16. The versions in `UPSTREAM_LOCK.txt` are authoritative.
 Every source inspection below followed a query against that repository's existing
 `upstreams/<component>/graphify-out/graph.json`. No upstream source, graph,

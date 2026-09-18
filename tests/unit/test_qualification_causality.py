@@ -114,6 +114,8 @@ def test_dag_disabled_qlib_is_absent_and_lean_is_mandatory(ctx):
     diagnostic = write_qualification_diagnostics(ctx, master=master)
     by_id = {item["id"]: item for item in diagnostic["nodes"]}
     assert "qlib" not in by_id
+    assert "account_scope" not in by_id
+    assert "identity" in by_id["eligibility"]["depends_on"]
     assert "lean" in by_id["cio_red_team"]["depends_on"]
     assert "first_pass" in by_id["lean"]["depends_on"]
     assert diagnostic["lean_mandatory"] is True
@@ -163,7 +165,7 @@ def test_budget_deferred_ohlcv_is_missing_not_expired_and_never_qualifies(ctx):
 
     master = universe.finalize_universe(ctx, broker=Broker(), enricher=MissingBars())
     row = master["stocks"][0]
-    assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+    assert row["qualification_state"] != "UNRESOLVED_ISA_SCOPE"
     assert row["evidence_freshness"] == "PROVIDER_OBSERVATIONS_MISSING"
     assert "CURRENT_TIMESTAMPED_PROVIDER_OBSERVATIONS_REQUIRED" in row["reasons"]
     assert master["eligibility_reviews"] == []
@@ -194,3 +196,21 @@ def test_successful_refresh_clears_same_context_failure_without_status_file(ctx)
     ctx.block("CHROMADB_SECURITY_ADVISORIES", "independent security failure")
     universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
     assert {item["code"] for item in ctx.blockers} == {"CHROMADB_SECURITY_ADVISORIES"}
+
+
+def test_current_dag_does_not_restore_retired_account_requirements_from_old_status(ctx):
+    retired = ["ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED", "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED"]
+    ctx.write_json("status.json", {"blockers": [
+        *[{"code": code, "action": "Old policy only"} for code in retired],
+        {"code": "CHROMADB_SECURITY_ADVISORIES", "action": "Must remain"},
+    ]})
+    before = ctx.read_bytes("status.json")
+    result = write_qualification_diagnostics(ctx)
+    nodes = {item["id"]: item for item in result["nodes"]}
+    assert "account_scope" not in nodes
+    codes = {code for item in result["nodes"] for code in item["reported_blockers"]}
+    assert not set(retired) & codes
+    assert "CHROMADB_SECURITY_ADVISORIES" in codes
+    assert not result["approval_granted"]
+    assert ctx.read_bytes("status.json") == before
+    assert ctx.read_json("inputs/universe/account-scope.json") is None

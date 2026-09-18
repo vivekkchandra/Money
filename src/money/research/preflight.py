@@ -93,7 +93,7 @@ def deployment_preflight(role: Literal["api", "worker"]) -> dict[str, Any]:
 
     # Only a live metadata refresh joined to fresh reviewed proofs can establish
     # the current admitted universe. Offline presence never establishes coverage.
-    check("current_isa_universe", "NOT_VERIFIED", "LIVE_METADATA_AND_FRESH_REVIEW_JOIN_NOT_RUN")
+    check("current_stock_universe", "NOT_VERIFIED", "LIVE_METADATA_AND_FRESH_REVIEW_JOIN_NOT_RUN")
     try:
         enabled = getattr(manifest, "qlib_enabled", True) if manifest is not None else qlib_enabled(os.environ)
     except ValueError:

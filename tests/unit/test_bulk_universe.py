@@ -273,11 +273,11 @@ def test_bulk_work_prepares_facts_without_overwriting_or_signing_reviews(
     result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
     for path, raw in before.items():
         assert ctx.read_bytes(path) == raw
-    facts = ctx.read_json("outputs/universe-account-facts.json")
+    facts = ctx.read_json("outputs/universe-retrieval-facts.json")
     assert facts["provenance"]["credential_binding_sha256"] == universe.credential_binding(ctx.environ)
-    assert facts["account_type_returned_by_api"] is False
-    assert facts["accessible_response_is_account_scoped"] is None
-    assert facts["accessible_response_confirms_current_buy_availability"] is None
+    assert "account_type_returned_by_api" not in facts
+    assert "accessible_response_is_account_scoped" not in facts
+    assert "accessible_response_confirms_current_buy_availability" not in facts
     work = ctx.read_json("outputs/universe-review-work.json")
     assert work["review_status"] == "UNREVIEWED_MACHINE_FACTS"
     assert work["instruments"][0]["eodhd_symbol"] == "TEST.TESTVENUE"
@@ -370,7 +370,7 @@ def test_full_refresh_preserves_raw_hashes_and_only_bulk_templates(
     assert result["stocks"][1]["qualification_state"] == "EXCLUDED_NON_GBX"
     assert result["summary"]["qualified"] == 0
     assert result["summary"]["unresolved"] == 1
-    assert result["summary"]["states"] == {"UNRESOLVED_ISA_SCOPE": 1}
+    assert result["summary"]["states"] == {"UNRESOLVED_ETHICAL": 1}
     assert result["summary"]["raw_states"]["UNRESOLVED_IDENTITY"] == 1
     assert (
         result["provenance"]["instrument_response_hash"]
@@ -380,14 +380,14 @@ def test_full_refresh_preserves_raw_hashes_and_only_bulk_templates(
         result["provenance"]["exchange_response_hash"]
         == hashlib.sha256(broker.raw["exchanges"]).hexdigest()
     )
-    assert result["provenance"]["account_context"] == "UNVERIFIED"
+    assert "account_context" not in result["provenance"]
     for kind, reference in result["provenance"]["response_artifacts"].items():
         index = json.loads(ctx.verify_artifact(*reference))
         actual = b"".join(ctx.verify_artifact(*part) for part in index["chunks"])
         assert actual == broker.raw[kind]
     assert not list((ctx.root / "inputs/instruments").glob("*.json"))
     assert ctx.read_json("state/bulk-universe-mode.json") is not None
-    assert ctx.read_json("inputs/universe/account-scope.json")["review"]["status"] == "UNRESOLVED"
+    assert ctx.read_json("inputs/universe/account-scope.json") is None
     assert result["production_qualified"] is False
 
 
@@ -431,7 +431,7 @@ def test_every_gbx_stock_reaches_provider_lookup_without_uk_venue(
     assert "uk_venue_stocks" not in result["summary"]
     for row in result["stocks"]:
         assert row["universe_member"] is True
-        assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+        assert row["qualification_state"] == "UNRESOLVED_ETHICAL"
         assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
         assert row["identifiers"]["exchange"] == "TESTVENUE"
         assert not any("VENUE" in reason for reason in row["reasons"])
@@ -481,13 +481,11 @@ def test_missing_venue_does_not_prevent_otherwise_fully_reviewed_qualification(
 
 
 @pytest.mark.parametrize(
-    "missing_gate", ["provider-rights", "account", "ethics", "provider-identity"]
+    "missing_gate", ["provider-rights", "ethics", "provider-identity"]
 )
 def test_removing_venue_requirement_does_not_remove_other_admission_gates(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, missing_gate: str
 ) -> None:
-    if missing_gate != "account":
-        reviewed_scope(ctx)
     if missing_gate != "ethics":
         reviewed_ethics(ctx, [instrument()])
     if missing_gate != "provider-rights":
@@ -503,13 +501,13 @@ def test_removing_venue_requirement_does_not_remove_other_admission_gates(
     assert result["production_qualified"] is False
 
 
-def test_repeated_fresh_discovery_never_approves_account_or_ethics(
+def test_repeated_fresh_discovery_never_approves_ethics(
     ctx: QualificationContext,
 ) -> None:
     for _ in range(2):
         result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
         row = result["stocks"][0]
-        assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+        assert row["qualification_state"] == "UNRESOLVED_ETHICAL"
         assert row["ethical_state"] == "ETHICAL_REVIEW_REQUIRED"
         assert row["eligibility_review"] is None
         assert result["eligibility_reviews"] == []
@@ -529,15 +527,27 @@ def test_one_provider_failure_does_not_stop_other_rows(ctx: QualificationContext
     assert result["stocks"][1]["identifiers"]["ticker"] == "GOOD"
 
 
-def test_scoped_key_binding_change_and_stale_account_review_fail_closed(
-    ctx: QualificationContext,
+@pytest.mark.parametrize("legacy_review", ["missing", "unresolved", "expired", "wrong-binding"])
+def test_account_scope_is_not_required_and_legacy_review_is_ignored(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, legacy_review: str
 ) -> None:
-    reviewed_scope(
-        ctx, credential_binding_sha256=hashlib.sha256(b"other synthetic key").hexdigest()
-    )
-    assert universe._scope(ctx, universe.credential_binding(ctx.environ)) is None
-    reviewed_scope(ctx, review=stamp(reviewed_at=(NOW - timedelta(hours=25)).isoformat()))
-    assert universe._scope(ctx, universe.credential_binding(ctx.environ)) is None
+    if legacy_review == "unresolved":
+        ctx.write_json("inputs/universe/account-scope.json", {"review": {"status": "UNRESOLVED"}})
+    elif legacy_review == "expired":
+        reviewed_scope(ctx, review=stamp(valid_until=(NOW - timedelta(hours=25)).isoformat()))
+    elif legacy_review == "wrong-binding":
+        reviewed_scope(ctx, credential_binding_sha256=hashlib.sha256(b"other key").hexdigest())
+    prior = ctx.read_bytes("inputs/universe/account-scope.json")
+    reviewed_ethics(ctx, [instrument()])
+    rights_fixture(ctx, monkeypatch)
+    result = universe.finalize_universe(ctx, broker=Broker(), enricher=Enricher())
+    assert result["summary"]["qualified"] == 1
+    assert ctx.read_bytes("inputs/universe/account-scope.json") == prior
+    review = result["eligibility_reviews"][0]
+    assert review["metadata"].get("isa_available") is not True
+    assert "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED" not in json.dumps(result)
+    assert "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED" not in json.dumps(result)
+    assert "UNRESOLVED_ISA_SCOPE" not in json.dumps(result)
 
 
 def test_only_fully_reviewed_peer_qualifies_without_entire_universe_approval(
@@ -654,7 +664,7 @@ def test_failed_refresh_invalidates_prior_master_not_stale_membership(
     saved = ctx.read_json(universe.MASTER)
     assert saved["stocks"] == []
     assert saved["summary"] is None
-    assert len((ctx.root / "outputs/uk-isa-stock-universe.csv").read_text().splitlines()) == 1
+    assert len((ctx.root / universe.MASTER_CSV).read_text().splitlines()) == 1
 
 
 def test_csv_formula_injection_is_escaped_without_changing_json() -> None:
@@ -711,11 +721,12 @@ def test_expired_membership_remains_expired_even_without_account_review(
     assert result["eligibility_reviews"] == []
 
 
-def test_scope_expiring_during_provider_fetch_cannot_create_expired_qualification(
+def test_ethical_review_expiring_during_fetch_cannot_create_expired_qualification(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    reviewed_scope(ctx, review=stamp(valid_until=(NOW + timedelta(minutes=1)).isoformat()))
-    reviewed_ethics(ctx, [instrument()])
+    reviewed_ethics(
+        ctx, [instrument()], review=stamp(valid_until=(NOW + timedelta(minutes=1)).isoformat())
+    )
     rights_fixture(ctx, monkeypatch)
 
     class SlowProvider(Enricher):
@@ -808,7 +819,7 @@ def test_optional_exchange_outage_does_not_stop_gbx_pipeline(
         assert result["summary"]["gbx_stocks"] == 1
         assert result["summary"]["eodhd_mapping_attempted"] == 1
         assert enricher.calls == ["TESTl_EQ"]
-        assert result["stocks"][0]["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+        assert result["stocks"][0]["qualification_state"] == "UNRESOLVED_ETHICAL"
         assert result["provenance"]["exchange_response_hash"] is None
         assert result["provenance"]["exchange_enrichment_status"] == "UNAVAILABLE_OR_INVALID"
         assert "exchanges" not in result["provenance"]["response_artifacts"]
@@ -846,7 +857,7 @@ def test_finalizer_summary_uses_gbx_denominator_and_no_uk_venue_gate(
     assert "Venue resolved (informational only): 0/1" in output
     assert "EODHD mappings attempted: 1/1" in output
     assert "EODHD mapped: 1/1" in output
-    assert "ISA scope unresolved: 1" in output
+    assert "ISA scope" not in output
     assert "UK venue stocks" not in output
     assert "Stocks GBP/GBX" not in output
 
@@ -976,7 +987,7 @@ def test_recent_provider_retrieval_does_not_make_old_ohlcv_current(
 
 
 @pytest.mark.parametrize(
-    "limiting_evidence", ["account-scope", "ethical-source-rights", "provider-qualification"]
+    "limiting_evidence", ["ethical-source-rights", "provider-qualification"]
 )
 def test_shortest_evidence_deadline_propagates_into_eligibility_identifiers(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, limiting_evidence: str
@@ -985,11 +996,7 @@ def test_shortest_evidence_deadline_propagates_into_eligibility_identifiers(
     reviewed_ethics(ctx, [instrument()])
     rights_fixture(ctx, monkeypatch)
     deadline = NOW + timedelta(hours=1)
-    if limiting_evidence == "account-scope":
-        scope = ctx.read_json("inputs/universe/account-scope.json")
-        scope["review"]["valid_until"] = deadline.isoformat()
-        ctx.write_json("inputs/universe/account-scope.json", scope)
-    elif limiting_evidence == "ethical-source-rights":
+    if limiting_evidence == "ethical-source-rights":
         source = ctx.read_json("inputs/test-ethical-rights.json")
         source["review"]["valid_until"] = deadline.isoformat()
         ctx.write_json("inputs/test-ethical-rights.json", source)

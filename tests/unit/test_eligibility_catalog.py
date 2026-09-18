@@ -71,16 +71,25 @@ def attach(ctx: QualificationContext, path: Path, reviews: tuple[EligibilityRevi
 
 
 def attach_provenance(ctx: QualificationContext, data: dict[str, Any], **updates: Any) -> None:
-    account_proof = ctx.artifact(b"Synthetic independently reviewed ISA account provenance")
     binding = credential_binding(ctx.environ)
+    # Genuine byte/hash verification exercised using explicitly synthetic local
+    # fixtures, never a production qualification artifact.
+    raw = json.dumps([{"ticker": "FIXTUREl_EQ", "type": "STOCK", "currencyCode": "GBX"}]).encode()
+    chunk = ctx.artifact(raw)
+    descriptor = ctx.artifact({
+        "kind": "exact-response-chunks-v1", "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw), "chunks": [chunk],
+    })
     provenance = ctx.artifact({
         "credential_binding_sha256": binding, "retrieved_at": NOW.isoformat(),
-        "account_context": "STOCKS_AND_SHARES_ISA", "retrieval_environment": "live",
-        "account_review_hash": account_proof[0], **updates,
+        "retrieval_environment": "live", "scope": "LIVE_RETRIEVAL",
+        "credential_binding_verified_this_run": True,
+        "instrument_response_hash": hashlib.sha256(raw).hexdigest(),
+        "response_artifacts": {"instruments": descriptor}, **updates,
     })
     data["universe_account_binding_sha256"] = binding
     data["universe_provenance"] = provenance
-    data["qualification_artifacts"].extend([account_proof, provenance])
+    data["qualification_artifacts"].extend([chunk, descriptor, provenance])
 
 
 def test_legacy_manifest_keeps_eligibility_property(bundle: tuple[QualificationContext, Path, live.LiveManifest]) -> None:
@@ -234,40 +243,65 @@ def test_foreign_issuer_exception_requires_real_proof_and_exclusive_identity(bun
             live.load_manifest(path, digest)
 
 
-@pytest.mark.parametrize("case", ["missing-binding", "missing-reference", "unlisted-reference", "other-account", "invest", "demo", "expired", "future", "unlisted-account-review"])
-def test_bulk_catalog_requires_current_hash_bound_isa_account_provenance(bundle: tuple[QualificationContext, Path, live.LiveManifest], case: str) -> None:
+@pytest.mark.parametrize("case", ["missing-binding", "missing-reference", "unlisted-reference", "other-credential", "replay", "demo", "expired", "future", "binding-unverified", "raw-hash-mismatch"])
+def test_bulk_catalog_requires_current_hash_bound_live_provenance(bundle: tuple[QualificationContext, Path, live.LiveManifest], case: str) -> None:
     ctx, path, manifest = bundle
     path, _ = attach(ctx, path, manifest.eligibility_reviews)
     data = json.loads(path.read_bytes())
-    expected = "LIVE_UNIVERSE_ACCOUNT_PROVENANCE_INVALID"
+    expected = "LIVE_UNIVERSE_PROVENANCE_INVALID"
     if case == "missing-binding":
         data["universe_account_binding_sha256"] = None
-        expected = "LIVE_UNIVERSE_ACCOUNT_PROVENANCE_REQUIRED"
+        expected = "LIVE_UNIVERSE_PROVENANCE_REQUIRED"
     elif case == "missing-reference":
         data["universe_provenance"] = None
-        expected = "LIVE_UNIVERSE_ACCOUNT_PROVENANCE_REQUIRED"
+        expected = "LIVE_UNIVERSE_PROVENANCE_REQUIRED"
     elif case == "unlisted-reference":
         data["qualification_artifacts"] = [reference for reference in data["qualification_artifacts"]
             if reference != data["universe_provenance"]]
-        expected = "LIVE_UNIVERSE_ACCOUNT_PROVENANCE_NOT_LOADED"
-    elif case == "other-account":
+        expected = "LIVE_UNIVERSE_PROVENANCE_NOT_LOADED"
+    elif case == "other-credential":
         data["universe_account_binding_sha256"] = credential_binding({
             "TRADING212_API_KEY": "different-synthetic-account",
             "TRADING212_API_SECRET": "different-synthetic-secret",
         })
     else:
         changes: dict[str, Any] = {}
-        if case == "invest":
-            changes["account_context"] = "INVEST"
+        if case == "replay":
+            changes["scope"] = "REPLAYED"
         elif case == "demo":
             changes["retrieval_environment"] = "demo"
         elif case == "expired":
             changes["retrieved_at"] = (NOW - timedelta(hours=24)).isoformat()
         elif case == "future":
             changes["retrieved_at"] = (NOW + timedelta(seconds=1)).isoformat()
+        elif case == "binding-unverified":
+            changes["credential_binding_verified_this_run"] = False
         else:
-            changes["account_review_hash"] = hashlib.sha256(b"unlisted synthetic account review").hexdigest()
+            changes["instrument_response_hash"] = hashlib.sha256(b"different synthetic response").hexdigest()
         attach_provenance(ctx, data, **changes)
     path, digest = write_manifest(ctx, data)
     with pytest.raises(ValueError, match=expected):
+        live.load_manifest(path, digest)
+
+
+@pytest.mark.parametrize("legacy_review", [{}, {"account_context": "INVEST"}, {
+    "account_context": "UNVERIFIED", "account_review_hash": None,
+}])
+def test_bulk_catalog_does_not_require_account_scope_review(bundle, legacy_review):
+    ctx, path, manifest = bundle
+    path, _ = attach(ctx, path, manifest.eligibility_reviews)
+    data = json.loads(path.read_bytes())
+    attach_provenance(ctx, data, **legacy_review)
+    path, digest = write_manifest(ctx, data)
+    assert live.load_manifest(path, digest).eligibility_reviews == manifest.eligibility_reviews
+    assert not (ctx.root / "inputs/universe/account-scope.json").exists()
+
+
+def test_live_raw_response_cannot_be_replaced_by_attestation(bundle):
+    ctx, path, manifest = bundle
+    path, _ = attach(ctx, path, manifest.eligibility_reviews)
+    data = json.loads(path.read_bytes())
+    attach_provenance(ctx, data, response_artifacts={})
+    path, digest = write_manifest(ctx, data)
+    with pytest.raises(ValueError, match="LIVE_UNIVERSE_PROVENANCE_INVALID"):
         live.load_manifest(path, digest)

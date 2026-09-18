@@ -24,7 +24,7 @@ qualification**: live web/backend, SMTP, payment lifecycle, PostgreSQL recovery,
 monitoring, legal approval and licensed native research must pass acceptance.
 
 - Immutable mandates, objective snapshots and provider provenance with point-in-time checks.
-- ISA/ethics/currency gates, isolated first-pass inputs, write-once reports and a durable barrier for all snapshot-selected firms.
+- Live broker membership/identity/ethics/currency gates, isolated first-pass inputs, write-once reports and a durable barrier for all snapshot-selected firms.
 - Workspace-scoped submission, durable sessions/rate limits/idempotency, bounded retries, leased/fenced workers, checkpoint recovery and immutable decision packets.
 - Bounded UK data fetchers, provider qualification, explicit identifiers/GBP/GBX, TA-Lib/catalyst/fundamental/qualified-Qlib discovery and archived-publication PIT controls.
 - Native snapshot-only firm assemblies, isolated LEAN runner, actual CrewAI Flow, independent verification, bounded cross-examination and deterministic signal gates.
@@ -44,8 +44,8 @@ live research, consume inference tokens, or replace a failed real integration.
 Both production and preview reject this flag, including access to synthetic results.
 
 **PRODUCTION BLOCKED.** Implemented adapters are not qualified live integrations.
-Credentials/licences, verified ISA/business evidence, historical PIT archives,
-approved model, pinned native runtimes, LEAN image and external host verification
+Credentials/licences, current broker/business evidence, historical PIT archives,
+an approved model when Qlib is enabled, pinned native runtimes, LEAN image and external host verification
 remain required. See the [verification matrix](docs/VERIFICATION.md),
 [implementation plan](docs/IMPLEMENTATION_PLAN.md), [live configuration](docs/LIVE_CONFIGURATION.md)
 and [Graphify audit](docs/GRAPHIFY_DISCOVERY.md). No synthetic result is a live signal.
@@ -92,22 +92,24 @@ first-pass, review and release gates remain mandatory.
 
 ## Verification and deployment
 
-For current account-bound discovery, use the [full live ISA universe finalizer](docs/live-universe.md).
+For current credential-bound discovery, use the [live GBX stock universe finalizer](docs/live-universe.md).
 It admits every current live Trading 212 `STOCK` quoted in `GBX` to the candidate
 pipeline, then resumes exact provider joins. Exchange/MIC/country metadata is
 optional enrichment, never an admission requirement; GBP is excluded by this
 bulk filter. Only the independently qualified, reviewed and fresh subset enters
 research. No individual ticker is preselected; the complete qualified membership
-is frozen before bounded research screening. ISA/current-buy provenance, ethics
-and all downstream production gates remain unchanged.
+is frozen before bounded research screening. Account type, ISA eligibility and
+ISA buy availability are no longer qualification concepts. Ethics and every
+non-ISA downstream production gate remain mandatory.
 
-The versioned policy is `money-t212-gbx-stock-universe-v2`. Normal finalizer and
+The versioned policy is `money-t212-gbx-stock-universe-v3`. Normal finalizer and
 qualification runs automatically archive and rebuild obsolete derived universe
 state while preserving raw broker/provider evidence and human review inputs.
 No qualification-directory deletion is needed. Provider-stage candidates are
 exposed separately from fully qualified instruments, so zero eligible stocks
-does not prevent identity-valid GBX candidates from entering enrichment. Account
-scope is one credential/source-bound universe review, not a per-stock task.
+does not prevent identity-valid GBX candidates from entering enrichment. Legacy
+account-scope review files are retained for audit, ignored, and never auto-approved.
+Credential binding protects retrieval/cache integrity only; it proves no account type.
 See the linked guide for the safe `--rebuild-universe` option and hash-verified
 `--replay-saved` diagnostic mode, which cannot grant eligibility or production
 approval.

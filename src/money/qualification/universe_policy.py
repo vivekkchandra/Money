@@ -14,24 +14,32 @@ from uuid import uuid4
 
 from money.qualification.core import QualificationContext
 
-UNIVERSE_POLICY_VERSION = "money-t212-gbx-stock-universe-v2"
+UNIVERSE_POLICY_VERSION = "money-t212-gbx-stock-universe-v3"
 MAXIMUM_PROJECTION_BYTES = 64_000_000
 MODE = "state/bulk-universe-mode.json"
 JOURNAL = "state/universe-policy-migration.json"
 REBUILD_SOURCE = "state/universe-rebuild-source.json"
+RETIRED_BLOCKERS = frozenset(
+    {"ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED", "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED"}
+)
 
 # Never derive deletion/move targets from operator input or persisted paths.
 # The marker is last so interrupted old-policy migrations remain detectable.
 DERIVED_PATHS = (
+    "outputs/trading212-gbx-stock-universe.json",
+    "outputs/trading212-gbx-stock-universe.csv",
     "outputs/uk-isa-stock-universe.json",
     "outputs/uk-isa-stock-universe.csv",
     "outputs/universe-provenance.json",
     "outputs/universe-review-queue.json",
+    "outputs/universe-account-facts.json",
     "outputs/providers-result.json",
     "state/provider-stage.json",
     MODE,
 )
 _SOURCE_FIELDS = (
+    "scope",
+    "credential_binding_verified_this_run",
     "retrieved_at",
     "observed_at",
     "retrieval_environment",
@@ -39,8 +47,6 @@ _SOURCE_FIELDS = (
     "instrument_response_hash",
     "exchange_response_hash",
     "response_artifacts",
-    "requested_account_context",
-    "account_review_hash",
     "exchange_enrichment_status",
 )
 
@@ -59,7 +65,11 @@ def _object(raw: bytes | None) -> dict[str, Any] | None:
 def _preserve_source(ctx: QualificationContext, existing: dict[str, bytes]) -> None:
     provenance = _object(existing.get("outputs/universe-provenance.json"))
     if provenance is None:
-        master = _object(existing.get("outputs/uk-isa-stock-universe.json")) or {}
+        master = (
+            _object(existing.get("outputs/trading212-gbx-stock-universe.json"))
+            or _object(existing.get("outputs/uk-isa-stock-universe.json"))
+            or {}
+        )
         embedded = master.get("provenance")
         provenance = embedded if isinstance(embedded, dict) else None
     if provenance is None:
@@ -68,6 +78,7 @@ def _preserve_source(ctx: QualificationContext, existing: dict[str, bytes]) -> N
         return
     source = {key: provenance[key] for key in _SOURCE_FIELDS if key in provenance}
     if source:
+        original_reference = provenance.get("source_provenance") or ctx.artifact(provenance)
         ctx.write_json(
             REBUILD_SOURCE,
             {
@@ -75,6 +86,7 @@ def _preserve_source(ctx: QualificationContext, existing: dict[str, bytes]) -> N
                 "source_policy_version": provenance.get("universe_policy_version"),
                 "preserved_at": ctx.now.isoformat(),
                 "source": source,
+                "source_provenance": original_reference,
             },
         )
 
@@ -107,9 +119,9 @@ def ensure_universe_policy(ctx: QualificationContext, *, force: bool = False) ->
         and (_object(raw) or {}).get("universe_policy_version") != UNIVERSE_POLICY_VERSION
     ]
     # CSV has no version field; an orphan projection cannot be authoritative.
-    orphan_csv = (
-        "outputs/uk-isa-stock-universe.csv" in existing
-        and "outputs/uk-isa-stock-universe.json" not in existing
+    orphan_csv = any(
+        f"outputs/{stem}.csv" in existing and f"outputs/{stem}.json" not in existing
+        for stem in ("trading212-gbx-stock-universe", "uk-isa-stock-universe")
     )
     rebuild = force or pending or bool(mismatches) or orphan_csv
     result: dict[str, Any] = {

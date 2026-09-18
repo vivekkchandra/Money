@@ -24,7 +24,6 @@ def reviewed_fixture(now, **changes):
         company="Synthetic Catalogue Fixture",
         instrument_type="STOCK",
         quote_currency="GBX",
-        isa_available=True,
         currently_available=True,
         business_activities=("telecommunications",),
         activities_verified=True,
@@ -153,8 +152,9 @@ def test_mutated_configuration_cannot_expose_synthetic_catalogue(store, environm
     [
         ({}, "UNKNOWN.L"),
         ({}, "DEMO.L"),
-        ({"isa_available": None}, "FIXTURE.L"),
-        ({"isa_available": False}, "FIXTURE.L"),
+        ({"currently_available": None}, "FIXTURE.L"),
+        ({"currently_available": False}, "FIXTURE.L"),
+        ({"quote_currency": "GBP"}, "FIXTURE.L"),
         ({"quote_currency": "USD"}, "FIXTURE.L"),
         ({"activities_verified": False}, "FIXTURE.L"),
         ({"business_activities": ("weapons",)}, "FIXTURE.L"),
@@ -182,10 +182,11 @@ def test_live_admission_rejects_before_job_or_usage_insert(
             assert connection.scalar(select(func.count()).select_from(product.usage_records)) == 0
 
 
+@pytest.mark.parametrize("legacy_isa", [None, False])
 def test_selected_live_instrument_is_canonical_idempotent_and_workspace_scoped(
-    store, monkeypatch, tmp_path
+    store, monkeypatch, tmp_path, legacy_isa
 ):
-    config, loads = live_configuration(store, monkeypatch, tmp_path)
+    config, loads = live_configuration(store, monkeypatch, tmp_path, isa_available=legacy_isa)
     with TestClient(create_app(config, store)) as client:
         user = customer(client.app.state.accounts, "search-selected@example.test")
         outsider = customer(client.app.state.accounts, "search-outsider@example.test")
@@ -194,6 +195,8 @@ def test_selected_live_instrument_is_canonical_idempotent_and_workspace_scoped(
         assert result.status_code == 200, result.text
         selection = result.json()["instruments"][0]
         assert selection["research_allowed"] and not selection["synthetic"]
+        assert "isa_available" not in selection
+        assert not (tmp_path / "inputs/universe/account-scope.json").exists()
         actor = client.app.state.accounts.principal(user["session_token"], user["workspace"]["id"])
         ProductService(store).summary(actor)
         # A fixture paid entitlement; this is not a Stripe lifecycle qualification.

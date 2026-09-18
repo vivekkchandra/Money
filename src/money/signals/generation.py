@@ -224,7 +224,7 @@ def generate_signal(
         potential_targets=(target * divisor,),
         invalidation_conditions=(
             f"Hypothetical price invalidation at {invalidation * divisor} {latest.currency}.",
-            "Material source contradiction or ethical/ISA eligibility change.",
+            "Material source contradiction or ethical/broker-universe eligibility change.",
         ),
         event_invalidators=(
             "New corporate action, dilution, or material adverse filing.",

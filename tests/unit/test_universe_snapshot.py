@@ -37,7 +37,6 @@ def review(ticker="AAA", *, currency="GBX", **updates):
         company="Synthetic test equity " + ticker,
         instrument_type="STOCK",
         quote_currency=currency,
-        isa_available=True,
         currently_available=True,
         business_activities=("retail",),
         activities_verified=True,
@@ -136,18 +135,33 @@ def test_input_order_does_not_change_freeze_or_numeric_screen():
     assert screen.selected_tickers == ("AAA", "BBB")
 
 
-def test_gbp_gbx_liquidity_values_are_normalized_before_ranking():
-    pounds, pence = review("AAA", currency="GBP"), review("BBB", currency="GBX")
-    data = snapshot(pounds), snapshot(pence)
-    frozen = freeze_qualified_universe((pounds, pence), data, NOW)
+def test_gbx_liquidity_values_are_normalized_to_gbp_before_ranking():
+    first, second = review("AAA"), review("BBB")
+    data = snapshot(first), snapshot(second, volume=200_000)
+    frozen = freeze_qualified_universe((first, second), data, NOW)
     result = screen_qualified_universe(frozen, data, at=NOW)
-    assert {entry.average_daily_value_gbp for entry in result.entries} == {Decimal(100_000)}
+    assert {entry.average_daily_value_gbp for entry in result.entries} == {
+        Decimal(100_000), Decimal(200_000),
+    }
+
+
+def test_gbp_cannot_enter_gbx_qualified_frozen_universe():
+    pounds = review("AAA", currency="GBP")
+    with pytest.raises(ValueError, match="UNIVERSE_MEMBER_NOT_QUALIFIED"):
+        freeze_qualified_universe((pounds,), (snapshot(pounds),), NOW)
+
+
+@pytest.mark.parametrize("legacy_isa", [None, False])
+def test_frozen_universe_does_not_require_account_attestation(legacy_isa):
+    item = review(isa_available=legacy_isa)
+    frozen = freeze_qualified_universe((item,), (snapshot(item),), NOW)
+    assert frozen.members[0].instrument == item.metadata
+    assert frozen.members[0].instrument.isa_available is legacy_isa
 
 
 @pytest.mark.parametrize(
     "updates",
     [
-        {"isa_available": None},
         {"currently_available": False},
         {"activities_verified": False},
         {"business_activities": ("oil_services",)},

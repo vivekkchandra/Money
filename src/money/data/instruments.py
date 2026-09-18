@@ -90,9 +90,9 @@ class ReviewedInstrument:
         metadata = self.metadata
         eligibility: Literal["VERIFIED_ELIGIBLE", "VERIFIED_INELIGIBLE", "UNKNOWN"] = "UNKNOWN"
         if fresh_identity:
-            if metadata.isa_available is False or metadata.currently_available is False:
+            if metadata.currently_available is False:
                 eligibility = "VERIFIED_INELIGIBLE"
-            elif metadata.isa_available is True and metadata.currently_available is True:
+            elif metadata.currently_available is True:
                 eligibility = "VERIFIED_ELIGIBLE"
         return InstrumentSearchResult(
             instrument_id=metadata.ticker,
@@ -172,7 +172,6 @@ class InstrumentCatalogue:
             company="Money synthetic demonstration",
             instrument_type="STOCK",
             quote_currency="GBX",
-            isa_available=True,
             currently_available=True,
             business_activities=("synthetic demonstration",),
             activities_verified=True,
@@ -212,4 +211,4 @@ class InstrumentCatalogue:
     ) -> tuple[str, ...]:
         self.require_current(now)
         entry = next((item for item in self.entries if item.metadata.ticker == ticker), None)
-        return entry.failures(mandate, now) if entry else ("ISA_ELIGIBILITY_UNKNOWN",)
+        return entry.failures(mandate, now) if entry else ("INSTRUMENT_ELIGIBILITY_UNKNOWN",)

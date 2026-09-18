@@ -89,7 +89,7 @@ def instrument(index: int) -> dict[str, Any]:
         "universe_member": True,
         "identity_valid": True,
         "provider_enrichment_input": True,
-        "qualification_state": "UNRESOLVED_ISA_SCOPE",
+        "qualification_state": "UNRESOLVED_PROVIDER_MAPPING",
     }
 
 
@@ -155,7 +155,7 @@ def test_repeated_bounded_runs_converge_for_1400_stable_gbx_identity_candidates(
         output, worker = identity_pass(ctx, source, fetcher, 200)
         assert worker.requests_used == 200
         assert sum(row["eodhd_mapping_state"] == "MAPPED" for row in output) == (run + 1) * 200
-        assert all(row["qualification_state"] == "UNRESOLVED_ISA_SCOPE" for row in output)
+        assert all(row["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING" for row in output)
     assert len(fetcher.calls) == len(set(fetcher.calls)) == 1400
     cursor_before = ctx.read_bytes(CURSOR)
     output, worker = identity_pass(ctx, source, fetcher, 200)

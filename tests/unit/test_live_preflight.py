@@ -21,7 +21,7 @@ def test_missing_configuration_is_diagnostic_not_exception_or_fallback():
     assert result["production_status"] == "PRODUCTION BLOCKED"
     assert not result["manifest_validated"] and not result["settings_validated"]
     assert any(check["code"] == "PINNED_QUALIFICATION_BUNDLE_REQUIRED" for check in result["checks"])
-    assert any(check["name"] == "current_isa_universe" and check["status"] == "NOT_VERIFIED" for check in result["checks"])
+    assert any(check["name"] == "current_stock_universe" and check["status"] == "NOT_VERIFIED" for check in result["checks"])
 
 
 def test_unsafe_modes_cannot_be_reported_as_target_configuration(monkeypatch):

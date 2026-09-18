@@ -25,7 +25,7 @@ def stock(**updates):
         "universe_member": True, "trading212_id": "FIXl_EQ", "name": "Fixture PLC",
         "isin": "GB00BH4HKS39", "quote_currency": "GBX", "eodhd_symbol": "FIX.LSE",
         "eodhd_mapping_state": "MAPPED", "eodhd_identity": {"Name": "Fixture PLC", "Code": "FIX"},
-        "qualification_state": "UNRESOLVED_ISA_SCOPE", **updates,
+        "qualification_state": "UNRESOLVED_ETHICAL", **updates,
     }
 
 
@@ -95,19 +95,33 @@ def test_global_unsigned_templates_preserve_every_human_input_on_resume(ctx):
     assert rights["review"]["reviewed_at"] is None
     assert ctx.read_json("inputs/universe/ethics.json")["instruments"] == []
     assert not result["production_qualified"]
-    assert not result["account_scope_approved_by_preparation"]
+    assert result["legacy_account_review"] == "DEPRECATED_IGNORED_NOT_APPROVED"
     assert (ctx.root / "outputs/REVIEW_TASKS.md").is_file()
     assert not (ctx.root / "inputs/instruments").exists()
 
 
 def test_no_account_type_buy_claim_or_signature_is_fabricated(ctx):
     prepare_universe_reviews(ctx, [], {})
-    account = ctx.read_json("inputs/universe/account-scope.json")
-    assert account["account_context"] is None
-    assert account["credential_binding_sha256"] is None
-    assert account["accessible_response_is_account_scoped"] is None
-    assert account["accessible_response_confirms_current_buy_availability"] is None
-    assert account["review"]["reviewed_at"] is None
+    assert ctx.read_json("inputs/universe/account-scope.json") is None
+    assert ctx.read_json("inputs/universe/account-scope.schema.json") is None
+    for provider in ("eodhd", "companies-house"):
+        rights = ctx.read_json(f"inputs/provider-rights/{provider}.json")
+        assert rights["status"] == "UNRESOLVED"
+        assert rights["review"]["reviewed_by"] is None
+        assert rights["review"]["reviewed_at"] is None
+
+
+def test_superseded_account_review_instructions_are_preserved_as_audit_only(ctx):
+    original = b"Historical unsigned account review instructions."
+    ctx.write_bytes("outputs/ACCOUNT_SCOPE_REVIEW.md", original)
+    prepare_universe_reviews(ctx, [], {})
+    current = ctx.read_bytes("outputs/ACCOUNT_SCOPE_REVIEW.md")
+    digest = hashlib.sha256(original).hexdigest()
+    assert ctx.verify_artifact(digest, f"artifacts/{digest}.bin") == original
+    assert current.startswith(b"# Deprecated account-scope review")
+    assert b"ignored, not approved" in current
+    prepare_universe_reviews(ctx, [], {})
+    assert ctx.read_bytes("outputs/ACCOUNT_SCOPE_REVIEW.md") == current
 
 
 def test_unapproved_source_content_is_not_copied_into_ethical_dossiers(ctx):
@@ -183,7 +197,7 @@ def test_nonmembers_excluded_and_bulk_review_work_redacts_source_text(ctx):
             stock(universe_member=False)]
     summary = prepare_universe_reviews(ctx, rows, {})
     assert summary["security_count"] == 1
-    work = _review_work(rows, {"scope": "LOCAL_INFERENCE_ONLY"}, True)
+    work = _review_work(rows, {"scope": "LOCAL_INFERENCE_ONLY"})
     assert "issuer_facts" not in work["instruments"][0]
     assert "recent_accounts_filings" not in work["instruments"][0]
     assert work["instruments"][0]["source_content_use"] == "REFERENCES_ONLY"
@@ -213,8 +227,8 @@ def test_document_capture_is_bounded_exact_and_does_not_approve_scope(ctx, monke
         raw = ctx.read_bytes(document["path"])
         assert hashlib.sha256(raw).hexdigest() == document["sha256"]
         assert document["observed_at"] == NOW.isoformat()
-    assert not documents["account_binding_established"]
-    assert not documents["current_buy_availability_established"]
+    assert "account_binding_established" not in documents
+    assert "current_buy_availability_established" not in documents
     assert not documents["rights_approved"]
     prepare_universe_reviews(ctx, [], {}, fetch_documents=True, fetcher=fetcher)
     assert len(fetcher.calls) == 4

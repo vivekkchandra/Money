@@ -104,6 +104,125 @@ def forbid_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SafeFetcher, "json", forbidden)
 
 
+def seed_recorded_live(ctx: QualificationContext) -> dict[str, Any]:
+    source = seed_old(ctx)
+    source.update(
+        universe_policy_version="money-t212-gbx-stock-universe-v2",
+        scope="LIVE_RETRIEVAL",
+        credential_binding_verified_this_run=True,
+        raw_instruments=3,
+        gbx_stocks=2,
+        account_context="UNVERIFIED",
+    )
+    ctx.write_json("outputs/universe-provenance.json", source)
+    ctx.write_json("inputs/universe/account-scope.json", {"review": {"status": "UNRESOLVED"}})
+    return source
+
+
+def test_saved_live_policy_reclassification_preserves_evidence_without_new_authentication(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from money.qualification.universe_status import live_metadata_state
+
+    source = seed_recorded_live(ctx)
+    review = ctx.read_bytes("inputs/universe/account-scope.json")
+    raw_cache = ctx.read_bytes("state/bulk-broker-metadata.json")
+    raw_evidence = {path: path.read_bytes() for path in (ctx.root / "artifacts").iterdir()}
+    forbid_network(monkeypatch)
+    result = universe.finalize_universe(ctx, reclassify_saved=True)
+    assert result["status"] == "RECLASSIFIED"
+    assert result["scope"] == "SAVED_LIVE_DERIVED_RECLASSIFICATION"
+    assert result["provenance"]["credential_binding_verified_this_run"] is False
+    assert result["observed_at"] == source["retrieved_at"]
+    assert result["summary"]["gbx_stocks"] == 2
+    assert result["summary"]["identity_valid"] == 2
+    assert result["eligibility_reviews"] == []
+    assert result["summary"]["qualified"] == 0
+    assert "UNRESOLVED_ISA_SCOPE" not in json.dumps(result)
+    assert "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED" not in json.dumps(result)
+    assert "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED" not in json.dumps(result)
+    metadata = live_metadata_state(ctx, result)
+    assert metadata["current"] is False
+    assert metadata["source_current"] is True
+    assert metadata["current_process_binding_verified"] is False
+    assert ctx.read_bytes("inputs/universe/account-scope.json") == review
+    assert ctx.read_bytes("state/bulk-broker-metadata.json") == raw_cache
+    assert all(path.read_bytes() == raw for path, raw in raw_evidence.items())
+    again = universe.finalize_universe(ctx, reclassify_saved=True)
+    assert again["status"] == "RECLASSIFIED"
+    assert live_metadata_state(ctx, again)["source_current"] is True
+
+
+def test_saved_policy_migration_replaces_retired_status_actions_without_approvals(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_recorded_live(ctx)
+    ctx.write_json(
+        "status.json",
+        {
+            "status": "QUALIFICATION BLOCKED",
+            "blockers": [
+                {"code": "BULK_UNIVERSE_NO_QUALIFIED_MEMBERS", "action": "Resolve the bulk account, provider and ethical evidence queue"},
+                {"code": "SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED", "action": "Old account-scope action"},
+                {"code": "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED", "action": "Old review requirement"},
+                {"code": "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED", "action": "Old account requirement"},
+            ],
+        },
+    )
+    forbid_network(monkeypatch)
+    result = universe.finalize_universe(ctx, reclassify_saved=True)
+    state = ctx.read_json("status.json")
+    blockers = {item["code"]: item["action"] for item in state["blockers"]}
+    assert "ACCOUNT_ISA_SCOPE_REVIEW_REQUIRED" not in blockers
+    assert "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED" not in blockers
+    assert "account" not in blockers["BULK_UNIVERSE_NO_QUALIFIED_MEMBERS"]
+    assert "rights" in blockers["BULK_UNIVERSE_NO_QUALIFIED_MEMBERS"]
+    assert "ethical" in blockers["BULK_UNIVERSE_NO_QUALIFIED_MEMBERS"]
+    assert "rebuilt offline" in blockers["SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED"]
+    assert "not authenticated by a new live refresh" in blockers["SNAPSHOT_CURRENT_INSTRUMENT_REQUIRED"]
+    assert state["production_ready"] is False
+    assert result["eligibility_reviews"] == []
+
+
+@pytest.mark.parametrize("problem", ["binding", "raw", "replayed-source", "unauthenticated-source"])
+def test_saved_reclassification_cannot_bypass_retrieval_integrity(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch, problem: str
+) -> None:
+    source = seed_recorded_live(ctx)
+    if problem == "binding":
+        ctx.environ = {"TRADING212_API_KEY": "synthetic-different-key", "TRADING212_API_SECRET": "synthetic-secret"}
+    elif problem == "raw":
+        descriptor = ctx.read_json(source["response_artifacts"]["instruments"][1])
+        ctx.write_bytes(descriptor["chunks"][0][1], b"tampered synthetic fixture")
+    elif problem == "replayed-source":
+        source["scope"] = "SAVED_RESPONSE_REPLAY_ONLY"
+    else:
+        source["credential_binding_verified_this_run"] = False
+    ctx.write_json("outputs/universe-provenance.json", source)
+    forbid_network(monkeypatch)
+    result = universe.finalize_universe(ctx, reclassify_saved=True)
+    assert result["status"] == "REFRESH_FAILED"
+    assert result["stocks"] == []
+    assert result["production_qualified"] is False
+
+
+def test_stale_recorded_live_source_reclassifies_only_as_expired(
+    ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from money.qualification.universe_status import live_metadata_state
+
+    seed_recorded_live(ctx)
+    ctx.now = NOW + timedelta(hours=25)
+    monkeypatch.setattr(universe, "utc_now", lambda: ctx.now)
+    forbid_network(monkeypatch)
+    result = universe.finalize_universe(ctx, reclassify_saved=True)
+    assert result["summary"]["states"] == {"EXPIRED": 2}
+    assert result["eligibility_reviews"] == []
+    metadata = live_metadata_state(ctx, result)
+    assert metadata["current"] is False
+    assert metadata["source_current"] is False
+
+
 def test_saved_v1_state_rebuilds_all_active_projections_without_network(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -124,7 +243,7 @@ def test_saved_v1_state_rebuilds_all_active_projections_without_network(
     assert result["observed_at"] == source["retrieved_at"]
     assert result["provenance"]["credential_binding_sha256"] == source["credential_binding_sha256"]
     assert result["provenance"]["credential_binding_verified_this_run"] is False
-    assert result["provenance"]["account_type_returned_by_api"] is False
+    assert "account_type_returned_by_api" not in result["provenance"]
     for path in (
         universe.MASTER,
         "outputs/universe-provenance.json",
@@ -143,8 +262,7 @@ def test_saved_v1_state_rebuilds_all_active_projections_without_network(
     assert projection["instruments"] == []  # Research instruments still need every gate.
     assert not projection["complete"]
     queue = ctx.read_json("outputs/universe-review-queue.json")
-    assert queue["account_scope"]["review_file"] == "inputs/universe/account-scope.json"
-    assert queue["account_scope"]["source"] == "OPERATOR_ATTESTATION"
+    assert "account_scope" not in queue
     assert queue["venue_review_required"] is False
     assert all(
         "ACCOUNT_AND_CURRENT_BUY_PROVENANCE_REQUIRED" not in row["reasons"]
@@ -155,16 +273,13 @@ def test_saved_v1_state_rebuilds_all_active_projections_without_network(
     assert all(Path(path).read_bytes() == raw for path, raw in evidence_before.items())
 
 
-def test_replay_preserves_expiry_and_never_authenticates_account(
+def test_replay_preserves_expiry_and_never_authenticates_retrieval(
     ctx: QualificationContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed_old(ctx)
     later = NOW + timedelta(hours=25)
     ctx.now = later
     monkeypatch.setattr(universe, "utc_now", lambda: later)
-    monkeypatch.setattr(
-        universe, "_scope", lambda *_: pytest.fail("Replay must not approve account scope")
-    )
     forbid_network(monkeypatch)
     result = universe.finalize_universe(ctx, replay_saved=True)
     assert result["valid_until"] == (NOW + timedelta(hours=24)).isoformat()
@@ -192,7 +307,7 @@ def test_conflicting_members_never_enter_provider_enrichment_but_valid_peer_does
     class Enricher:
         def enrich(self, row: dict[str, Any]) -> dict[str, Any]:
             calls.append(row["trading212_id"])
-            assert row["qualification_state"] == "UNRESOLVED_ISA_SCOPE"
+            assert row["qualification_state"] == "UNRESOLVED_PROVIDER_MAPPING"
             assert row["identity_valid"] is True
             return row
 

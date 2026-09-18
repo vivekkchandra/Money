@@ -50,7 +50,7 @@ qualification. Disabled mode seals independent TradingAgents and AI-Hedge-Fund
 reports before mandatory LEAN, then CrewAI CIO/Red Team and bounded
 cross-examination. There is no majority-vote substitute.
 
-Disabling Qlib does **not** qualify providers, ISA/buy availability, ethics,
+Disabling Qlib does **not** qualify providers, live broker membership, ethics,
 spread/cost/PIT evidence, LEAN, the remaining native engines, hosted inference,
 OS egress, security or release approval. The installed dependency inventory is
 still audited in full: disabling a component does not suppress advisories for
@@ -77,7 +77,7 @@ You do not write a manifest or calculate proof hashes yourself.
 
 | Input | Required operator decision/evidence |
 | --- | --- |
-| `inputs/instruments/*.json` | Fresh independent ISA availability, buy availability, ethical activities, exact identifiers and provider/company mappings. Broker metadata is only discovered fact. |
+| `inputs/instruments/*.json` | Legacy per-stock identity/ethical review inputs. The current bulk GBX policy uses fresh live broker membership, exact identity/provider joins and independent ethical evidence; it requires no ISA/account-scope/buyability attestation. |
 | `inputs/instrument-evidence/` (generated per-candidate path) | Observed spread, applicable costs, corporate-action coverage and any genuine archived evidence. Use the exact path in `status.json`. |
 | `inputs/supplemental-sources.json` | Independently reviewed source identity, actual source bytes, dataset coverage and rights for supplied spread/archive records. Historical observations require original-publication evidence. |
 | `inputs/provider-rights/*.json` | Actual permitted use, storage and redistribution terms plus the rights evidence bytes. API success is not a licence. |

@@ -2,7 +2,7 @@
 
 | Failure | Required result |
 | --- | --- |
-| Unknown/stale eligibility, non-stock, non-GBP/GBX, prohibited activities | REJECTED; no full research |
+| Unknown/stale eligibility, non-stock, non-GBX, prohibited activities | REJECTED; no full research |
 | Critical stale/conflicting evidence or historical publication unknown | Exclude unsafe historical data; suppress signal |
 | Missing first-pass firm, mismatched snapshot, duplicate report | Barrier remains closed; fail job |
 | LEAN unavailable / insufficient validation | INSUFFICIENT_EVIDENCE; no signal |
@@ -27,7 +27,8 @@ opened circuit. Half-open probes are serialized. Budget batch failure rolls back
 unspent reservations; saved usage reconciles on recovery, while lost unmeasured
 invocations stay pessimistically charged. Unknown costs stay unknown.
 
-Generic current instrument metadata is not ISA proof. Retrieval-time historical
+Current broker membership is not ethical/provider/release qualification and makes
+no ISA assertion. Retrieval-time historical
 bars are excluded at past decision clocks. Split-adjusted volume mixed with raw
 prices, incomplete corporate actions, or conflicting archive/current values block
 qualification rather than introducing an adjustment guessed by Money.

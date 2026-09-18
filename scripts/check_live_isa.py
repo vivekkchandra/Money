@@ -1,4 +1,4 @@
-"""Select current reviewed ISA candidates for opt-in production acceptance.
+"""Legacy command name: select qualified stock candidates, without ISA assertions.
 
 MONEY_RUN_PRODUCTION_INTEGRATION=1 uv run python scripts/check_live_isa.py --select-only
 
@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from money.data.instruments import InstrumentCatalogue
-from money.data.universe import IsaUniverseQuery, ReviewedIsaUniverse
+from money.data.universe import ReviewedStockUniverse, StockUniverseQuery
 from money.research.live import LiveManifest, VerifiedInstrument, load_manifest
 from money.schemas.contracts import ResearchMandate, utc_now
 
@@ -85,15 +85,15 @@ def select_candidates(
                 catalogue,
                 entries=tuple(item for item in catalogue.entries if item.metadata.ticker == ticker),
             )
-        page = ReviewedIsaUniverse(catalogue).page(
-            IsaUniverseQuery(limit=limit),
+        page = ReviewedStockUniverse(catalogue).page(
+            StockUniverseQuery(limit=limit),
             mandate=ResearchMandate(),
             now=now,
         )
     except Exception as error:
-        raise LiveAcceptanceFailure("FAILED", "QUALIFIED_ISA_UNIVERSE_INVALID") from error
+        raise LiveAcceptanceFailure("FAILED", "QUALIFIED_STOCK_UNIVERSE_INVALID") from error
     if not page.instruments:
-        raise LiveAcceptanceFailure("FAILED", "NO_CURRENT_VERIFIED_ISA_CANDIDATE")
+        raise LiveAcceptanceFailure("FAILED", "NO_CURRENT_VERIFIED_STOCK_CANDIDATE")
     by_ticker = {item.metadata.ticker: item for item in manifest.reviewed_instruments}
     return tuple(by_ticker[item.ticker] for item in page.instruments)
 

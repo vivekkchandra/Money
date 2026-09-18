@@ -57,12 +57,11 @@ def test_objective_is_aspirational_fixed_arithmetic_and_roundtrips():
             StretchObjective(**changes)
 
 
-@pytest.mark.parametrize("currency,raw", [("GBP", Decimal("1.59")), ("GBX", Decimal("159"))])
-def test_only_verified_scenario_is_compared_without_capital_extrapolation(currency, raw):
-    packet, design = published(currency)
+def test_only_verified_scenario_is_compared_without_capital_extrapolation():
+    packet, design = published("GBX")
     result = AsymmetryAnalyzer.assess(packet, design, utc_now())
     assert result is not None
-    assert result.raw_price == raw and result.normalized_price_gbp == Decimal("1.59")
+    assert result.raw_price == Decimal("159") and result.normalized_price_gbp == Decimal("1.59")
     assert result.illustrative_allocation_gbp <= result.assumed_capital_gbp <= 200
     expected = result.illustrative_allocation_gbp * (
         design.targets_gbp[0] / design.entry_high_gbp - 1
@@ -71,6 +70,17 @@ def test_only_verified_scenario_is_compared_without_capital_extrapolation(curren
     assert result.gap_to_stretch_profit_gbp == 1000 - expected
     assert result.probability is None and result.expected_payoff_gbp is None
     assert result.calibration == "UNCALIBRATED"
+
+
+def test_gbp_stock_cannot_publish_an_opportunity_under_gbx_only_policy():
+    params = fixture("GBP")
+    _, failures = consensus(
+        params["mandate"], params["snapshot"], params["reports"], params["lean"],
+        params["audit"], params["red_team"],
+        evidence_independence(params["snapshot"], params["reports"]), params["issued_at"],
+    )
+    assert "CURRENCY_EXCLUDED" in failures
+    assert generate_signal(**params).signal is None
 
 
 def test_empty_objective_does_not_invent_candidate_portfolio_or_countdown():

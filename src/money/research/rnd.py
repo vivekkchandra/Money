@@ -21,7 +21,7 @@ from money.storage import ResearchStore
 LIMITATIONS = (
     "R&D / PERSONAL USE. Free/public data may be delayed; not commercially licensed market data.",
     "Not investment advice. No research signal, allocation, or broker action is issued.",
-    "ISA eligibility and ethical suitability are not established by a Yahoo listing.",
+    "Live broker membership and ethical suitability are not established by a Yahoo listing.",
     "Current vendor history/fundamentals are not verified historical point-in-time evidence.",
     "The commercial mandate and qualification gates remain unchanged.",
 )

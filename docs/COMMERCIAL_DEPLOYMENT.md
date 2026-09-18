@@ -1,6 +1,6 @@
 # Commercial deployment
 
-## Current release target: qualified live GBP/GBX ISA research
+## Current release target: qualified live GBX stock research
 
 Primary application settings are now `MONEY_ENV=production` and
 `MONEY_RESEARCH_MODE=live`, with the existing qualified manifest/provider/model
@@ -19,7 +19,7 @@ the private worker now selects `Dockerfile.research` through
 Use the read-only `python -m money.research.preflight --role api|worker` with one
 role selected to diagnose missing production configuration; its blocked exit is
 intentional and it is not a readiness probe. See LIVE_CONFIGURATION.md for the
-unresolved current-ISA-source and genuine qualification bundle requirements.
+unresolved current broker/ethical-source and genuine qualification bundle requirements.
 
 ## Personal R&D deployment target (2026-09-16; retained separately)
 

@@ -24,7 +24,9 @@ from money.qualification.diagnostics import read_master
 from money.qualification.quant import LeanInputs
 from money.qualification.universe import _restore_response, credential_binding
 from money.qualification.universe_normalize import normalize_universe
+from money.qualification.universe_policy import RETIRED_BLOCKERS, UNIVERSE_POLICY_VERSION
 from money.qualification.universe_providers import BulkProviderEnricher
+from money.qualification.universe_reviews import _rights
 from money.qualification.universe_status import live_metadata_state
 from money.schemas.contracts import utc_now
 
@@ -69,7 +71,7 @@ def _lean_readiness(ctx: QualificationContext, evidence: dict[str, Any] | None) 
             "maximum_drawdown",
         ],
         "notes": [
-            "Today's accessible-instrument response is not past ISA membership or survivorship proof.",
+            "Today's accessible-instrument response is not historical universe membership or survivorship proof.",
             "AS_RETRIEVED historical prices do not establish original historical publication availability.",
             "Dividend samples do not establish complete corporate-action/adjustment coverage.",
             "No spread, slippage, zero cost, study approval or pinned image is inferred from OHLCV.",
@@ -160,7 +162,7 @@ def prepare_first_candidate(
         raise ValueError("FIRST_CANDIDATE_SELECTION_REQUIRED")
     master, master_hash = read_master(ctx)
     metadata = live_metadata_state(ctx, master)
-    if not metadata.get("current"):
+    if not metadata.get("current") and not metadata.get("source_current"):
         raise ValueError("FIRST_CANDIDATE_CURRENT_LIVE_MEMBERSHIP_REQUIRED")
     _, instruments = _restore_response(
         ctx, master["provenance"]["response_artifacts"]["instruments"]
@@ -216,7 +218,9 @@ def prepare_first_candidate(
             raise ValueError("FIRST_CANDIDATE_PROVIDER_IDENTITY_MISMATCH")
     retry: dict[str, Any] = {"status": "NOT_REQUESTED", "network_requests": 0}
     if refresh_providers:
-        if credential_binding(ctx.environ) != metadata["credential_binding_sha256"]:
+        if not metadata.get("current"):
+            retry["status"] = "AUTHENTICATED_LIVE_REFRESH_REQUIRED"
+        elif credential_binding(ctx.environ) != metadata["credential_binding_sha256"]:
             retry["status"] = "CURRENT_TRADING212_CREDENTIAL_BINDING_REQUIRED"
         elif not ctx.environ.get("EODHD_API_KEY"):
             retry["status"] = "EODHD_CREDENTIAL_REQUIRED"
@@ -240,8 +244,10 @@ def prepare_first_candidate(
                 else None
             )
             current["eodhd_symbol"] = observation.get("eodhd_symbol")
+    remaining = _remaining_work(ctx, recorded, evidence)
     output = {
-        "version": "money-first-candidate-preparation-v1",
+        "version": "money-first-candidate-preparation-v2",
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "status": "PREPARATION_ONLY",
         "prepared_at": ctx.now.isoformat(),
         "selection": selection,
@@ -259,14 +265,9 @@ def prepare_first_candidate(
         "verified_observation_evidence": evidence,
         "recorded_qualification_state": recorded["qualification_state"],
         "recorded_qualification_reasons": recorded["reasons"],
-        "missing_evidence": [
-            "Current independent account/ISA AND purchase-availability provenance review",
-            "Provider and ethical-source rights reviews (access is not permission)",
-            "Admitted issuer jurisdiction/company identity and applicable company/filing observations",
-            "Complete independently reviewed material exposure evidence",
-            "Reviewed supplemental financial, spread, cost and corporate-action coverage evidence",
-            "Archived publication/PIT and historical membership/survivorship evidence for LEAN",
-        ],
+        "remaining_blockers": remaining,
+        "next_genuine_blocker": remaining[0] if remaining else None,
+        "missing_evidence": [item["action"] for item in remaining],
         "provider_retry": retry,
         "eligibility_granted": False,
         "reviews_modified": False,
@@ -277,7 +278,103 @@ def prepare_first_candidate(
         "lean_preparation": _lean_readiness(ctx, evidence),
     }
     ctx.write_json(OUTPUT, output)
+    _write_first_stock_next(ctx, output)
     return output
+
+
+def _remaining_work(
+    ctx: QualificationContext, row: dict[str, Any], evidence: dict[str, Any] | None
+) -> list[dict[str, str]]:
+    """Explain actual recorded failures and missing downstream inputs, not approvals."""
+    actions = {
+        "PROVIDER_RIGHTS_AND_DATASET_QUALIFICATION_REQUIRED": (
+            "Complete the applicable global inputs/provider-rights reviews against actual "
+            "permission and dataset observations; API access alone is not permission."
+        ),
+        "VERIFIED_ISSUER_JURISDICTION_REQUIRED": (
+            "Admit exact issuer jurisdiction/company identity, then applicable company and "
+            "filing observations; public discovery notes alone are not provider evidence."
+        ),
+        "COMPLETE_APPROVED_MATERIAL_EXPOSURE_EVIDENCE_REQUIRED": (
+            "Review all material exposures in inputs/universe/ethics.json using independently "
+            "rights-approved issuer evidence; absence of keywords is not clearance."
+        ),
+    }
+    reasons = [str(code) for code in row.get("reasons", [])]
+    # An old policy must be reclassified, not described as current qualification.
+    if RETIRED_BLOCKERS.intersection(reasons) or row.get("qualification_state") == "UNRESOLVED_ISA_SCOPE":
+        raise ValueError("FIRST_CANDIDATE_POLICY_RECLASSIFICATION_REQUIRED")
+    blockers = {
+        code: {"code": code, "stage": "eligibility", "action": actions.get(
+            code, "Resolve the recorded instrument evidence requirement: " + code
+        )}
+        for code in reasons
+    }
+    providers = ["eodhd"]
+    if (
+        row.get("companies_house_state") == "MAPPED"
+        or row.get("issuer_facts", {}).get("CountryISO") == "GB"
+    ):
+        providers.append("companies-house")
+    for provider in providers:
+        rights = _rights(ctx, provider)
+        for field, code, path in (
+            ("provider_rights_current", "PROVIDER_RIGHTS_REVIEW_REQUIRED", rights["provider_review_file"]),
+            ("ethical_use_current", "ETHICAL_SOURCE_RIGHTS_REVIEW_REQUIRED", rights["ethical_review_file"]),
+        ):
+            if not rights[field]:
+                key = code + ":" + provider
+                blockers[key] = {
+                    "code": key, "stage": "rights",
+                    "action": "Complete the genuine current rights review in " + path + ".",
+                }
+    supplemental = ctx.read_json("inputs/universe/supplemental.json") or {}
+    if not supplemental.get("instruments", {}).get(row.get("isin")):
+        blockers["SUPPLEMENTAL_REVIEW_REQUIRED"] = {
+            "code": "SUPPLEMENTAL_REVIEW_REQUIRED", "stage": "supplemental",
+            "action": "Link an independently reviewed SupplementalReview for this ISIN in "
+            "inputs/universe/supplemental.json: financial, spread/cost/slippage, complete "
+            "corporate-action and archived publication/PIT evidence remain required.",
+        }
+    if not evidence or not evidence.get("historical_publication_verified"):
+        blockers["HISTORICAL_PUBLICATION_AND_UNIVERSE_EVIDENCE_REQUIRED"] = {
+            "code": "HISTORICAL_PUBLICATION_AND_UNIVERSE_EVIDENCE_REQUIRED", "stage": "lean_evidence",
+            "action": "Prepare original-publication/PIT, historical membership and survivorship "
+            "evidence; current prices or today's broker membership cannot establish history.",
+        }
+    priority = {"rights": 0, "eligibility": 1, "supplemental": 2, "lean_evidence": 3}
+    return sorted(blockers.values(), key=lambda item: (
+        priority[item["stage"]],
+        not item["code"].startswith("PROVIDER_RIGHTS_REVIEW_REQUIRED:"),
+        not item["code"].endswith(":eodhd"),
+        item["code"],
+    ))
+
+
+def _write_first_stock_next(ctx: QualificationContext, output: dict[str, Any]) -> None:
+    next_blocker = output["next_genuine_blocker"]
+    lines = [
+        "# First stock — genuine remaining work", "",
+        f"{output['company']} ({output['trading212_id']}, {output['isin']}); policy {UNIVERSE_POLICY_VERSION}.",
+        f"Recorded qualification state: {output['recorded_qualification_state']}.",
+        "No account-type, ISA-scope or current-ISA-buyability review is required. Historical account reviews are ignored, not approved.",
+        "",
+        "Next genuine evidence blocker: " + (next_blocker["code"] if next_blocker else "No recorded eligibility reason; runner verification still required."),
+        next_blocker["action"] if next_blocker else "Preparation cannot grant eligibility or execute downstream stages.",
+        "", "## Remaining evidence", "",
+        *[f"- `{item['code']}`: {item['action']}" for item in output["remaining_blockers"]],
+        "", "## Execution order", "",
+        "Keep live broker retrieval and provider evidence within their original freshness limits. "
+        "An offline reclassification is not a new authenticated refresh; run the live finalizer before admission.",
+        "After the remaining evidence genuinely qualifies the stock: freeze the complete qualified "
+        "universe → independent TradingAgents and AI-Hedge-Fund sealed reports → FIRST_PASS_LOCKED "
+        "→ mandatory LEAN → CIO / Red Team. Native source/security, reviewed hosted inference, "
+        "worker egress, release and hosted acceptance remain separate requirements.",
+        "Qlib stays disabled when MONEY_QLIB_ENABLED=false; no substitute numeric report is created.",
+        "See outputs/first-candidate-lean-readiness.json for exact study/audit input errors. "
+        "No downstream stage, signature, approval or production manifest is created by preparation.",
+    ]
+    ctx.write_bytes("outputs/FIRST_STOCK_NEXT.md", ("\n".join(lines) + "\n").encode())
 
 
 def main(argv: list[str] | None = None) -> int:

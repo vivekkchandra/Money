@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from money.qualification.core import QualificationContext, fingerprint
+from money.qualification.universe_policy import RETIRED_BLOCKERS, UNIVERSE_POLICY_VERSION
 from money.qualification.universe_status import live_metadata_state
 from money.research.qlib_mode import qlib_enabled
 from money.schemas.contracts import utc_now
@@ -17,13 +18,12 @@ from money.schemas.contracts import utc_now
 # Dependency edges describe prerequisites, not unconditional future success.
 STAGES = {
     "live_metadata": (),
-    "account_scope": ("live_metadata",),
     "identity": ("live_metadata",),
     "provider_access": (),
     "provider_enrichment": ("identity", "provider_access"),
     "provider_rights": (),
     "ethical_evidence": ("identity", "provider_rights"),
-    "eligibility": ("account_scope", "provider_enrichment", "provider_rights", "ethical_evidence"),
+    "eligibility": ("identity", "provider_enrichment", "provider_rights", "ethical_evidence"),
     "supplemental_evidence": ("eligibility", "provider_rights"),
     "snapshot": ("eligibility", "supplemental_evidence"),
     "remote_inference": (),
@@ -62,7 +62,6 @@ BLOCKER_STAGE = {
 
 CATEGORIES = {
     "live_metadata": ["ROOT", "AUTOMATIC_RETRY"],
-    "account_scope": ["ROOT", "HUMAN_REVIEW"],
     "identity": ["ACTIONABLE_NOW"],
     "provider_access": ["ROOT", "EXTERNAL_INFRASTRUCTURE"],
     "provider_enrichment": ["AUTOMATIC_RETRY"],
@@ -80,9 +79,12 @@ CATEGORIES = {
 
 
 def read_master(ctx: QualificationContext) -> tuple[dict[str, Any], str | None]:
-    from money.qualification.universe import MASTER, MAX_MASTER_BYTES
+    from money.qualification.universe import LEGACY_MASTER, MASTER, MAX_MASTER_BYTES
 
     raw = ctx.read_bytes(MASTER, MAX_MASTER_BYTES)
+    if raw is None:
+        # Filename compatibility never makes an old policy's classifications current.
+        raw = ctx.read_bytes(LEGACY_MASTER, MAX_MASTER_BYTES)
     if raw is None:
         return {}, None
     master = json.loads(raw)
@@ -101,6 +103,12 @@ def write_qualification_diagnostics(
     saved, source_hash = read_master(ctx)
     master = saved if master is None else master
     report = report if report is not None else ctx.read_json("status.json") or {}
+    # Historical runner reports are audit records. Retired policy requirements
+    # are not nodes in the current DAG and are never translated into approvals.
+    report = {**report, "blockers": [
+        item for item in report.get("blockers", [])
+        if item.get("code") not in RETIRED_BLOCKERS
+    ]}
     metadata = live_metadata_state(ctx, master)
     summary = master.get("summary") or {}
     progress = ctx.read_json("outputs/universe-enrichment-progress.json") or {}
@@ -156,7 +164,8 @@ def write_qualification_diagnostics(
         master.get("universe_provenance")
     ) or not report.get("updated_at")
     result = {
-        "version": "money-qualification-causality-v1",
+        "version": "money-qualification-causality-v2",
+        "universe_policy_version": UNIVERSE_POLICY_VERSION,
         "scope": "DIAGNOSTICS_ONLY",
         "generated_at": ctx.now.isoformat(),
         "universe_sha256": source_hash,
@@ -182,6 +191,8 @@ def write_qualification_diagnostics(
     fresh = (
         "current, hash-verified"
         if metadata["current"]
+        else "saved live source remains fresh; reclassified offline, not a new authenticated refresh"
+        if metadata.get("source_current")
         else "not currently verified (refresh required)"
     )
     lines = [
@@ -193,19 +204,18 @@ def write_qualification_diagnostics(
         "## Smallest legitimate sequence",
         "",
         "1. Resolve EODHD access first: inspect universe-enrichment-progress.json. HTTP 402 search / HTTP 403 fundamentals require the provider to confirm account entitlement, quota and endpoint access; they are not identity mismatches. No suffix guessing or automatic subscription purchase. Then resume bounded enrichment; cached current evidence is reused.",
-        "2. Complete ONE account-scope review in inputs/universe/account-scope.json using outputs/universe-account-facts.json and REVIEW_TASKS.md. Verify ISA-key binding, account-specific response semantics AND current buy availability. Metadata presence/maxOpenQuantity alone proves neither. If global semantics cannot be established, leave unresolved—do not sign a false blanket assertion. Review is renewable within 24 hours, not permanent.",
-        "3. Complete global provider-rights reviews in inputs/provider-rights/{eodhd,companies-house}.json, including actual permitted-use/redistribution evidence. API access is not a licence. Ethical-source reuse also needs its explicit rights review.",
-        "4. Use outputs/ethics-work-queue.json to prepare one issuer dossier with exact provider identity, approved source bytes, all policy exposures and an independent human review in inputs/universe/ethics.json. Same-issuer evidence can be reused only for explicitly linked instruments. Dossiers never auto-clear exposure. Select by evidence completeness, not expected returns; the complete discovered universe remains in discovery.",
-        "5. Rerun the finalizer. One genuinely eligible member is enough; other unresolved members do not veto it. For that member attach the existing SupplementalReview via inputs/universe/supplemental.json: spread/cost/action/PIT/financial sources and up to four relevant accounts filing documents in inputs/financial-documents.json where applicable. Empty dataset samples are not qualifications.",
-        "6. In parallel, resolve native dependency/security and pinned-source blockers (outputs/native-blocker-diagnosis.json). Provision a reviewed remote HTTPS inference endpoint for the existing private worker, exact role selections/budgets in reviews/inference.json, and real Linux/container allow/deny enforcement in reviews/native-egress.json. Local Ollama is NOT hosted inference; do not point Railway at Mac loopback or expose Ollama.",
-        "7. Run build_live_qualification.py: complete qualified-universe snapshot → bounded screening → independent sealed TradingAgents / AI-Hedge-Fund reports"
+        "2. Complete global provider-rights reviews in inputs/provider-rights/{eodhd,companies-house}.json, including actual permitted-use/redistribution evidence. API access is not a licence. Ethical-source reuse also needs its explicit rights review. Account-type and ISA attestations are not requirements under the current policy; legacy account-scope artifacts are ignored, not approved.",
+        "3. Use outputs/ethics-work-queue.json to prepare one issuer dossier with exact provider identity, approved source bytes, all policy exposures and an independent human review in inputs/universe/ethics.json. Same-issuer evidence can be reused only for explicitly linked instruments. Dossiers never auto-clear exposure. Select by evidence completeness, not expected returns; the complete discovered universe remains in discovery.",
+        "4. Rerun the finalizer. One genuinely eligible member is enough; other unresolved members do not veto it. For that member attach the existing SupplementalReview via inputs/universe/supplemental.json: spread/cost/action/PIT/financial sources and up to four relevant accounts filing documents in inputs/financial-documents.json where applicable. Empty dataset samples are not qualifications.",
+        "5. In parallel, resolve native dependency/security and pinned-source blockers (outputs/native-blocker-diagnosis.json). Provision a reviewed remote HTTPS inference endpoint for the existing private worker, exact role selections/budgets in reviews/inference.json, and real Linux/container allow/deny enforcement in reviews/native-egress.json. Local Ollama is NOT hosted inference; do not point Railway at Mac loopback or expose Ollama.",
+        "6. Run build_live_qualification.py: complete qualified-universe snapshot → bounded screening → independent sealed TradingAgents / AI-Hedge-Fund reports"
         + (
             " plus independently qualified numeric Qlib"
             if enabled
             else " (Qlib explicitly disabled)"
         )
         + " → FIRST_PASS_LOCKED. Disabled Qlib never means promoted/qualified.",
-        "8. LEAN remains mandatory: prepare reviews/lean-inputs.json and generated audit inputs with historical eligibility/survivorship, corporate actions, approved costs/slippage, walk-forward/OOS, MAE/MFE/drawdown, pinned image/runtime and genuine execution. A first-pass lock is necessary but not sufficient. Then CIO evidence verification, contradictions, Red Team and at most two cross-examination rounds; independent release review and hosted acceptance remain separate.",
+        "7. LEAN remains mandatory: prepare reviews/lean-inputs.json and generated audit inputs with historical eligibility/survivorship, corporate actions, approved costs/slippage, walk-forward/OOS, MAE/MFE/drawdown, pinned image/runtime and genuine execution. A first-pass lock is necessary but not sufficient. Then CIO evidence verification, contradictions, Red Team and at most two cross-examination rounds; independent release review and hosted acceptance remain separate.",
         "",
         "## Causal diagnostics",
         "",
@@ -223,6 +233,22 @@ def write_qualification_diagnostics(
         f"Provider progress is recorded in outputs/universe-enrichment-progress.json (remaining unserviced: {progress.get('remaining_unserviced', 'not computed')}). Budget estimates are lower bounds, not a promise of access or qualification.",
         "No approval, trade, deployment change or production manifest is created by these diagnostics.",
     ]
+    selected = ctx.read_json("outputs/first-qualification-candidate.json") or {}
+    if (
+        selected.get("universe_policy_version") == UNIVERSE_POLICY_VERSION
+        and selected.get("source_universe_sha256") == source_hash
+        and isinstance(selected.get("next_genuine_blocker"), dict)
+    ):
+        next_blocker = selected["next_genuine_blocker"]
+        lines[5:5] = [
+            "## Selected work priority", "",
+            f"{selected.get('company')} ({selected.get('trading212_id')}): "
+            f"{selected.get('recorded_qualification_state')}. "
+            f"Next genuine blocker: {next_blocker.get('code')}.",
+            str(next_blocker.get("action")),
+            "See outputs/FIRST_STOCK_NEXT.md; this priority does not replace the complete universe.",
+            "",
+        ]
     ctx.write_bytes("outputs/NEXT_ACTIONS.md", ("\n".join(lines) + "\n").encode())
     return result
 
