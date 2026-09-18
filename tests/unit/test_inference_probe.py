@@ -21,6 +21,7 @@ def selection() -> InferenceSelection:
         endpoint="http://127.0.0.1:11434/v1/chat/completions",
         endpoint_scope="local",
         authentication="none",
+        reasoning_effort="none",
     )
 
 
@@ -62,7 +63,9 @@ def test_probe_records_actual_identity_and_no_reasoning_or_credentials(selection
     assert requests[0][:2] == ("GET", "/v1/models")
     assert requests[1][2]["messages"][1]["content"] == "Reply with exactly OK"
     assert requests[1][2]["max_tokens"] <= 512
-    assert "reasoning_effort" not in requests[1][2]
+    assert requests[1][2]["reasoning_effort"] == "none"
+    assert receipt.reasoning_effort == "none"
+    assert receipt.finish_reason == "stop"
 
 
 def test_missing_model_fails_before_any_chat_request(selection, monkeypatch):

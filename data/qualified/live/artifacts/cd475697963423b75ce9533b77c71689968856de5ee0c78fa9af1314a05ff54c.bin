@@ -1,0 +1,3 @@
+  × No solution found when resolving dependencies:
+  ╰─▶ Because you require python-dotenv==1.0.0 and python-dotenv>=1.2.3, we
+      can conclude that your requirements are unsatisfiable.

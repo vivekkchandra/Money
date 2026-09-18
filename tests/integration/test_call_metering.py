@@ -165,7 +165,7 @@ def test_unknown_usage_is_not_zero_and_failed_call_is_persisted(store, monkeypat
     receipt = next(row for row in rows(store) if row["kind"] == "INFERENCE_CALL")
     assert receipt["status"] == "FAILED"
     assert receipt["input_tokens"] is None and receipt["actual_cost"] is None
-    assert receipt["error_code"] == "INFERENCE_FAILED"
+    assert receipt["error_code"] == "INFERENCE_MODEL_MISMATCH"
 
 
 def test_settlement_fallback_is_idempotent_and_explicitly_not_a_provider_call(store):

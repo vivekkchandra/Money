@@ -9,6 +9,7 @@ import pytest
 
 from money.data.security import ProviderFailure
 from money.research import inference as transport
+from money.research.call_telemetry import capture_calls
 from money.research.inference import HTTPInference, InferenceConfiguration
 from money.research.inference_config import InferenceSelection, load_inference_selections
 
@@ -106,9 +107,12 @@ def test_checked_in_ollama_configuration_has_all_three_roles_no_credentials():
     for selection in selected.values():
         assert selection.model == "qwen3:14b"
         assert selection.authentication == "none"
+        assert selection.reasoning_effort == "none"
+        assert selection.timeout_seconds == 180
         assert selection.credential_environment_variable is None
         client = selection.inference({})
         assert client.configuration.api_key is None
+        assert client.configuration.reasoning_effort == "none"
         assert client.allowed_network_port == 11434
         assert client.allowed_network_hosts == ("127.0.0.1",)
 
@@ -180,6 +184,7 @@ def test_authenticated_openai_and_generic_hosted_provider_remain_supported():
         assert headers["Authorization"] == "Bearer test-secret"
         assert "x-api-key" not in headers
         assert ("max_completion_tokens" if provider == "openai" else "max_tokens") in body
+        assert "reasoning_effort" not in body
         assert "test-secret" not in repr(client.configuration)
 
 
@@ -204,7 +209,7 @@ def test_reasoning_never_contaminates_final_content():
     client = StubInference(ollama_selection().inference({}).configuration, answer())
     assert client.complete("policy", "facts") == "OK"
     client.response = answer(choices=[{"finish_reason": "stop", "message": {"reasoning": "OK"}}])
-    with pytest.raises(ValueError, match="INFERENCE_OUTPUT_INVALID"):
+    with pytest.raises(ValueError, match="INFERENCE_EMPTY_RESPONSE"):
         client.complete("policy", "facts")
     with pytest.raises(ValueError, match="INFERENCE_REASONING_CONTROL_UNSUPPORTED"):
         ollama_selection(reasoning_effort="low")
@@ -320,6 +325,69 @@ def test_local_http_pins_port_ignores_proxies_and_has_no_authorization(monkeypat
     assert connection.closed
 
 
+def test_non_thinking_control_reaches_serialized_http_body(monkeypatch):
+    connection = StubConnection(StubResponse(json.dumps(answer()).encode()))
+    monkeypatch.setattr(transport.http.client, "HTTPConnection", lambda *a, **k: connection)
+    selected = ollama_selection(reasoning_effort="none", timeout_seconds=180)
+    # Same JSON round trip as the isolated child boundary.
+    client = InferenceSelection.model_validate_json(selected.model_dump_json()).inference({})
+    assert client.complete("policy", "Reply with exactly OK") == "OK"
+    args, kwargs = connection.requests[0]
+    assert args == ("POST", "/v1/chat/completions")
+    payload = json.loads(kwargs["body"])
+    assert payload == {
+        "model": "qwen3:14b",
+        "messages": [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "Reply with exactly OK"},
+        ],
+        "temperature": 0,
+        "max_tokens": selected.max_output_tokens,
+        "reasoning_effort": "none",
+    }
+    assert "Authorization" not in kwargs["headers"]
+    assert client.last_response_model == "qwen3:14b"
+    assert client.last_finish_reason == "stop"
+    assert client.configuration.timeout_seconds == 180
+
+
+@pytest.mark.parametrize("provider,protocol,effort", [
+    ("ollama", "openai-compatible", "low"),
+    ("unverified-host", "openai-compatible", "none"),
+    ("ollama", "anthropic", "none"),
+    ("openai", "anthropic", "none"),
+])
+def test_unsupported_reasoning_controls_rejected_by_both_models(provider, protocol, effort):
+    with pytest.raises(ValueError, match="INFERENCE_REASONING_CONTROL_UNSUPPORTED"):
+        ollama_selection(provider=provider, protocol=protocol, reasoning_effort=effort)
+    with pytest.raises(ValueError, match="INFERENCE_REASONING_CONTROL_UNSUPPORTED"):
+        replace(ollama_selection().inference({}).configuration,
+                provider=provider, protocol=protocol, reasoning_effort=effort)
+
+
+def test_openai_reasoning_control_still_reaches_request():
+    selection = load_inference_selections(REPO, {})["tradingagents"]
+    client = StubInference(selection.inference({"OPENAI_API_KEY": "test-secret"}).configuration,
+                           answer(model=selection.model))
+    assert client.complete("policy", "facts") == "OK"
+    body, _ = client.requests[0]
+    assert body["reasoning_effort"] == "low"
+    assert "max_completion_tokens" in body and "max_tokens" not in body
+
+
+def test_empty_visible_response_has_precise_secret_free_receipt():
+    client = StubInference(ollama_selection(reasoning_effort="none").inference({}).configuration,
+        answer(choices=[{"finish_reason": "stop", "message": {
+            "content": "", "reasoning": "private-test-text",
+        }}]))
+    with capture_calls() as calls, pytest.raises(ValueError, match="INFERENCE_EMPTY_RESPONSE"):
+        client.complete("policy", "facts")
+    assert calls[0].error_code == "INFERENCE_EMPTY_RESPONSE"
+    assert calls[0].provider_calls == 1
+    assert calls[0].status == "FAILED"
+    assert "private-test-text" not in calls[0].model_dump_json()
+
+
 @pytest.mark.parametrize(
     "error,code",
     [
@@ -336,7 +404,7 @@ def test_server_unavailable_and_timeout_fail_closed(monkeypatch, error, code):
     connection.request = fail
     monkeypatch.setattr(transport.http.client, "HTTPConnection", lambda *a, **k: connection)
     with pytest.raises(ProviderFailure, match=code):
-        ollama_selection().inference({}).complete("policy", "facts")
+        ollama_selection(reasoning_effort="none").inference({}).complete("policy", "facts")
     assert connection.closed
 
 
@@ -364,6 +432,7 @@ def test_failure_does_not_reuse_previous_returned_model_identity():
     with pytest.raises(ValueError, match="TOKEN_INPUT_LIMIT"):
         client.complete("policy", "x" * 30001)
     assert client.last_response_model is None
+    assert client.last_finish_reason is None
 
 
 def test_model_catalogue_uses_same_origin_and_strict_ids(monkeypatch):

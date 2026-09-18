@@ -25,6 +25,20 @@ Authentication = Literal["none", "bearer", "api-key"]
 EndpointScope = Literal["public", "local"]
 
 
+def validate_reasoning_effort(provider: str, protocol: str, effort: str | None) -> None:
+    """Admit only explicitly supported controls; never add a provider default."""
+    if effort is None:
+        return
+    supported = {
+        "openai": ("none", "minimal", "low", "medium", "high", "xhigh"),
+        # Verified against Ollama's OpenAI-compatible Qwen3 endpoint. Other
+        # reasoning levels have different semantics and are not assumed supported.
+        "ollama": ("none",),
+    }
+    if protocol != "openai-compatible" or effort not in supported.get(provider, ()):
+        raise ValueError("INFERENCE_REASONING_CONTROL_UNSUPPORTED")
+
+
 def inference_endpoint(endpoint: str, scope: EndpointScope) -> tuple[str, str, int]:
     """Validate an inference destination without consulting credentials or DNS.
 
@@ -140,10 +154,7 @@ class InferenceConfiguration:
         ):
             raise ValueError("INFERENCE_CONFIGURATION_INVALID")
         inference_endpoint(self.endpoint, self.endpoint_scope)
-        if self.reasoning_effort is not None and (
-            self.provider != "openai" or self.protocol != "openai-compatible"
-        ):
-            raise ValueError("INFERENCE_REASONING_CONTROL_UNSUPPORTED")
+        validate_reasoning_effort(self.provider, self.protocol, self.reasoning_effort)
         if (
             self.protocol not in ("openai-compatible", "anthropic")
             or not 1 <= self.max_output_tokens <= 16000
@@ -165,6 +176,7 @@ class HTTPInference:
         self.provider, self.model = configuration.provider, configuration.model
         self._usages: list[Usage] = []
         self.last_response_model: str | None = None
+        self.last_finish_reason: str | None = None
 
     @property
     def allowed_network_hosts(self) -> tuple[str, ...]:
@@ -212,6 +224,7 @@ class HTTPInference:
     def complete(self, system: str, user: str) -> str:
         started = time.monotonic()
         self.last_response_model = None
+        self.last_finish_reason = None
         before = len(self._usages)
         sent = False
         status = "FAILED"
@@ -227,6 +240,17 @@ class HTTPInference:
         except ProviderFailure as error:
             if error.code in {"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"}:
                 error_code = error.code
+            raise
+        except ValueError as error:
+            # Only fixed Money codes, never provider text, prompts or credentials.
+            if str(error) in {
+                "TOKEN_INPUT_LIMIT", "INFERENCE_EMPTY_RESPONSE", "INFERENCE_OUTPUT_INVALID",
+                "INFERENCE_INCOMPLETE", "INFERENCE_RESPONSE_INVALID", "INFERENCE_USAGE_INVALID",
+                "INFERENCE_MODEL_MISMATCH", "INFERENCE_TOOL_OUTPUT_DENIED",
+                "INFERENCE_RESPONSE_TOO_LARGE", "INFERENCE_DUPLICATE_JSON_KEY",
+                "INFERENCE_NONFINITE_JSON",
+            }:
+                error_code = str(error)
             raise
         finally:
             usage = self._usages[-1] if len(self._usages) > before else Usage()
@@ -292,6 +316,7 @@ class HTTPInference:
         if config.protocol == "anthropic":
             if result.get("stop_reason") != "end_turn":
                 raise ValueError("INFERENCE_INCOMPLETE")
+            self.last_finish_reason = "end_turn"
             blocks = result.get("content", [])
             if not isinstance(blocks, list) or any(not isinstance(block, dict) for block in blocks):
                 raise ValueError("INFERENCE_RESPONSE_INVALID")
@@ -309,6 +334,7 @@ class HTTPInference:
                 or choices[0].get("finish_reason") != "stop"
             ):
                 raise ValueError("INFERENCE_INCOMPLETE")
+            self.last_finish_reason = "stop"
             message = choices[0].get("message")
             if not isinstance(message, dict):
                 raise ValueError("INFERENCE_RESPONSE_INVALID")
@@ -317,7 +343,9 @@ class HTTPInference:
             if message.get("tool_calls") or message.get("function_call"):
                 raise ValueError("INFERENCE_TOOL_OUTPUT_DENIED")
             value = message.get("content")
-        if not isinstance(value, str) or not value.strip() or len(value) > 100000:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("INFERENCE_EMPTY_RESPONSE")
+        if not isinstance(value, str) or len(value) > 100000:
             raise ValueError("INFERENCE_OUTPUT_INVALID")
         return value
 

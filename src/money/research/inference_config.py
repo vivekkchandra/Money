@@ -19,6 +19,7 @@ from money.research.inference import (
     InferenceConfiguration,
     inference_endpoint,
     strict_response_json,
+    validate_reasoning_effort,
 )
 from money.schemas.contracts import Contract
 
@@ -60,12 +61,7 @@ class InferenceSelection(Contract):
         elif self.credential_environment_variable is None:
             raise ValueError("INFERENCE_CREDENTIAL_VARIABLE_REQUIRED")
         inference_endpoint(self.endpoint, self.endpoint_scope)
-        if self.reasoning_effort is not None and (
-            self.provider != "openai"
-            or self.protocol != "openai-compatible"
-            or self.reasoning_effort not in ("none", "minimal", "low", "medium", "high", "xhigh")
-        ):
-            raise ValueError("INFERENCE_REASONING_CONTROL_UNSUPPORTED")
+        validate_reasoning_effort(self.provider, self.protocol, self.reasoning_effort)
         return self
 
     @property

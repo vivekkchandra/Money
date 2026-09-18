@@ -10,7 +10,6 @@ import pytest
 
 from money.qualification import native
 from money.qualification.core import CommandResult, QualificationContext
-from money.research.call_telemetry import InferenceReceipt, emit_calls
 
 
 @pytest.fixture
@@ -26,24 +25,18 @@ def ctx(tmp_path: Path) -> QualificationContext:
 def scripted_probe(monkeypatch: pytest.MonkeyPatch) -> list:
     calls = []
 
-    def complete(self, system, user):
+    def post(self, body, headers):
         calls.append(self.configuration)
-        self.last_response_model = self.model
-        emit_calls(
-            (
-                InferenceReceipt(
-                    provider=self.provider,
-                    model=self.model,
-                    duration_seconds=0.1,
-                    status="SUCCEEDED",
-                    input_tokens=12,
-                    output_tokens=1,
-                ),
-            )
-        )
-        return "OK"
+        return {
+            "model": self.model,
+            "choices": [{"finish_reason": "stop", "message": {
+                "role": "assistant", "content": "OK",
+            }}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 1},
+        }
 
-    monkeypatch.setattr(native.HTTPInference, "complete", complete)
+    # Exercise the real content/finish validation and telemetry; only HTTP is scripted.
+    monkeypatch.setattr(native.HTTPInference, "_post", post)
     return calls
 
 

@@ -37,6 +37,76 @@ class ProviderEscapeDenied(PermissionError):
     """A native component requested a capability outside its frozen snapshot."""
 
 
+PROVIDER_FAILURE_CODES = frozenset({
+    "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED",
+    "PROVIDER_COVERAGE_MISSING", "PROVIDER_CIRCUIT_OPEN", "PROVIDER_DNS_UNAVAILABLE",
+})
+NATIVE_DIAGNOSTIC_CODES = frozenset({
+    "NATIVE_AGENT_TIMEOUT", "NATIVE_CALL_BUDGET_EXHAUSTED", "INFERENCE_EMPTY_RESPONSE",
+    "NATIVE_STRUCTURED_OUTPUT_INVALID", "NATIVE_TOOL_CALL_FAILED", "NATIVE_ADAPTER_EXCEPTION",
+    "NATIVE_SUBPROCESS_FAILED", "NATIVE_CAPABILITY_DENIED", "NATIVE_REPORT_INVALID",
+    "NATIVE_SNAPSHOT_UNSUPPORTED", "NATIVE_RUNTIME_UNAVAILABLE", "INFERENCE_RESPONSE_INVALID",
+    "INFERENCE_MODEL_MISMATCH", "INFERENCE_INCOMPLETE",
+})
+_CAPABILITY_MESSAGES = frozenset({
+    "native listener capability denied", "native DNS lookup outside configured inference gateway",
+    "native reverse DNS capability denied", "native datagram/message capability denied",
+    "native network connection outside inference gateway", "native process or foreign library execution denied",
+    "native file access outside its capability", "native database access outside private workspace",
+    "native filesystem mutation outside private workspace", "native file relocation outside private workspace",
+    "native filesystem links are not permitted", "native ChromaDB server/backend capability denied",
+    "native ChromaDB backend was loaded before capability isolation",
+    "native ChromaDB storage/embedding capability denied",
+})
+
+
+class NativeDiagnosticError(UpstreamUnavailable):
+    """A fixed, secret-free diagnostic crossing a native process boundary."""
+
+    def __init__(self, code: str) -> None:
+        if code not in NATIVE_DIAGNOSTIC_CODES:
+            raise ValueError("NATIVE_DIAGNOSTIC_CODE_INVALID")
+        self.code = code
+        super().__init__(code)
+
+
+def native_failure_code(error: BaseException) -> str:
+    """Classify failures without copying arbitrary exception text or class names."""
+    if isinstance(error, NativeDiagnosticError):
+        return error.code
+    if isinstance(error, ProviderFailure) and error.code in PROVIDER_FAILURE_CODES:
+        # A provider timeout is one model request, not the whole agent deadline.
+        return error.code
+    marker = error.args[0] if len(error.args) == 1 and isinstance(error.args[0], str) else None
+    if isinstance(error, NativeDeadline):
+        return ("NATIVE_CALL_BUDGET_EXHAUSTED" if marker == "native inference call budget exhausted"
+                else "NATIVE_AGENT_TIMEOUT")
+    if isinstance(error, TimeoutError):
+        return "NATIVE_AGENT_TIMEOUT"
+    if isinstance(error, ProviderEscapeDenied):
+        return "NATIVE_CAPABILITY_DENIED"
+    if isinstance(error, InvalidUpstreamReport):
+        return ("NATIVE_STRUCTURED_OUTPUT_INVALID" if marker in {
+            "native structured research output is malformed", "NATIVE_STRUCTURED_OUTPUT_INVALID",
+            "native challenge response is malformed", "native JSON response is invalid",
+        } else "NATIVE_REPORT_INVALID")
+    if isinstance(error, UnsupportedSnapshotData):
+        return "NATIVE_SNAPSHOT_UNSUPPORTED"
+    if isinstance(error, ValueError):
+        if marker in {"INFERENCE_EMPTY_RESPONSE", "INFERENCE_RESPONSE_INVALID",
+                      "INFERENCE_MODEL_MISMATCH", "INFERENCE_INCOMPLETE"}:
+            return str(marker)
+        if marker in {"INFERENCE_TOOL_CALL_INVALID", "INFERENCE_TOOL_OUTPUT_DENIED",
+                      "NATIVE_TOOL_CALL_FAILED"}:
+            return "NATIVE_TOOL_CALL_FAILED"
+        if marker in {"INFERENCE_OUTPUT_INVALID", "INFERENCE_NONFINITE_JSON",
+                      "INFERENCE_DUPLICATE_JSON_KEY", "INFERENCE_USAGE_INVALID"}:
+            return "INFERENCE_RESPONSE_INVALID"
+    if isinstance(error, UpstreamUnavailable):
+        return "NATIVE_RUNTIME_UNAVAILABLE"
+    return "NATIVE_ADAPTER_EXCEPTION"
+
+
 @dataclass(frozen=True)
 class NativeProcessPolicy:
     gateway_hosts: tuple[str, ...] = ()
@@ -150,18 +220,17 @@ def _native_child(connection: Connection, runner: Callable[..., BaseModel],
         except BaseException as exc:
             provider_code = None
             provider_retryable = False
-            if isinstance(exc, ProviderFailure) and exc.code in {
-                "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED",
-                "PROVIDER_COVERAGE_MISSING", "PROVIDER_CIRCUIT_OPEN", "PROVIDER_DNS_UNAVAILABLE",
-            }:
+            if isinstance(exc, ProviderFailure) and exc.code in PROVIDER_FAILURE_CODES:
                 provider_code, provider_retryable = exc.code, exc.retryable
             category = type(exc).__name__
             if category not in {"InvalidUpstreamReport", "UnsupportedSnapshotData", "NativeDeadline",
                                  "ProviderEscapeDenied", "UpstreamUnavailable"}:
                 category = "UpstreamUnavailable"
             payload = json.dumps({"ok": False, "category": category,
-                                  "failure_class": type(exc).__name__,
-                                  "capability": str(exc) if isinstance(exc, ProviderEscapeDenied) else None,
+                                  "diagnostic_code": native_failure_code(exc),
+                                  "failure_class": category,
+                                  "capability": (str(exc) if isinstance(exc, ProviderEscapeDenied)
+                                                 and str(exc) in _CAPABILITY_MESSAGES else None),
                                   "provider_code": provider_code, "retryable": provider_retryable,
                                   "calls": [call.model_dump(mode="json") for call in calls]}).encode()
         connection.send_bytes(payload)
@@ -181,24 +250,24 @@ class BoundedNativeRunner:
             process = context.Process(target=_native_child,
                 args=(child, self.runner, arguments, self.policy, temporary), daemon=True)
             try:
-                process.start()
+                try:
+                    process.start()
+                except OSError:
+                    raise NativeDiagnosticError("NATIVE_SUBPROCESS_FAILED") from None
                 child.close()
                 if not parent.poll(self.policy.timeout_seconds):
                     raise NativeDeadline("native process exceeded its execution deadline")
                 try:
                     raw = parent.recv_bytes(self.policy.maximum_output_bytes)
                 except (OSError, EOFError) as exc:
-                    raise UpstreamUnavailable("native process returned no bounded report") from exc
+                    raise NativeDiagnosticError("NATIVE_SUBPROCESS_FAILED") from exc
                 payload = json.loads(raw)
                 receipts = payload.get("calls", [])
                 if not isinstance(receipts, list) or len(receipts) > 256:
                     raise InvalidUpstreamReport("native call accounting exceeds transport bound")
                 emit_calls(TypeAdapter(list[InferenceReceipt]).validate_python(receipts))
                 if payload.get("ok") is not True:
-                    if payload.get("provider_code") in {
-                        "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED",
-                        "PROVIDER_COVERAGE_MISSING", "PROVIDER_CIRCUIT_OPEN", "PROVIDER_DNS_UNAVAILABLE",
-                    }:
+                    if payload.get("provider_code") in PROVIDER_FAILURE_CODES:
                         raise ProviderFailure(payload["provider_code"], retryable=payload.get("retryable") is True)
                     errors: dict[str, type[Exception]] = {
                         "InvalidUpstreamReport": InvalidUpstreamReport,
@@ -206,6 +275,13 @@ class BoundedNativeRunner:
                         "NativeDeadline": NativeDeadline,
                         "ProviderEscapeDenied": ProviderEscapeDenied,
                     }
+                    diagnostic = payload.get("diagnostic_code")
+                    if diagnostic in NATIVE_DIAGNOSTIC_CODES and payload.get("category") not in errors:
+                        raise NativeDiagnosticError(diagnostic)
+                    if diagnostic == "NATIVE_STRUCTURED_OUTPUT_INVALID":
+                        raise InvalidUpstreamReport(diagnostic)
+                    if diagnostic == "NATIVE_CALL_BUDGET_EXHAUSTED":
+                        raise NativeDeadline("native inference call budget exhausted")
                     raise errors.get(payload.get("category"), UpstreamUnavailable)(
                         "native research failed within its isolated capability ("
                         + str(payload.get("capability") or payload.get("failure_class", "unknown")) + ")"

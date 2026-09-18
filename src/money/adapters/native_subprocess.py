@@ -26,7 +26,14 @@ from typing import Any, Literal
 from pydantic import TypeAdapter
 
 from money.adapters.native import NativeDeadline, NativeRunSettings
-from money.adapters.native_process import NativeProcessPolicy, ProviderEscapeDenied
+from money.adapters.native_process import (
+    NATIVE_DIAGNOSTIC_CODES,
+    PROVIDER_FAILURE_CODES,
+    NativeDiagnosticError,
+    NativeProcessPolicy,
+    ProviderEscapeDenied,
+    native_failure_code,
+)
 from money.adapters.upstream import (
     InvalidUpstreamReport,
     UnsupportedSnapshotData,
@@ -52,10 +59,7 @@ NATIVE_ENVIRONMENTS = {
     "tradingagents": ".venv-tradingagents",
     "ai_hedge_fund": ".venv-ai-hedge-fund",
 }
-_PROVIDER_CODES = frozenset({
-    "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED",
-    "PROVIDER_COVERAGE_MISSING", "PROVIDER_CIRCUIT_OPEN", "PROVIDER_DNS_UNAVAILABLE",
-})
+_PROVIDER_CODES = PROVIDER_FAILURE_CODES
 _ERRORS: dict[str, type[Exception]] = {
     "InvalidUpstreamReport": InvalidUpstreamReport,
     "UnsupportedSnapshotData": UnsupportedSnapshotData,
@@ -160,7 +164,7 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        raise UpstreamUnavailable("native process group did not terminate") from None
+        raise NativeDiagnosticError("NATIVE_SUBPROCESS_FAILED") from None
 
 
 def _exchange(
@@ -169,11 +173,14 @@ def _exchange(
     """Multiplex both pipes, bounding memory and wall time including startup."""
     if len(request) > MAXIMUM_INPUT_BYTES:
         raise UnsupportedSnapshotData("native request exceeds transport bound")
-    process = subprocess.Popen(
-        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        cwd=workdir, env=_private_environment(workdir), start_new_session=True,
-        close_fds=True,
-    )
+    try:
+        process = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            cwd=workdir, env=_private_environment(workdir), start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        raise NativeDiagnosticError("NATIVE_SUBPROCESS_FAILED") from None
     result = bytearray()
     deadline = time.monotonic() + policy.timeout_seconds
     assert process.stdin is not None and process.stdout is not None
@@ -217,7 +224,7 @@ def _exchange(
             except subprocess.TimeoutExpired:
                 raise NativeDeadline("native process exceeded its execution deadline") from None
         if process.returncode != 0 or not result:
-            raise UpstreamUnavailable("native interpreter returned no bounded report")
+            raise NativeDiagnosticError("NATIVE_SUBPROCESS_FAILED")
         return bytes(result)
     finally:
         _terminate_group(process)
@@ -318,6 +325,14 @@ class IsolatedNativeRunner:
                 code = payload.get("provider_code")
                 if code in _PROVIDER_CODES:
                     raise ProviderFailure(code, retryable=payload.get("retryable") is True)
+                diagnostic = payload.get("diagnostic_code")
+                if diagnostic in NATIVE_DIAGNOSTIC_CODES:
+                    if diagnostic == "NATIVE_STRUCTURED_OUTPUT_INVALID":
+                        raise InvalidUpstreamReport(diagnostic)
+                    if diagnostic == "NATIVE_CALL_BUDGET_EXHAUSTED":
+                        raise NativeDeadline("native inference call budget exhausted")
+                    if payload.get("category") == "UpstreamUnavailable":
+                        raise NativeDiagnosticError(diagnostic)
                 error = _ERRORS.get(str(payload.get("category")), UpstreamUnavailable)
                 raise error("isolated native research did not complete")
             schema = (TradingAgentsResearchReport if self.role == "tradingagents"
@@ -408,7 +423,7 @@ def execute_child_request(value: dict[str, Any], workdir: Path, repository: Path
         except BaseException as error:
             category = type(error).__name__
             payload = {"ok": False, "category": category if category in _ERRORS
-                       else "UpstreamUnavailable"}
+                       else "UpstreamUnavailable", "diagnostic_code": native_failure_code(error)}
             if isinstance(error, ProviderFailure) and error.code in _PROVIDER_CODES:
                 payload.update(provider_code=error.code, retryable=error.retryable)
         payload.update(protocol=PROTOCOL, role=role, bridge_sha256=digest,

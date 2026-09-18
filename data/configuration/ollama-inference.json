@@ -7,6 +7,7 @@
     "authentication": "none",
     "endpoint_scope": "local",
     "temperature": 0,
+    "reasoning_effort": "none",
     "max_output_tokens": 8000,
     "maximum_prompt_bytes": 100000,
     "timeout_seconds": 180
@@ -19,6 +20,7 @@
     "authentication": "none",
     "endpoint_scope": "local",
     "temperature": 0,
+    "reasoning_effort": "none",
     "max_output_tokens": 8000,
     "maximum_prompt_bytes": 100000,
     "timeout_seconds": 180
@@ -31,6 +33,7 @@
     "authentication": "none",
     "endpoint_scope": "local",
     "temperature": 0,
+    "reasoning_effort": "none",
     "max_output_tokens": 8000,
     "maximum_prompt_bytes": 100000,
     "timeout_seconds": 180

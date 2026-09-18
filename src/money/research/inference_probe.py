@@ -40,6 +40,8 @@ class InferenceProbeEvidence(Contract):
     endpoint: str
     protocol: str
     authentication: str
+    reasoning_effort: str | None = None
+    finish_reason: Literal["stop", "end_turn"] | None = None
     scope: Literal["LOCAL_INFERENCE_ONLY", "REMOTE_INFERENCE_ACCESS_ONLY"]
     server_reachable: Literal[True] = True
     model_available: Literal[True] | None = None
@@ -66,6 +68,9 @@ class InferenceProbeEvidence(Contract):
             )
             or self.model_availability_checked != (self.model_available is True)
             or (self.provider == "ollama" and not self.model_availability_checked)
+            or (self.finish_reason is not None and self.finish_reason != (
+                "end_turn" if self.protocol == "anthropic" else "stop"
+            ))
         ):
             raise ValueError("INFERENCE_PROBE_EVIDENCE_INVALID")
         return self
@@ -79,6 +84,7 @@ class InferenceProbeEvidence(Contract):
             and self.endpoint == selection.endpoint
             and self.protocol == selection.protocol
             and self.authentication == selection.authentication
+            and self.reasoning_effort == selection.reasoning_effort
             and self.scope
             == ("LOCAL_INFERENCE_ONLY" if selection.is_local else "REMOTE_INFERENCE_ACCESS_ONLY")
         )
@@ -103,7 +109,12 @@ def probe_selection(
         raise ValueError("INFERENCE_MODEL_UNAVAILABLE")
     with capture_calls() as calls:
         response = inference.complete(PROBE_PROMPT, PROBE_PROMPT)
-    if response != "OK" or inference.last_response_model is None:
+    expected_finish = "end_turn" if selection.protocol == "anthropic" else "stop"
+    if (
+        response != "OK"
+        or inference.last_response_model is None
+        or inference.last_finish_reason != expected_finish
+    ):
         raise ValueError("INFERENCE_PROBE_CONTENT_INVALID")
     return InferenceProbeEvidence(
         role=role,
@@ -114,6 +125,8 @@ def probe_selection(
         endpoint=selection.endpoint,
         protocol=selection.protocol,
         authentication=cast(str, selection.authentication),
+        reasoning_effort=selection.reasoning_effort,
+        finish_reason=cast(Literal["stop", "end_turn"], inference.last_finish_reason),
         scope="LOCAL_INFERENCE_ONLY" if selection.is_local else "REMOTE_INFERENCE_ACCESS_ONLY",
         model_available=True if availability_checked else None,
         model_availability_checked=availability_checked,
@@ -136,6 +149,7 @@ def safe_probe_error(error: Exception) -> str:
         "INFERENCE_MODEL_MISMATCH",
         "INFERENCE_INCOMPLETE",
         "INFERENCE_OUTPUT_INVALID",
+        "INFERENCE_EMPTY_RESPONSE",
         "INFERENCE_RESPONSE_INVALID",
         "INFERENCE_USAGE_INVALID",
         "INFERENCE_PROBE_CONTENT_INVALID",
@@ -208,6 +222,7 @@ def main() -> int:
                     "endpoint": value.endpoint,
                     "protocol": value.protocol,
                     "authentication": value.authentication,
+                    "reasoning_effort": value.reasoning_effort,
                     "scope": "LOCAL_INFERENCE_ONLY"
                     if value.is_local
                     else "REMOTE_INFERENCE_ACCESS_ONLY",

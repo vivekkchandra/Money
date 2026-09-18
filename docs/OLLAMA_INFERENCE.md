@@ -100,11 +100,28 @@ exact model identity, authentication and its own qualification/egress evidence.
 ## Reasoning, tools and research boundaries
 
 Money consumes the final assistant `content`; a separate Qwen `reasoning` field
-is never concatenated into research reports. The Ollama configuration does not
-send OpenAI-specific `reasoning_effort`. Ollama/OpenAI-compatible token bounds
+is never concatenated into research reports. All three checked-in Ollama roles
+explicitly set `reasoning_effort: "none"` to use Qwen3 non-thinking inference.
+Money validates this supported Ollama control and sends it unchanged in the
+`/v1/chat/completions` JSON alongside `model`, `messages`, `temperature: 0` and
+`max_tokens`. No `/api/chat` request or placeholder credential is used. An absent
+control stays absent; other providers do not inherit this setting. The inference
+timeout remains 180 seconds. The smoke probe records the selected reasoning
+control, actual returned model, visible-content check and `finish_reason`.
+Ollama/OpenAI-compatible token bounds
 use the transport's supported request format; a provider-specific unsupported
 parameter is not blindly forwarded. The model name is checked against the actual
 returned identity. A local mutable tag is not an immutable hosted model attestation.
+
+Native diagnostics in `outputs/research-first-pass.json` include `firm_runs`:
+wall-clock duration, cache reuse, safe error code, recorded LLM calls and their
+timings. `PROVIDER_TIMEOUT` identifies a model request timeout;
+`NATIVE_AGENT_TIMEOUT` identifies the complete native workflow deadline.
+Empty visible responses, malformed structured reports, rejected tool calls,
+adapter exceptions and subprocess failures have distinct codes. A killed child
+may lose in-flight receipts: `call_accounting_complete: false` means a recorded
+zero must not be interpreted as zero calls actually attempted. No raw prompts,
+reasoning text, exception text or credentials are included in these diagnostics.
 
 TradingAgents retains its specialist, research-debate and risk-review workflow;
 AI-Hedge-Fund retains its independent investor/persona lifecycle. Both consume

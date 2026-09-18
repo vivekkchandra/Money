@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    [
+      "7e9be613d20a26d2f9e09d6bce5463aeaa37fc1b5fa935830bad058acb541ff7",
+      "artifacts/7e9be613d20a26d2f9e09d6bce5463aeaa37fc1b5fa935830bad058acb541ff7.bin"
+    ],
+    [
+      "cd475697963423b75ce9533b77c71689968856de5ee0c78fa9af1314a05ff54c",
+      "artifacts/cd475697963423b75ce9533b77c71689968856de5ee0c78fa9af1314a05ff54c.bin"
+    ]
+  ],
+  "exit_code": 1,
+  "input_sha256": {
+    "UPSTREAM_LOCK.txt": "cb124348c09b2193f83b668865ea0921995de494773f4ae6d68d5ac574631fd6",
+    "pyproject.toml": "7187c4e94e835e61f6ef6aabd3a75f8b6550ec58872fc536387e1af09d8d4acf",
+    "upstreams/ai-hedge-fund/pyproject.toml": "4658513fe53a6d1bfab3415d4d6cb6d984b70400e1ac9c30e3680a719dba4bb6",
+    "upstreams/crewai/lib/cli/pyproject.toml": "6325d8cefba3d47131db354fbc097305e09d7b30847538509b95b2db675c236d",
+    "upstreams/crewai/lib/crewai-core/pyproject.toml": "f86606012ffeac889d9e19304b449cf3dd08c1d625a6866a909e5f3586800eda",
+    "upstreams/crewai/lib/crewai/pyproject.toml": "b89d9ba729a4ad979015a44874feb5502efaf06441acf1e0865e519c31b10ddb",
+    "upstreams/qlib/pyproject.toml": "c47849f143278fef2c114513ca123c6100f007947cdf051928e734985f35a4e9",
+    "upstreams/tradingagents/pyproject.toml": "4fc2abc182ff068d97422c5b84850a95116399305e01779ba9de9b1276c6d377",
+    "uv.lock": "cea4c5c6a3aaff35e1ca22f838da4d6fba9372f6fd013c7bd23564424a86f3e2"
+  },
+  "installs_performed": false,
+  "observed_at": "2026-09-17T10:59:42.201615+00:00",
+  "production_runtime_qualified": false,
+  "resolved": false
+}

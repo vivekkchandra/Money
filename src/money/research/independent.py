@@ -9,15 +9,16 @@ as hosted OS/container egress qualification.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from money.adapters.native import NativeDeadline, NativeRunSettings
+from money.adapters.native import NativeRunSettings
 from money.adapters.native_process import (
     NativeProcessPolicy,
-    ProviderEscapeDenied,
+    native_failure_code,
 )
 from money.adapters.native_subprocess import IsolatedNativeRunner, bridge_fingerprint
 from money.adapters.upstream import (
@@ -26,8 +27,8 @@ from money.adapters.upstream import (
     TradingAgentsAdapter,
     _validate_report,
 )
-from money.data.security import ProviderFailure
 from money.qualification.core import QualificationContext
+from money.research.call_telemetry import InferenceReceipt, capture_calls, emit_calls
 from money.research.inference_config import InferenceSelection
 from money.research.native_environments import prepare_native_environments
 from money.schemas.contracts import (
@@ -50,22 +51,7 @@ _SCHEMAS: dict[str, type[FirmReport]] = {
 
 def _failure_code(error: Exception) -> str:
     """Expose only fixed diagnostic categories, never provider exception text."""
-    if isinstance(error, ProviderFailure) and error.code in {
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_UNAVAILABLE",
-        "PROVIDER_RATE_LIMITED",
-        "PROVIDER_COVERAGE_MISSING",
-        "PROVIDER_CIRCUIT_OPEN",
-        "PROVIDER_DNS_UNAVAILABLE",
-    }:
-        return error.code
-    if isinstance(error, (NativeDeadline, TimeoutError)):
-        return "NATIVE_TIMEOUT"
-    if isinstance(error, ProviderEscapeDenied):
-        return "NATIVE_CAPABILITY_DENIED"
-    if isinstance(error, InvalidUpstreamReport):
-        return "NATIVE_REPORT_INVALID"
-    return "NATIVE_RUNTIME_UNAVAILABLE"
+    return native_failure_code(error)
 
 
 def run_local_native_preflight(ctx: QualificationContext) -> dict[str, Any]:
@@ -333,6 +319,7 @@ def run_local_independent_research(
         "reports": [],
         "artifacts": [],
         "firm_failures": [],
+        "firm_runs": [],
         "debate_completed": False,
     }
     if not preflight["complete"]:
@@ -356,19 +343,28 @@ def run_local_independent_research(
     reports: list[FirmReport] = []
     references: list[tuple[str, str]] = []
     for firm in _FIRMS:
+        started = time.monotonic()
+        calls: list[InferenceReceipt] = []
+        cache_hit = False
+        failure: str | None = None
         try:
             name = "local-research-firm-" + firm
             cached = ctx.cache(name, identity, 3600)
             if cached is not None:
+                cache_hit = True
                 reference = tuple(cached["artifact"])
                 raw = ctx.verify_artifact(*reference)
                 report = _SCHEMAS[firm].model_validate_json(raw)
             else:
                 # No peer report is passed or visible in either firm-private capability.
-                report = _report(
-                    ctx, firm, frozen, selections[firm], settings,
-                    preflight["runtimes"][firm], preflight["bridge_sha256"],
-                )
+                try:
+                    with capture_calls() as calls:
+                        report = _report(
+                            ctx, firm, frozen, selections[firm], settings,
+                            preflight["runtimes"][firm], preflight["bridge_sha256"],
+                        )
+                finally:
+                    emit_calls(calls)
             report = _validate_report(report, frozen, _SCHEMAS[firm], firm)
             if report.created_at > ctx.now + timedelta(seconds=settings.timeout_seconds * 2):
                 raise InvalidUpstreamReport("native report time is outside this bounded run")
@@ -381,12 +377,25 @@ def run_local_independent_research(
         except Exception as error:
             # Raw provider/native exception text may contain secrets or untrusted content.
             code = _failure_code(error)
+            failure = code
             result["firm_failures"].append({"firm": firm, "code": code})
             ctx.block(
                 "LOCAL_NATIVE_REPORT_REQUIRED_" + firm.upper(),
                 code + ": the bounded native firm did not return a valid, pinned, evidence-cited report. "
                 "Check its local model availability and installed runtime; peer reports remain sealed.",
             )
+        finally:
+            result["firm_runs"].append({
+                "firm": firm, "status": "FAILED" if failure else "SUCCEEDED",
+                "duration_seconds": max(0.0, time.monotonic() - started),
+                "cache_hit": cache_hit, "error_code": failure,
+                "llm_calls_recorded": sum(call.provider_calls for call in calls),
+                # Killing an agent may prevent its in-flight receipts returning.
+                "call_accounting_complete": failure not in {
+                    "NATIVE_AGENT_TIMEOUT", "NATIVE_SUBPROCESS_FAILED",
+                },
+                "calls": [call.model_dump(mode="json") for call in calls],
+            })
     result["reports"] = [report.model_dump(mode="json") for report in reports]
     result["artifacts"] = references
     if len(reports) == 2:

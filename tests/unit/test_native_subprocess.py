@@ -137,7 +137,7 @@ def test_real_child_bootstrap_emits_only_safe_json(tmp_path: Path, monkeypatch: 
     script = Path(boundary.__file__).resolve().parents[3] / "scripts/native_research_child.py"
     # Missing the audited dependency identity must fail before any application
     # dependency import. The child deliberately returns no raw diagnostic text.
-    with pytest.raises(UpstreamUnavailable, match="no bounded report") as captured:
+    with pytest.raises(UpstreamUnavailable, match="NATIVE_SUBPROCESS_FAILED") as captured:
         boundary._exchange(
             [sys.executable, "-I", "-S", "-B", str(script)],
             b'{"invalid_request":"fixture-input-secret"}', NativeProcessPolicy(timeout_seconds=20), tmp_path,
@@ -238,6 +238,33 @@ def test_child_errors_never_echo_invalid_input(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["category"] == "UpstreamUnavailable"
     assert "fixture-secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("code", [
+    "INFERENCE_EMPTY_RESPONSE", "NATIVE_TOOL_CALL_FAILED", "NATIVE_ADAPTER_EXCEPTION",
+    "NATIVE_STRUCTURED_OUTPUT_INVALID", "INFERENCE_INCOMPLETE",
+])
+def test_isolated_json_preserves_fixed_failure_diagnostic(
+    runner: boundary.IsolatedNativeRunner, snapshot: ResearchSnapshot,
+    monkeypatch: pytest.MonkeyPatch, code: str,
+) -> None:
+    from money.adapters.native_process import native_failure_code
+
+    def exchange(*args: Any) -> bytes:
+        value = json.loads(args[1])
+        return json.dumps({
+            "protocol": boundary.PROTOCOL, "role": value["role"], "ok": False,
+            "bridge_sha256": value["bridge_sha256"],
+            "python_version": value["expected_python_version"],
+            "inventory_sha256": value["expected_inventory_sha256"],
+            "environment_sha256": value["expected_environment_sha256"],
+            "category": "UpstreamUnavailable", "diagnostic_code": code, "calls": [],
+        }).encode()
+
+    monkeypatch.setattr(boundary, "_exchange", exchange)
+    with pytest.raises(Exception) as captured:
+        runner(ResearchMandate(), snapshot)
+    assert native_failure_code(captured.value) == code
 
 
 def test_bridge_source_fingerprint_changes_and_denies_symlinks(tmp_path: Path) -> None:

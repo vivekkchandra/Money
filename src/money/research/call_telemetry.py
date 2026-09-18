@@ -30,9 +30,14 @@ class InferenceReceipt(Contract):
     provider_calls: int = Field(default=1, ge=0, le=1, strict=True)
     cache_hit: bool | None = None
     retry: bool = False
-    error_code: Literal["INFERENCE_FAILED", "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"] | None = (
-        None
-    )
+    error_code: Literal[
+        "INFERENCE_FAILED", "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE",
+        "TOKEN_INPUT_LIMIT", "INFERENCE_EMPTY_RESPONSE", "INFERENCE_OUTPUT_INVALID",
+        "INFERENCE_INCOMPLETE", "INFERENCE_RESPONSE_INVALID", "INFERENCE_USAGE_INVALID",
+        "INFERENCE_MODEL_MISMATCH", "INFERENCE_TOOL_OUTPUT_DENIED",
+        "INFERENCE_RESPONSE_TOO_LARGE", "INFERENCE_DUPLICATE_JSON_KEY",
+        "INFERENCE_NONFINITE_JSON",
+    ] | None = None
 
     @model_validator(mode="after")
     def cost_currency(self) -> InferenceReceipt:

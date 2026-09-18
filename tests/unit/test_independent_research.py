@@ -11,8 +11,10 @@ import pytest
 
 from money.adapters.native import NativeRunSettings
 from money.adapters.upstream import UPSTREAM_SHAS
+from money.data.security import ProviderFailure
 from money.qualification.core import QualificationContext
 from money.research import independent
+from money.research.call_telemetry import InferenceReceipt, capture_calls, emit_calls
 from money.research.inference_config import InferenceSelection
 from money.schemas.contracts import (
     AIHedgeFundResearchReport,
@@ -137,6 +139,8 @@ def test_two_native_firms_seal_same_snapshot_without_company_reviews(
     assert calls == [("tradingagents", snapshot.hash), ("ai_hedge_fund", snapshot.hash)]
     assert len(result["reports"]) == 2
     assert result["production_qualified"] is False
+    assert all(run["status"] == "SUCCEEDED" for run in result["firm_runs"])
+    assert all(run["duration_seconds"] >= 0 for run in result["firm_runs"])
     comparison = context.read_json("outputs/research-comparison.json")
     assert comparison["status"] == "LIMITED_COMPARISON"
     assert comparison["missing_data"] == list(snapshot.missing_data)
@@ -201,6 +205,9 @@ def test_each_report_is_preserved_and_only_missing_firm_resumes(
     assert first["complete"] is False
     assert first["debate_completed"] is False
     assert len(first["reports"]) == 1
+    failed = next(run for run in first["firm_runs"] if run["firm"] == "ai_hedge_fund")
+    assert failed["error_code"] == "NATIVE_AGENT_TIMEOUT"
+    assert failed["call_accounting_complete"] is False
     first_bytes = context.read_bytes("outputs/research-reports/tradingagents.json")
     # The next real audit emits a new receipt timestamp/hash, but the same
     # approved source/runtime and frozen snapshot must reuse the original firm.
@@ -208,7 +215,37 @@ def test_each_report_is_preserved_and_only_missing_firm_resumes(
     second = independent.run_local_independent_research(context, snapshot, selections)
     assert second["complete"] is True
     assert calls == ["tradingagents", "ai_hedge_fund", "ai_hedge_fund"]
+    cached = next(run for run in second["firm_runs"] if run["firm"] == "tradingagents")
+    assert cached["cache_hit"] is True
+    assert cached["llm_calls_recorded"] == 0
     assert context.read_bytes("outputs/research-reports/tradingagents.json") == first_bytes
+
+
+def test_failed_inference_receipts_reach_both_firm_diagnostics_and_outer_accounting(
+    context: QualificationContext, snapshot: ResearchSnapshot,
+    selections: dict[str, InferenceSelection], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready(monkeypatch)
+
+    def native(ctx: QualificationContext, firm: str, frozen: ResearchSnapshot, *args: Any) -> FirmReport:
+        selected = selections[firm]
+        emit_calls([InferenceReceipt(
+            provider=selected.provider, model=selected.model, status="FAILED",
+            duration_seconds=0.25, error_code="PROVIDER_TIMEOUT",
+        )])
+        raise ProviderFailure("PROVIDER_TIMEOUT", retryable=True)
+
+    monkeypatch.setattr(independent, "_report", native)
+    with capture_calls() as calls:
+        result = independent.run_local_independent_research(context, snapshot, selections)
+    assert len(calls) == 2
+    assert result["complete"] is False
+    assert result["reports"] == []
+    for run in result["firm_runs"]:
+        assert run["llm_calls_recorded"] == 1
+        assert run["call_accounting_complete"] is True
+        assert run["calls"][0]["duration_seconds"] == 0.25
+        assert run["error_code"] == "PROVIDER_TIMEOUT"
 
 
 def test_failed_new_audit_cannot_resume_previously_valid_reports(
